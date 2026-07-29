@@ -1,4 +1,3 @@
-let agentEngine = null;
 let currentChatId = null;
 let proposals = [];
 let activeFilter = 'all';

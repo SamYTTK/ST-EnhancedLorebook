@@ -134,9 +134,6 @@ async function init() {
             await initAgentUI(context);
             agentUIInitialized = true;
         }
-        if (typeof AgentEngine !== 'undefined') {
-            agentEngine = new AgentEngine(context);
-        }
     } catch (e) {
         console.error('Failed to initialize agent UI:', e);
     }
@@ -347,6 +344,7 @@ async function openLorebook(name) {
     els.currentTitle.textContent = name;
     els.mainToolbar.style.display = 'flex';
     els.entriesContainer.innerHTML = '';
+    els.entriesContainer.classList.remove('hidden');
     selectedEntries.clear();
     lastClickedEntryUid = null;
     expandedFolders.clear();

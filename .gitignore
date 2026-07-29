@@ -1,0 +1,8 @@
+# OS files
+.DS_Store
+Thumbs.db
+
+# Runtime
+*.log
+.env
+node_modules/

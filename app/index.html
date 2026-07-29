@@ -1,0 +1,1147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Enhanced Lorebook UI</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="style.css?v=2">
+</head>
+<body>
+    <div id="app" class="glass-container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <h2>Lorebooks</h2>
+                <div class="header-actions">
+                    <button id="btn-refresh-lorebooks" title="Refresh"><i class="fa-solid fa-sync"></i></button>
+                    <button id="btn-settings" title="Settings"><i class="fa-solid fa-cog"></i></button>
+                    <button id="btn-close-app" title="Close"><i class="fa-solid fa-xmark"></i></button>
+                </div>
+            </div>
+            
+            <div class="sidebar-content">
+                <div class="section-header">
+                    <h3>Active Global</h3>
+                    <button id="btn-save-template" title="Save as Template"><i class="fa-solid fa-save"></i></button>
+                </div>
+                <div id="active-lorebooks-list" class="list-container">
+                    <!-- Active lorebooks go here -->
+                </div>
+
+                <div class="section-header mt-4">
+                    <h3>Templates</h3>
+                </div>
+                <div id="templates-list" class="list-container">
+                    <!-- Saved presets go here -->
+                </div>
+
+                <div class="section-header mt-4">
+                    <h3>All Lorebooks</h3>
+                </div>
+                <div class="search-bar">
+                    <i class="fa-solid fa-search"></i>
+                    <input type="text" id="search-lorebooks" placeholder="Search lorebooks...">
+                </div>
+                <div id="all-lorebooks-list" class="list-container flex-grow">
+                    <!-- All lorebooks go here -->
+                </div>
+
+                <div class="section-header mt-4">
+                    <h3>Agent</h3>
+                </div>
+                <div class="list-container">
+                    <div id="nav-agent-config" class="list-item agent-sidebar-item" style="cursor:pointer;">
+                        <i class="fa-solid fa-robot"></i><span>Agent Config</span>
+                    </div>
+                    <div id="nav-agent-feed" class="list-item agent-sidebar-item" style="cursor:pointer;">
+                        <i class="fa-solid fa-clipboard-list"></i><span>Agent Feed</span>
+                        <span class="badge-count" id="agent-pending-badge" style="display:none;">0</span>
+                    </div>
+                </div>
+            </div>
+        </aside>
+        <div id="sidebar-resizer" class="resizer"></div>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <div class="main-header">
+                <h2 id="current-lorebook-title">No Lorebook Selected</h2>
+                <div class="toolbar" id="main-toolbar" style="display: none;">
+                    <div class="search-bar">
+                        <i class="fa-solid fa-search"></i>
+                        <input type="text" id="search-entries" placeholder="Search entries...">
+                    <select id="sort-entries" style="background: transparent; color: var(--text-color); border: none; outline: none; margin-left: 8px; cursor: pointer;" title="Sort Entries">
+                            <option value="order_desc" style="color: black;">Order (Highest)</option>
+                            <option value="order_asc" style="color: black;">Order (Lowest)</option>
+                            <option value="alpha_asc" style="color: black;">Keys (A-Z)</option>
+                            <option value="alpha_desc" style="color: black;">Keys (Z-A)</option>
+                            <option value="search" style="color: black;">Search Match</option>
+                        </select>
+                    </div>
+                    <button id="btn-toggle-all-folders" title="Expand/Collapse All Folders"><i class="fa-solid fa-folder-open"></i></button>
+                    <button id="btn-add-item" title="Add Item"><i class="fa-solid fa-circle-plus"></i> Add Item</button>
+                    <button id="btn-select-all" title="Select All" style="display:none;"><i class="fa-solid fa-check-square"></i></button>
+                    <button id="btn-deselect-all" title="Deselect All" style="display:none;"><i class="fa-solid fa-minus-square"></i></button>
+                    <button id="btn-batch-options" title="Batch Options" disabled><i class="fa-solid fa-layer-group"></i> Batch</button>
+                    <button id="btn-download-selected" title="Download Selected Entries" disabled style="display:none;"><i class="fa-solid fa-download"></i> Download</button>
+                </div>
+            </div>
+
+            <div id="entries-container" class="entries-container">
+                <div class="empty-state">
+                    <i class="fa-solid fa-book-open fa-3x"></i>
+                    <p>Select a lorebook from the sidebar</p>
+                </div>
+            </div>
+
+            <!-- Agent Config Panel -->
+            <div id="agent-config-panel" class="agent-config-panel hidden" style="padding:24px; overflow-y:auto; height:100%;">
+                <h2 style="margin:0 0 20px 0; display:flex; align-items:center; gap:10px;"><i class="fa-solid fa-robot"></i> Agent Configuration</h2>
+
+                <div class="form-group row" style="gap:12px; margin-bottom:16px;">
+                    <label style="font-weight:600; min-width:100px;">Enable Agent</label>
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="agent-enabled">
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+
+                <details open style="margin-bottom:16px; background:rgba(0,0,0,0.1); padding:12px; border-radius:6px;">
+                    <summary style="cursor:pointer; font-weight:bold; margin-bottom:8px;">Mode</summary>
+                    <div style="display:flex; gap:20px;">
+                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer;"><input type="radio" name="agent-mode" value="manual" checked> Manual</label>
+                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer;"><input type="radio" name="agent-mode" value="periodic"> Periodic</label>
+                    </div>
+                    <div id="agent-periodic-config" style="display:none; margin-top:8px;">
+                        <label>Interval (messages): <input type="number" id="agent-periodic-interval" value="10" min="1" style="width:70px;"></label>
+                    </div>
+                </details>
+
+                <details open style="margin-bottom:16px; background:rgba(0,0,0,0.1); padding:12px; border-radius:6px;">
+                    <summary style="cursor:pointer; font-weight:bold; margin-bottom:8px;">Connection</summary>
+                    <div style="display:flex; gap:20px; margin-bottom:8px;">
+                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer;"><input type="radio" name="agent-connection" value="st-pipeline" checked> Use SillyTavern Pipeline</label>
+                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer;"><input type="radio" name="agent-connection" value="separate-api"> Use Separate API</label>
+                    </div>
+                    <div id="agent-separate-api-config" style="display:none; display:flex; flex-direction:column; gap:8px;">
+                        <div class="form-group">
+                            <label>API Endpoint URL</label>
+                            <input type="text" id="agent-api-endpoint" placeholder="https://api.openai.com/v1">
+                        </div>
+                        <div class="form-group">
+                            <label>Model Name</label>
+                            <input type="text" id="agent-api-model" placeholder="gpt-4o">
+                        </div>
+                        <div class="form-group">
+                            <label>Temperature: <span id="agent-api-temp-value">0.7</span></label>
+                            <input type="range" id="agent-api-temperature" min="0" max="1" step="0.05" value="0.7" style="width:100%;">
+                        </div>
+                        <div style="display:flex; gap:8px;">
+                            <button id="btn-save-api-config" class="btn btn-primary btn-sm">Save API Config</button>
+                            <button id="btn-test-connection" class="btn btn-secondary btn-sm">Test Connection</button>
+                        </div>
+                    </div>
+                </details>
+
+                <details open style="margin-bottom:16px; background:rgba(0,0,0,0.1); padding:12px; border-radius:6px;">
+                    <summary style="cursor:pointer; font-weight:bold; margin-bottom:8px;">Permissions</summary>
+                    <div style="display:flex; flex-direction:column; gap:6px;">
+                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer;"><input type="checkbox" id="agent-perm-create" checked> Can Create Entries</label>
+                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer;"><input type="checkbox" id="agent-perm-edit" checked> Can Edit Entries</label>
+                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer;"><input type="checkbox" id="agent-perm-delete"> Can Delete Entries</label>
+                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer;"><input type="checkbox" id="agent-perm-research"> Can Research</label>
+                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer; margin-top:4px;"><input type="checkbox" id="agent-perm-auto-accept"> Auto-Accept</label>
+                        <div id="agent-auto-accept-config" style="display:none; margin-left:24px;">
+                            <label>Confidence Threshold: <span id="agent-confidence-value">0.8</span></label>
+                            <input type="range" id="agent-confidence-threshold" min="0" max="1" step="0.05" value="0.8" style="width:200px;">
+                        </div>
+                    </div>
+                </details>
+
+                <details open style="margin-bottom:16px; background:rgba(0,0,0,0.1); padding:12px; border-radius:6px;">
+                    <summary style="cursor:pointer; font-weight:bold; margin-bottom:8px;">Guardrails</summary>
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+                        <div class="form-group">
+                            <label>Max entries per run</label>
+                            <input type="number" id="agent-guard-max-entries" value="5" min="1">
+                        </div>
+                        <div class="form-group">
+                            <label>Key confidence requirement</label>
+                            <select id="agent-guard-key-confidence">
+                                <option value="low">Low</option>
+                                <option value="medium">Medium</option>
+                                <option value="high">High</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Max pending proposals</label>
+                            <input type="number" id="agent-guard-max-pending" value="20" min="1">
+                        </div>
+                        <div class="form-group row" style="align-items:center;">
+                            <input type="checkbox" id="agent-guard-require-confirmation">
+                            <label for="agent-guard-require-confirmation">Require confirmation before applying</label>
+                        </div>
+                    </div>
+                </details>
+
+                <details open style="margin-bottom:16px; background:rgba(0,0,0,0.1); padding:12px; border-radius:6px;">
+                    <summary style="cursor:pointer; font-weight:bold; margin-bottom:8px;">Research</summary>
+                    <div class="form-group">
+                        <label>Source</label>
+                        <select id="agent-research-source">
+                            <option value="disabled">Disabled</option>
+                            <option value="searxng">SearXNG</option>
+                        </select>
+                    </div>
+                    <div id="agent-searxng-config" style="display:none; flex-direction:column; gap:8px; margin-top:8px;">
+                        <div class="form-group">
+                            <label>SearXNG URL</label>
+                            <input type="text" id="agent-searxng-url" placeholder="http://localhost:8888">
+                        </div>
+                        <div class="form-group">
+                            <label>API Token (optional)</label>
+                            <input type="text" id="agent-searxng-token" placeholder="leave blank if none">
+                        </div>
+                    </div>
+                </details>
+
+                <details open style="margin-bottom:16px; background:rgba(0,0,0,0.1); padding:12px; border-radius:6px;">
+                    <summary style="cursor:pointer; font-weight:bold; margin-bottom:8px;">Actions</summary>
+                    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                        <button id="btn-save-agent-settings" class="btn btn-primary"><i class="fa-solid fa-floppy-disk"></i> Save Settings</button>
+                        <button id="btn-run-agent-now" class="btn btn-secondary"><i class="fa-solid fa-play"></i> Run Agent Now</button>
+                    </div>
+                    <div id="agent-run-status" style="margin-top:8px; font-size:0.85rem; color:var(--text-muted);"></div>
+                </details>
+
+                <details open style="background:rgba(0,0,0,0.1); padding:12px; border-radius:6px;">
+                    <summary style="cursor:pointer; font-weight:bold; margin-bottom:8px;">Backups</summary>
+                    <button id="btn-list-backups" class="btn btn-secondary btn-sm" style="margin-bottom:8px;"><i class="fa-solid fa-clock-rotate-left"></i> List Backups</button>
+                    <div id="backup-list-container" style="max-height:200px; overflow-y:auto;"></div>
+                </details>
+            </div>
+
+            <!-- Agent Feed Panel -->
+            <div id="agent-feed-panel" class="agent-feed-panel hidden" style="padding:24px; overflow-y:auto; height:100%;">
+                <h2 style="margin:0 0 8px 0; display:flex; align-items:center; gap:10px;">
+                    <i class="fa-solid fa-clipboard-list"></i> Agent Modification Feed
+                </h2>
+                <div id="agent-chat-id" style="font-size:0.8rem; color:var(--text-muted); margin-bottom:16px;"></div>
+
+                <div class="agent-feed-filter-bar">
+                    <button class="pill-btn active" data-filter="all">All</button>
+                    <button class="pill-btn" data-filter="pending">Pending</button>
+                    <button class="pill-btn" data-filter="accepted">Accepted</button>
+                    <button class="pill-btn" data-filter="denied">Denied</button>
+                    <button class="pill-btn" data-filter="auto-accepted">Auto-accepted</button>
+                </div>
+
+                <div class="agent-feed-action-bar">
+                    <button id="btn-accept-all-pending" class="btn btn-sm" style="background:var(--success-color,#10b981); color:#fff;"><i class="fa-solid fa-check"></i> Accept All Pending</button>
+                    <button id="btn-deny-all-pending" class="btn btn-sm" style="background:var(--danger-color,#ef4444); color:#fff;"><i class="fa-solid fa-xmark"></i> Deny All Pending</button>
+                    <button id="btn-apply-all-accepted" class="btn btn-sm" style="background:var(--primary-color,#6366f1); color:#fff;"><i class="fa-solid fa-check-double"></i> Apply All Accepted</button>
+                    <button id="btn-refresh-proposals" class="btn btn-secondary btn-sm"><i class="fa-solid fa-rotate"></i></button>
+                </div>
+
+                <div id="proposals-list" style="display:flex; flex-direction:column; gap:8px;">
+                    <div class="empty-state" style="padding:40px 0;">
+                        <i class="fa-solid fa-file-circle-plus fa-3x"></i>
+                        <p>No proposals yet. Run the agent to generate suggestions.</p>
+                    </div>
+                </div>
+
+                <details style="margin-top:24px; background:rgba(0,0,0,0.1); padding:12px; border-radius:6px;">
+                    <summary style="cursor:pointer; font-weight:bold;">Backup History</summary>
+                    <div id="feed-backup-list" style="max-height:200px; overflow-y:auto; margin-top:8px;"></div>
+                </details>
+            </div>
+        </main>
+    </div>
+
+    <!-- Modals -->
+    <!-- Settings Modal -->
+    <div id="settings-modal" class="modal">
+        <div class="modal-content glass-panel">
+            <div class="modal-header">
+                <h3>UI Configuration</h3>
+                <button class="close-modal"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>Background Color</label>
+                    <input type="color" id="color-bg" value="#0f111a">
+                </div>
+                <div class="form-group">
+                    <label>Panel Background (Glass)</label>
+                    <input type="color" id="color-panel" value="#1a1c29">
+                </div>
+                <div class="form-group">
+                    <label>Text Color</label>
+                    <input type="color" id="color-text" value="#e2e8f0">
+                </div>
+                <div class="form-group">
+                    <label>Primary Accent</label>
+                    <input type="color" id="color-primary" value="#6366f1">
+                </div>
+                <button id="btn-reset-colors" class="btn btn-secondary mt-4">Reset to Defaults</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Edit Entry Modal -->
+    <div id="edit-entry-modal" class="modal">
+        <div class="modal-content glass-panel" style="width: 95vw; height: 95vh; max-width: none; max-height: none; display: flex; flex-direction: column; overflow: hidden;">
+            <div class="modal-header">
+                <h3>Edit Entry</h3>
+                <div style="display:flex; gap: 12px; align-items:center;">
+                    <button id="btn-save-edit-entry" class="btn btn-primary" style="padding: 6px 16px;">Save Entry</button>
+                    <button class="close-modal"><i class="fa-solid fa-xmark"></i></button>
+                </div>
+            </div>
+            <div class="modal-body" style="overflow-y: auto; padding-right: 12px;">
+                <input type="hidden" id="edit-entry-uid">
+                
+                <div class="form-group">
+                    <label>Title/Comment</label>
+                    <input type="text" id="edit-comment">
+                </div>
+                
+                <div class="form-group">
+                    <label>Folder / Categorization</label>
+                    <select id="edit-entry-folder">
+                        <option value="">-- No Folder (Root) --</option>
+                    </select>
+                </div>
+                
+                <div class="form-group row" style="align-items: flex-start;">
+                    <div class="form-group" style="flex:1;">
+                        <label>Primary Keys (comma separated)</label>
+                        <input type="text" id="edit-keys">
+                    </div>
+                    <div class="form-group" style="flex:1;">
+                        <label>Secondary Keys (comma separated)</label>
+                        <input type="text" id="edit-secondary-keys">
+                    </div>
+                </div>
+                
+                <div class="form-group" style="margin-bottom: 20px;">
+                    <label>Content</label>
+                    <textarea id="edit-content" style="min-height: 55vh; background: rgba(0,0,0,0.3); border: 1px solid var(--panel-border); color: var(--text-color); padding: 8px 12px; border-radius: 6px; font-family: inherit; font-size: 0.95rem; outline: none; resize: vertical; width: 100%;"></textarea>
+                </div>
+                
+                <details open style="margin-bottom: 12px; background: rgba(0,0,0,0.1); padding: 8px; border-radius: 6px;">
+                    <summary style="cursor:pointer; font-weight:bold; margin-bottom: 8px;">Core Settings</summary>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                        <div class="form-group">
+                            <label>Insertion Strategy</label>
+                            <select id="edit-position">
+                                <option value="0" data-role="">↑Char</option>
+                                <option value="1" data-role="">↓Char</option>
+                                <option value="5" data-role="">↑EM</option>
+                                <option value="6" data-role="">↓EM</option>
+                                <option value="2" data-role="">↑AN</option>
+                                <option value="3" data-role="">↓AN</option>
+                                <option value="4" data-role="0">@D ⚙️</option>
+                                <option value="4" data-role="1">@D 👤</option>
+                                <option value="4" data-role="2">@D 🤖</option>
+                                <option value="7" data-role="">➡️ Outlet</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Outlet Name (If Outlet Selected)</label>
+                            <input type="text" id="edit-outlet-name">
+                        </div>
+                        <div class="form-group">
+                            <label>Selective Logic</label>
+                            <select id="edit-logic">
+                                <option value="0">AND ANY</option>
+                                <option value="3">AND ALL</option>
+                                <option value="1">NOT ALL</option>
+                                <option value="2">NOT ANY</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Sort Order</label>
+                            <input type="number" id="edit-order">
+                        </div>
+                        <div class="form-group">
+                            <label>Insertion Depth</label>
+                            <input type="number" id="edit-depth">
+                        </div>
+                        <div class="form-group">
+                            <label>Trigger Probability (%)</label>
+                            <input type="number" id="edit-probability" min="0" max="100">
+                        </div>
+                    </div>
+                    <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 12px;">
+                        <div class="form-group row" style="margin-bottom: 0;">
+                            <input type="checkbox" id="edit-constant">
+                            <label for="edit-constant">Constant</label>
+                        </div>
+                        <div class="form-group row" style="margin-bottom: 0;">
+                            <input type="checkbox" id="edit-vectorized">
+                            <label for="edit-vectorized">Vectorized</label>
+                        </div>
+                        <div class="form-group row" style="margin-bottom: 0;">
+                            <input type="checkbox" id="edit-selective">
+                            <label for="edit-selective">Selective</label>
+                        </div>
+                        <div class="form-group row" style="margin-bottom: 0;">
+                            <input type="checkbox" id="edit-disable">
+                            <label for="edit-disable" style="color:var(--danger-color)">Disabled</label>
+                        </div>
+                        <div class="form-group row" style="margin-bottom: 0;">
+                            <input type="checkbox" id="edit-add-memo">
+                            <label for="edit-add-memo">Add Memo</label>
+                        </div>
+                        <div class="form-group row" style="margin-bottom: 0;">
+                            <input type="checkbox" id="edit-exclude">
+                            <label for="edit-exclude">Exclude Recursion</label>
+                        </div>
+                        <div class="form-group row" style="margin-bottom: 0;">
+                            <input type="checkbox" id="edit-prevent">
+                            <label for="edit-prevent">Prevent Recursion</label>
+                        </div>
+                    </div>
+                </details>
+
+                <details style="margin-bottom: 12px; background: rgba(0,0,0,0.1); padding: 8px; border-radius: 6px;">
+                    <summary style="cursor:pointer; font-weight:bold; margin-bottom: 8px;">Grouping & Timers</summary>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                        <div class="form-group">
+                            <label>Inclusion Group (comma separated)</label>
+                            <input type="text" id="edit-group">
+                        </div>
+                        <div class="form-group">
+                            <label>Group Weight</label>
+                            <input type="number" id="edit-group-weight" value="100">
+                        </div>
+                        <div class="form-group row" style="grid-column: span 2;">
+                            <input type="checkbox" id="edit-group-override">
+                            <label for="edit-group-override">Prioritize Group Override</label>
+                        </div>
+                        <div class="form-group">
+                            <label>Sticky (Turns)</label>
+                            <input type="number" id="edit-sticky" min="0">
+                        </div>
+                        <div class="form-group">
+                            <label>Cooldown (Turns)</label>
+                            <input type="number" id="edit-cooldown" min="0">
+                        </div>
+                        <div class="form-group">
+                            <label>Delay (Turns)</label>
+                            <input type="number" id="edit-delay" min="0">
+                        </div>
+                    </div>
+                </details>
+
+                <details style="margin-bottom: 12px; background: rgba(0,0,0,0.1); padding: 8px; border-radius: 6px;">
+                    <summary style="cursor:pointer; font-weight:bold; margin-bottom: 8px;">Filters & Matching Sources</summary>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;">
+                        <div class="form-group">
+                            <label>Character Filter (comma separated)</label>
+                            <input type="text" id="edit-character-filter">
+                        </div>
+                        <div class="form-group">
+                            <label>Generation Triggers (comma separated: normal, swipe, quiet...)</label>
+                            <input type="text" id="edit-triggers">
+                        </div>
+                        <div class="form-group row" style="grid-column: span 2;">
+                            <input type="checkbox" id="edit-character-exclusion">
+                            <label for="edit-character-exclusion">Exclude Listed Characters</label>
+                        </div>
+                    </div>
+                    <label style="font-weight: bold; font-size: 0.85em; display:block; margin-bottom: 4px;">Additional Matching Sources</label>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                        <div class="form-group row" style="margin-bottom: 0;">
+                            <input type="checkbox" id="edit-match-char-desc">
+                            <label for="edit-match-char-desc">Character Description</label>
+                        </div>
+                        <div class="form-group row" style="margin-bottom: 0;">
+                            <input type="checkbox" id="edit-match-char-pers">
+                            <label for="edit-match-char-pers">Character Personality</label>
+                        </div>
+                        <div class="form-group row" style="margin-bottom: 0;">
+                            <input type="checkbox" id="edit-match-scenario">
+                            <label for="edit-match-scenario">Scenario</label>
+                        </div>
+                        <div class="form-group row" style="margin-bottom: 0;">
+                            <input type="checkbox" id="edit-match-persona">
+                            <label for="edit-match-persona">Persona Description</label>
+                        </div>
+                        <div class="form-group row" style="margin-bottom: 0;">
+                            <input type="checkbox" id="edit-match-char-depth">
+                            <label for="edit-match-char-depth">Character's Note</label>
+                        </div>
+                        <div class="form-group row" style="margin-bottom: 0;">
+                            <input type="checkbox" id="edit-match-creator-notes">
+                            <label for="edit-match-creator-notes">Creator's Notes</label>
+                        </div>
+                    </div>
+                </details>
+
+                <details style="margin-bottom: 16px; background: rgba(0,0,0,0.1); padding: 8px; border-radius: 6px;">
+                    <summary style="cursor:pointer; font-weight:bold; margin-bottom: 8px;">Overrides & Recursion</summary>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;">
+                        <div class="form-group">
+                            <label>Scan Depth Override</label>
+                            <input type="number" id="edit-scan-depth" placeholder="Use Global">
+                        </div>
+                        <div class="form-group">
+                            <label>Recursion Level</label>
+                            <input type="number" id="edit-recursion-level" placeholder="1">
+                        </div>
+                        <div class="form-group">
+                            <label>Case-Sensitive</label>
+                            <select id="edit-case-sensitive">
+                                <option value="null">Use Global</option>
+                                <option value="true">Yes</option>
+                                <option value="false">No</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Whole Words</label>
+                            <select id="edit-whole-words">
+                                <option value="null">Use Global</option>
+                                <option value="true">Yes</option>
+                                <option value="false">No</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Group Scoring</label>
+                            <select id="edit-use-group-scoring">
+                                <option value="null">Use Global</option>
+                                <option value="true">Yes</option>
+                                <option value="false">No</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Automation ID</label>
+                            <input type="text" id="edit-automation-id">
+                        </div>
+                    </div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                        <div class="form-group row" style="margin-bottom: 0;">
+                            <input type="checkbox" id="edit-delay-recursion">
+                            <label for="edit-delay-recursion">Delay until recursion</label>
+                        </div>
+                        <div class="form-group row" style="margin-bottom: 0;">
+                            <input type="checkbox" id="edit-ignore-budget">
+                            <label for="edit-ignore-budget">Ignore Budget</label>
+                        </div>
+                    </div>
+                </details>
+            </div>
+        </div>
+    </div>
+
+    <!-- Batch Options Modal -->
+    <div id="batch-options-modal" class="modal">
+        <div class="modal-content glass-panel" style="width: 650px; max-height: 90vh; display: flex; flex-direction: column;">
+            <div class="modal-header">
+                <h3>Batch Edit Entries</h3>
+                <button class="close-modal"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="modal-body" style="overflow-y: auto; flex: 1;">
+                <p>Selected: <span id="batch-selected-count">0</span> entries</p>
+
+                <details open style="margin-bottom: 12px; background: rgba(0,0,0,0.1); padding: 8px; border-radius: 6px;">
+                    <summary style="cursor:pointer; font-weight:bold; margin-bottom: 8px;">Core Settings</summary>
+                    <div class="form-group row">
+                        <input type="checkbox" id="batch-apply-order">
+                        <label for="batch-apply-order">Order:</label>
+                        <input type="number" id="batch-order-val" value="100">
+                    </div>
+                    <div class="form-group row">
+                        <input type="checkbox" id="batch-apply-strategy">
+                        <label for="batch-apply-strategy">Insertion Strategy:</label>
+                        <select id="batch-strategy-val">
+                            <option value="0" data-role="">↑Char</option>
+                            <option value="1" data-role="">↓Char</option>
+                            <option value="5" data-role="">↑EM</option>
+                            <option value="6" data-role="">↓EM</option>
+                            <option value="2" data-role="">↑AN</option>
+                            <option value="3" data-role="">↓AN</option>
+                            <option value="4" data-role="0">@D ⚙️</option>
+                            <option value="4" data-role="1">@D 👤</option>
+                            <option value="4" data-role="2">@D 🤖</option>
+                            <option value="7" data-role="">➡️ Outlet</option>
+                        </select>
+                    </div>
+                    <div class="form-group row">
+                        <input type="checkbox" id="batch-apply-depth">
+                        <label for="batch-apply-depth">Insertion Depth:</label>
+                        <input type="number" id="batch-depth-val" value="4">
+                    </div>
+                    <div class="form-group row">
+                        <input type="checkbox" id="batch-apply-probability">
+                        <label for="batch-apply-probability">Probability (%):</label>
+                        <input type="number" id="batch-prob-val" value="100" min="0" max="100">
+                    </div>
+                    <div class="form-group row">
+                        <input type="checkbox" id="batch-apply-constant">
+                        <label for="batch-apply-constant">Constant:</label>
+                        <input type="checkbox" id="batch-constant-val">
+                    </div>
+                    <div class="form-group row">
+                        <input type="checkbox" id="batch-apply-vectorized">
+                        <label for="batch-apply-vectorized">Vectorized:</label>
+                        <input type="checkbox" id="batch-vectorized-val">
+                    </div>
+                    <div class="form-group row">
+                        <input type="checkbox" id="batch-apply-selective">
+                        <label for="batch-apply-selective">Selective:</label>
+                        <input type="checkbox" id="batch-selective-val">
+                    </div>
+                    <div class="form-group row">
+                        <input type="checkbox" id="batch-apply-logic">
+                        <label for="batch-apply-logic">Selective Logic:</label>
+                        <select id="batch-logic-val">
+                            <option value="0">AND ANY</option>
+                            <option value="3">AND ALL</option>
+                            <option value="1">NOT ALL</option>
+                            <option value="2">NOT ANY</option>
+                        </select>
+                    </div>
+                    <div class="form-group row">
+                        <input type="checkbox" id="batch-apply-disable">
+                        <label for="batch-apply-disable">Disabled:</label>
+                        <input type="checkbox" id="batch-disable-val">
+                    </div>
+                    <div class="form-group row">
+                        <input type="checkbox" id="batch-apply-add-memo">
+                        <label for="batch-apply-add-memo">Add Memo:</label>
+                        <input type="checkbox" id="batch-add-memo-val">
+                    </div>
+                    <div class="form-group row">
+                        <input type="checkbox" id="batch-apply-exclude-recursion">
+                        <label for="batch-apply-exclude-recursion">Exclude Recursion:</label>
+                        <input type="checkbox" id="batch-exclude-recursion-val">
+                    </div>
+                    <div class="form-group row">
+                        <input type="checkbox" id="batch-apply-prevent-recursion">
+                        <label for="batch-apply-prevent-recursion">Prevent Recursion:</label>
+                        <input type="checkbox" id="batch-prevent-recursion-val">
+                    </div>
+                    <div class="form-group row">
+                        <input type="checkbox" id="batch-apply-outlet-name">
+                        <label for="batch-apply-outlet-name">Outlet Name:</label>
+                        <input type="text" id="batch-outlet-name-val" placeholder="outlet name">
+                    </div>
+                </details>
+
+                <details style="margin-bottom: 12px; background: rgba(0,0,0,0.1); padding: 8px; border-radius: 6px;">
+                    <summary style="cursor:pointer; font-weight:bold; margin-bottom: 8px;">Grouping & Timers</summary>
+                    <div class="form-group row">
+                        <input type="checkbox" id="batch-apply-group">
+                        <label for="batch-apply-group">Inclusion Group:</label>
+                        <input type="text" id="batch-group-val" placeholder="comma separated">
+                    </div>
+                    <div class="form-group row">
+                        <input type="checkbox" id="batch-apply-group-weight">
+                        <label for="batch-apply-group-weight">Group Weight:</label>
+                        <input type="number" id="batch-group-weight-val" value="100">
+                    </div>
+                    <div class="form-group row">
+                        <input type="checkbox" id="batch-apply-group-override">
+                        <label for="batch-apply-group-override">Group Override:</label>
+                        <input type="checkbox" id="batch-group-override-val">
+                    </div>
+                    <div class="form-group row">
+                        <input type="checkbox" id="batch-apply-sticky">
+                        <label for="batch-apply-sticky">Sticky (Turns):</label>
+                        <input type="number" id="batch-sticky-val" value="0" min="0">
+                    </div>
+                    <div class="form-group row">
+                        <input type="checkbox" id="batch-apply-cooldown">
+                        <label for="batch-apply-cooldown">Cooldown (Turns):</label>
+                        <input type="number" id="batch-cooldown-val" value="0" min="0">
+                    </div>
+                    <div class="form-group row">
+                        <input type="checkbox" id="batch-apply-delay">
+                        <label for="batch-apply-delay">Delay (Turns):</label>
+                        <input type="number" id="batch-delay-val" value="0" min="0">
+                    </div>
+                </details>
+
+                <details style="margin-bottom: 12px; background: rgba(0,0,0,0.1); padding: 8px; border-radius: 6px;">
+                    <summary style="cursor:pointer; font-weight:bold; margin-bottom: 8px;">Filters & Matching Sources</summary>
+                    <div class="form-group row">
+                        <input type="checkbox" id="batch-apply-char-filter">
+                        <label for="batch-apply-char-filter">Character Filter:</label>
+                        <input type="text" id="batch-char-filter-val" placeholder="comma separated">
+                    </div>
+                    <div class="form-group row">
+                        <input type="checkbox" id="batch-apply-triggers">
+                        <label for="batch-apply-triggers">Gen Triggers:</label>
+                        <input type="text" id="batch-triggers-val" placeholder="normal, swipe, quiet...">
+                    </div>
+                    <div class="form-group row">
+                        <input type="checkbox" id="batch-apply-char-exclusion">
+                        <label for="batch-apply-char-exclusion">Exclude Listed Characters:</label>
+                        <input type="checkbox" id="batch-char-exclusion-val">
+                    </div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px;">
+                        <div class="form-group row" style="margin-bottom: 0;">
+                            <input type="checkbox" id="batch-apply-match-char-desc">
+                            <label for="batch-apply-match-char-desc" style="font-size:0.85rem;">Match Char Desc</label>
+                            <input type="checkbox" id="batch-match-char-desc-val">
+                        </div>
+                        <div class="form-group row" style="margin-bottom: 0;">
+                            <input type="checkbox" id="batch-apply-match-char-pers">
+                            <label for="batch-apply-match-char-pers" style="font-size:0.85rem;">Match Char Pers</label>
+                            <input type="checkbox" id="batch-match-char-pers-val">
+                        </div>
+                        <div class="form-group row" style="margin-bottom: 0;">
+                            <input type="checkbox" id="batch-apply-match-scenario">
+                            <label for="batch-apply-match-scenario" style="font-size:0.85rem;">Match Scenario</label>
+                            <input type="checkbox" id="batch-match-scenario-val">
+                        </div>
+                        <div class="form-group row" style="margin-bottom: 0;">
+                            <input type="checkbox" id="batch-apply-match-persona">
+                            <label for="batch-apply-match-persona" style="font-size:0.85rem;">Match Persona</label>
+                            <input type="checkbox" id="batch-match-persona-val">
+                        </div>
+                        <div class="form-group row" style="margin-bottom: 0;">
+                            <input type="checkbox" id="batch-apply-match-char-depth">
+                            <label for="batch-apply-match-char-depth" style="font-size:0.85rem;">Match Char Note</label>
+                            <input type="checkbox" id="batch-match-char-depth-val">
+                        </div>
+                        <div class="form-group row" style="margin-bottom: 0;">
+                            <input type="checkbox" id="batch-apply-match-creator-notes">
+                            <label for="batch-apply-match-creator-notes" style="font-size:0.85rem;">Match Creator Notes</label>
+                            <input type="checkbox" id="batch-match-creator-notes-val">
+                        </div>
+                    </div>
+                </details>
+
+                <details style="margin-bottom: 12px; background: rgba(0,0,0,0.1); padding: 8px; border-radius: 6px;">
+                    <summary style="cursor:pointer; font-weight:bold; margin-bottom: 8px;">Overrides & Recursion</summary>
+                    <div class="form-group row">
+                        <input type="checkbox" id="batch-apply-scan-depth">
+                        <label for="batch-apply-scan-depth">Scan Depth Override:</label>
+                        <input type="number" id="batch-scan-depth-val" placeholder="Global">
+                    </div>
+                    <div class="form-group row">
+                        <input type="checkbox" id="batch-apply-recursion-level">
+                        <label for="batch-apply-recursion-level">Recursion Level:</label>
+                        <input type="number" id="batch-recursion-level-val" value="1">
+                    </div>
+                    <div class="form-group row">
+                        <input type="checkbox" id="batch-apply-case-sensitive">
+                        <label for="batch-apply-case-sensitive">Case-Sensitive:</label>
+                        <select id="batch-case-sensitive-val">
+                            <option value="null">Use Global</option>
+                            <option value="true">Yes</option>
+                            <option value="false">No</option>
+                        </select>
+                    </div>
+                    <div class="form-group row">
+                        <input type="checkbox" id="batch-apply-whole-words">
+                        <label for="batch-apply-whole-words">Whole Words:</label>
+                        <select id="batch-whole-words-val">
+                            <option value="null">Use Global</option>
+                            <option value="true">Yes</option>
+                            <option value="false">No</option>
+                        </select>
+                    </div>
+                    <div class="form-group row">
+                        <input type="checkbox" id="batch-apply-group-scoring">
+                        <label for="batch-apply-group-scoring">Group Scoring:</label>
+                        <select id="batch-group-scoring-val">
+                            <option value="null">Use Global</option>
+                            <option value="true">Yes</option>
+                            <option value="false">No</option>
+                        </select>
+                    </div>
+                    <div class="form-group row">
+                        <input type="checkbox" id="batch-apply-automation-id">
+                        <label for="batch-apply-automation-id">Automation ID:</label>
+                        <input type="text" id="batch-automation-id-val">
+                    </div>
+                    <div class="form-group row">
+                        <input type="checkbox" id="batch-apply-delay-recursion">
+                        <label for="batch-apply-delay-recursion">Delay Until Recursion:</label>
+                        <input type="checkbox" id="batch-delay-recursion-val">
+                    </div>
+                    <div class="form-group row">
+                        <input type="checkbox" id="batch-apply-ignore-budget">
+                        <label for="batch-apply-ignore-budget">Ignore Budget:</label>
+                        <input type="checkbox" id="batch-ignore-budget-val">
+                    </div>
+                </details>
+
+                <div class="form-group" style="margin-bottom: 16px;">
+                    <div class="form-group row" style="margin-bottom: 8px;">
+                        <input type="checkbox" id="batch-apply-folder">
+                        <label for="batch-apply-folder">Move to Folder:</label>
+                    </div>
+                    <div class="searchable-folder-picker">
+                        <input type="hidden" id="batch-folder-val" value="">
+                        <div class="folder-picker-search-wrapper">
+                            <i class="fa-solid fa-search"></i>
+                            <input type="text" id="batch-folder-search" placeholder="Search folders..." class="folder-picker-search">
+                        </div>
+                        <div id="batch-folder-list" class="folder-picker-list"></div>
+                    </div>
+                </div>
+
+                <div class="modal-actions">
+                    <button id="btn-apply-batch" class="btn btn-primary">Apply</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Unified Add Item Modal -->
+    <div id="add-item-modal" class="modal">
+        <!-- Floating Eye Toggle Button -->
+        <button id="btn-peek-modal" title="Peek Behind" style="background: var(--hover-bg); border: 1px solid var(--panel-border); color: var(--text-color); width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: all var(--transition-speed);"><i class="fa-solid fa-eye"></i></button>
+
+        <div class="modal-content glass-panel" style="width: 90vw; height: 90vh; max-width: 1200px; display: flex; flex-direction: column; overflow: hidden; position: relative;">
+            <div class="modal-header" style="padding-left: 60px; display: flex; align-items: center; justify-content: space-between;">
+                <h3 id="add-item-title" style="margin: 0; white-space: nowrap;">Add Item</h3>
+                <div class="tab-header" style="display: flex; gap: 16px; margin-left: 24px; flex: 1;">
+                    <div class="tab-btn active" data-tab="quick" style="cursor: pointer; padding: 6px 12px; border-bottom: 2px solid var(--primary-color); font-weight: 600; font-size: 0.95rem;">Quick Creation</div>
+                    <div class="tab-btn" data-tab="advanced" style="cursor: pointer; padding: 6px 12px; font-weight: 600; color: var(--text-muted); font-size: 0.95rem;">Advanced Creation</div>
+                    <div class="tab-btn" data-tab="xml" style="cursor: pointer; padding: 6px 12px; font-weight: 600; color: var(--text-muted); font-size: 0.95rem;">XML Creation</div>
+                </div>
+                <button class="close-modal"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            
+            <div class="modal-body" style="flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 16px;">
+                <!-- Target Folder Selection (Global to both tabs with Searchable Picker) -->
+                <div class="form-group" style="margin-bottom: 12px;">
+                    <label style="font-weight: 600; margin-bottom: 6px;">Target Folder / Path:</label>
+                    <div class="searchable-folder-picker">
+                        <input type="hidden" id="add-item-parent" value="">
+                        <div class="folder-picker-search-wrapper">
+                            <i class="fa-solid fa-search"></i>
+                            <input type="text" id="add-item-parent-search" placeholder="Search target folders..." class="folder-picker-search">
+                        </div>
+                        <div id="add-item-parent-list" class="folder-picker-list" style="max-height: 120px;"></div>
+                    </div>
+                </div>
+
+                <!-- QUICK CREATION TAB -->
+                <div id="quick-creation-tab" class="tab-content active" style="display: flex; flex-direction: column; gap: 14px;">
+                    <div class="form-group row" style="margin-bottom: 4px; gap: 16px;">
+                        <label style="font-weight: 600;">Item Type:</label>
+                        <div style="display: flex; gap: 20px;">
+                            <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;"><input type="radio" name="quick-item-type" value="entry" checked> Entry</label>
+                            <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;"><input type="radio" name="quick-item-type" value="folder"> Folder / Group</label>
+                        </div>
+                    </div>
+
+                    <!-- Quick Entry options -->
+                    <div id="quick-entry-fields" style="display: flex; flex-direction: column; gap: 12px;">
+                        <div class="form-group">
+                            <label>Title(s) / Comments (One per line for multiple entries)</label>
+                            <textarea id="quick-entry-comments" placeholder="e.g.&#10;Hero Description&#10;Villain Background" style="background: rgba(0,0,0,0.3); border: 1px solid var(--panel-border); color: var(--text-color); padding: 8px 12px; border-radius: 6px; font-family: inherit; font-size: 0.95rem; outline: none; resize: vertical; min-height: 80px;"></textarea>
+                        </div>
+                        <div class="form-group">
+                            <label>Number of Entries to Create (Only used if Titles list is empty)</label>
+                            <input type="number" id="quick-entry-count" value="1" min="1" max="50">
+                        </div>
+                        <div class="form-group">
+                            <label>Primary Keys (comma separated, applies to all created entries)</label>
+                            <input type="text" id="quick-entry-keys" placeholder="e.g. hero, protagonist">
+                        </div>
+                        
+                        <details style="background: rgba(0,0,0,0.1); padding: 10px; border-radius: 6px; margin-top: 6px;">
+                            <summary style="cursor:pointer; font-weight:bold; font-size: 0.9rem;">Default Entry Settings</summary>
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 10px;">
+                                <div class="form-group">
+                                    <label>Initial Order</label>
+                                    <input type="number" id="quick-entry-order" value="100">
+                                </div>
+                                <div class="form-group">
+                                    <label>Insertion Strategy</label>
+                                    <select id="quick-entry-position">
+                                        <option value="0" data-role="">↑Char</option>
+                                        <option value="1" data-role="">↓Char</option>
+                                        <option value="5" data-role="">↑EM</option>
+                                        <option value="6" data-role="">↓EM</option>
+                                        <option value="2" data-role="">↑AN</option>
+                                        <option value="3" data-role="">↓AN</option>
+                                        <option value="4" data-role="0">@D ⚙️</option>
+                                        <option value="4" data-role="1">@D 👤</option>
+                                        <option value="4" data-role="2">@D 🤖</option>
+                                        <option value="7" data-role="">➡️ Outlet</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label>Insertion Depth</label>
+                                    <input type="number" id="quick-entry-depth" value="4">
+                                </div>
+                                <div class="form-group">
+                                    <label>Trigger Probability (%)</label>
+                                    <input type="number" id="quick-entry-probability" value="100" min="0" max="100">
+                                </div>
+                            </div>
+                            <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; margin-top: 12px;">
+                                <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size: 0.85rem;"><input type="checkbox" id="quick-entry-constant"> Constant</label>
+                                <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size: 0.85rem;"><input type="checkbox" id="quick-entry-vectorized"> Vectorized</label>
+                                <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size: 0.85rem;"><input type="checkbox" id="quick-entry-selective"> Selective</label>
+                                <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size: 0.85rem;"><input type="checkbox" id="quick-entry-disable"> Disabled</label>
+                                <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size: 0.85rem;"><input type="checkbox" id="quick-entry-exclude"> Exclude Recursion</label>
+                                <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size: 0.85rem;"><input type="checkbox" id="quick-entry-prevent"> Prevent Recursion</label>
+                            </div>
+                        </details>
+                    </div>
+
+                    <!-- Quick Folder options -->
+                    <div id="quick-folder-fields" style="display: none; flex-direction: column; gap: 12px;">
+                        <div class="form-group">
+                            <label>Folder Name(s) (One per line for multiple folders)</label>
+                            <textarea id="quick-folder-names" placeholder="e.g.&#10;Factions&#10;Cities" style="background: rgba(0,0,0,0.3); border: 1px solid var(--panel-border); color: var(--text-color); padding: 8px 12px; border-radius: 6px; font-family: inherit; font-size: 0.95rem; outline: none; resize: vertical; min-height: 100px;"></textarea>
+                        </div>
+                        <div class="form-group">
+                            <label>Initial Order</label>
+                            <input type="number" id="quick-folder-order" value="100">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ADVANCED CREATION TAB -->
+                <div id="advanced-creation-tab" class="tab-content" style="display: none; flex-direction: column; gap: 16px; flex: 1;">
+                    <!-- Section 1: Spreadsheet definitions -->
+                    <div class="adv-section active" id="adv-section-defs" style="border: 1px solid var(--panel-border); border-radius: var(--border-radius); background: rgba(0,0,0,0.15); display: flex; flex-direction: column; overflow: hidden;">
+                        <div class="adv-section-header" style="padding: 10px 16px; background: rgba(255,255,255,0.02); display: flex; justify-content: space-between; align-items: center; cursor: pointer; border-bottom: 1px solid var(--panel-border); user-select: none;">
+                            <span style="font-weight: 600; font-size: 0.95rem;"><i class="fa-solid fa-table" style="margin-right: 8px; color: var(--primary-color);"></i> 1. Define Entries (Excel-like Grid)</span>
+                            <i class="fa-solid fa-chevron-down adv-section-chevron" style="transition: transform 0.2s;"></i>
+                        </div>
+                        <div class="adv-section-body" style="padding: 12px; overflow-x: auto; max-height: 250px; overflow-y: auto;">
+                            <table class="excel-table" style="width: 100%; border-collapse: collapse; min-width: 800px; font-size: 0.9rem;">
+                                <thead>
+                                    <tr style="border-bottom: 2px solid var(--panel-border); text-align: left;">
+                                        <th style="padding: 6px; width: 35px; color: var(--text-muted); font-size: 0.8rem;">#</th>
+                                        <th style="padding: 6px; color: var(--text-muted); font-size: 0.8rem; width: 20%;">Entry Name / Comment</th>
+                                        <th style="padding: 6px; color: var(--text-muted); font-size: 0.8rem; width: 20%;">Primary Keys (comma sep)</th>
+                                        <th style="padding: 6px; color: var(--text-muted); font-size: 0.8rem; width: 20%;">Secondary Keys (comma sep)</th>
+                                        <th style="padding: 6px; color: var(--text-muted); font-size: 0.8rem; width: 40%;">Content (Single line text/paste)</th>
+                                        <th style="padding: 6px; width: 40px;"></th>
+                                    </tr>
+                                </thead>
+                                <tbody id="adv-excel-tbody">
+                                    <!-- Rows will be injected here -->
+                                </tbody>
+                            </table>
+                            <button id="btn-adv-add-row" class="btn btn-secondary" style="margin-top: 10px; padding: 4px 10px; font-size: 0.8rem;"><i class="fa-solid fa-plus" style="margin-right: 4px;"></i> Add Row</button>
+                        </div>
+                    </div>
+
+                    <!-- Section 2: Settings customization -->
+                    <div class="adv-section active" id="adv-section-settings" style="border: 1px solid var(--panel-border); border-radius: var(--border-radius); background: rgba(0,0,0,0.15); display: flex; flex-direction: column; overflow: hidden;">
+                        <div class="adv-section-header" style="padding: 10px 16px; background: rgba(255,255,255,0.02); display: flex; justify-content: space-between; align-items: center; cursor: pointer; border-bottom: 1px solid var(--panel-border); user-select: none;">
+                            <div style="display: flex; align-items: center; gap: 8px;">
+                                <span style="font-weight: 600; font-size: 0.95rem;"><i class="fa-solid fa-sliders" style="margin-right: 8px; color: var(--primary-color);"></i> 2. Entry Settings Configuration</span>
+                                <div class="settings-view-tabs" style="display: flex; gap: 8px; margin-left: 20px; font-size: 0.8rem; background: rgba(0,0,0,0.2); padding: 3px; border-radius: 6px;">
+                                    <div class="settings-tab-btn active" data-sview="general" style="cursor: pointer; padding: 3px 8px; border-radius: 4px; transition: all 0.2s;">General View</div>
+                                    <div class="settings-tab-btn" data-sview="individual" style="cursor: pointer; padding: 3px 8px; color: var(--text-muted); border-radius: 4px; transition: all 0.2s;">Individual View</div>
+                                </div>
+                            </div>
+                            <i class="fa-solid fa-chevron-down adv-section-chevron" style="transition: transform 0.2s;"></i>
+                        </div>
+                        
+                        <div class="adv-section-body" style="padding: 12px; display: flex; flex-direction: column; gap: 12px;">
+                            <!-- General View settings panel -->
+                            <div id="adv-settings-general" class="settings-panel active" style="display: flex; flex-direction: column; gap: 10px;">
+                                <div style="font-size: 0.8rem; color: var(--text-muted);">Check parameters to override them globally for all created items. Unchecked parameters will use defaults.</div>
+                                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                                    <div class="form-group row" style="margin-bottom: 0; gap: 8px;">
+                                        <input type="checkbox" id="g-apply-order" checked style="width: 16px; height: 16px;">
+                                        <label for="g-apply-order" style="min-width: 100px; font-size: 0.85rem;">Order:</label>
+                                        <input type="number" id="g-order" value="100" style="flex:1; padding: 4px 8px; font-size: 0.85rem;">
+                                    </div>
+                                    <div class="form-group row" style="margin-bottom: 0; gap: 8px;">
+                                        <input type="checkbox" id="g-apply-position" style="width: 16px; height: 16px;">
+                                        <label for="g-apply-position" style="min-width: 100px; font-size: 0.85rem;">Strategy:</label>
+                                        <select id="g-position" style="flex:1; padding: 4px 8px; font-size: 0.85rem;">
+                                            <option value="0" data-role="">↑Char</option>
+                                            <option value="1" data-role="">↓Char</option>
+                                            <option value="5" data-role="">↑EM</option>
+                                            <option value="6" data-role="">↓EM</option>
+                                            <option value="2" data-role="">↑AN</option>
+                                            <option value="3" data-role="">↓AN</option>
+                                            <option value="4" data-role="0">@D ⚙️</option>
+                                            <option value="4" data-role="1">@D 👤</option>
+                                            <option value="4" data-role="2">@D 🤖</option>
+                                            <option value="7" data-role="">➡️ Outlet</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group row" style="margin-bottom: 0; gap: 8px;">
+                                        <input type="checkbox" id="g-apply-depth" style="width: 16px; height: 16px;">
+                                        <label for="g-apply-depth" style="min-width: 100px; font-size: 0.85rem;">Depth:</label>
+                                        <input type="number" id="g-depth" value="4" style="flex:1; padding: 4px 8px; font-size: 0.85rem;">
+                                    </div>
+                                    <div class="form-group row" style="margin-bottom: 0; gap: 8px;">
+                                        <input type="checkbox" id="g-apply-probability" style="width: 16px; height: 16px;">
+                                        <label for="g-apply-probability" style="min-width: 100px; font-size: 0.85rem;">Probability:</label>
+                                        <input type="number" id="g-probability" value="100" min="0" max="100" style="flex:1; padding: 4px 8px; font-size: 0.85rem;">
+                                    </div>
+                                </div>
+                                <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; margin-top: 6px; padding-top: 8px; border-top: 1px dashed var(--panel-border);">
+                                    <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:0.8rem;"><input type="checkbox" id="g-constant"> Constant</label>
+                                    <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:0.8rem;"><input type="checkbox" id="g-vectorized"> Vectorized</label>
+                                    <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:0.8rem;"><input type="checkbox" id="g-selective"> Selective</label>
+                                    <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:0.8rem;"><input type="checkbox" id="g-disable"> Disabled</label>
+                                    <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:0.8rem;"><input type="checkbox" id="g-exclude"> Exclude Recursion</label>
+                                    <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:0.8rem;"><input type="checkbox" id="g-prevent"> Prevent Recursion</label>
+                                </div>
+                            </div>
+
+                            <!-- Individual View settings panel -->
+                            <div id="adv-settings-individual" class="settings-panel" style="display: none; gap: 12px; height: 200px;">
+                                <div style="display: flex; gap: 12px; width: 100%; height: 100%;">
+                                    <!-- Sidebar list of variables -->
+                                    <div id="ind-variables-list" style="width: 220px; border: 1px solid var(--panel-border); border-radius: 6px; overflow-y: auto; padding: 4px; display: flex; flex-direction: column; gap: 4px; background: rgba(0,0,0,0.15);">
+                                        <!-- Interactive items generated dynamically -->
+                                    </div>
+                                    <!-- Settings form for selected variables -->
+                                    <div id="ind-form-container" style="flex: 1; padding: 10px; border: 1px solid var(--panel-border); border-radius: 6px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; background: rgba(0,0,0,0.1);">
+                                        <div id="ind-form-placeholder" style="color: var(--text-muted); display:flex; align-items:center; justify-content:center; height: 100%; font-style:italic; font-size: 0.85rem;">Select at least one entry from the list on the left.</div>
+                                        <div id="ind-form-fields" style="display: none; flex-direction: column; gap: 8px; width: 100%;">
+                                            <div style="font-weight: 600; font-size: 0.85rem; color: var(--primary-color);" id="ind-selection-label">Editing 1 entry</div>
+                                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                                                <div class="form-group" style="margin-bottom: 0; gap: 2px;">
+                                                    <label style="font-size: 0.75rem;">Order</label>
+                                                    <input type="number" id="ind-order" value="100" style="padding: 4px 6px; font-size: 0.8rem;">
+                                                </div>
+                                                <div class="form-group" style="margin-bottom: 0; gap: 2px;">
+                                                    <label style="font-size: 0.75rem;">Strategy</label>
+                                                    <select id="ind-position" style="padding: 4px 6px; font-size: 0.8rem;">
+                                                        <option value="0" data-role="">↑Char</option>
+                                                        <option value="1" data-role="">↓Char</option>
+                                                        <option value="5" data-role="">↑EM</option>
+                                                        <option value="6" data-role="">↓EM</option>
+                                                        <option value="2" data-role="">↑AN</option>
+                                                        <option value="3" data-role="">↓AN</option>
+                                                        <option value="4" data-role="0">@D ⚙️</option>
+                                                        <option value="4" data-role="1">@D 👤</option>
+                                                        <option value="4" data-role="2">@D 🤖</option>
+                                                        <option value="7" data-role="">➡️ Outlet</option>
+                                                    </select>
+                                                </div>
+                                                <div class="form-group" style="margin-bottom: 0; gap: 2px;">
+                                                    <label style="font-size: 0.75rem;">Depth</label>
+                                                    <input type="number" id="ind-depth" value="4" style="padding: 4px 6px; font-size: 0.8rem;">
+                                                </div>
+                                                <div class="form-group" style="margin-bottom: 0; gap: 2px;">
+                                                    <label style="font-size: 0.75rem;">Probability (%)</label>
+                                                    <input type="number" id="ind-probability" value="100" min="0" max="100" style="padding: 4px 6px; font-size: 0.8rem;">
+                                                </div>
+                                            </div>
+                                            <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 6px; margin-top: 4px; padding-top: 6px; border-top: 1px dashed var(--panel-border);">
+                                                <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:0.75rem;"><input type="checkbox" id="ind-constant"> Constant</label>
+                                                <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:0.75rem;"><input type="checkbox" id="ind-vectorized"> Vectorized</label>
+                                                <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:0.75rem;"><input type="checkbox" id="ind-selective"> Selective</label>
+                                                <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:0.75rem;"><input type="checkbox" id="ind-disable"> Disabled</label>
+                                                <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:0.75rem;"><input type="checkbox" id="ind-exclude"> Exclude Recursion</label>
+                                                <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:0.75rem;"><input type="checkbox" id="ind-prevent"> Prevent Recursion</label>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            <!-- XML CREATION TAB -->
+                <div id="xml-creation-tab" class="tab-content" style="display: none; flex-direction: column; gap: 16px; flex: 1;">
+                    <!-- Section 1: XML Input -->
+                    <div class="adv-section active" id="xml-section-input" style="border: 1px solid var(--panel-border); border-radius: var(--border-radius); background: rgba(0,0,0,0.15); display: flex; flex-direction: column; overflow: hidden; flex: 1;">
+                        <div class="adv-section-header" style="padding: 10px 16px; background: rgba(255,255,255,0.02); display: flex; justify-content: space-between; align-items: center; cursor: pointer; border-bottom: 1px solid var(--panel-border); user-select: none;">
+                            <span style="font-weight: 600; font-size: 0.95rem;"><i class="fa-solid fa-code" style="margin-right: 8px; color: var(--primary-color);"></i> Paste XML-Formatted Entries</span>
+                            <i class="fa-solid fa-chevron-down adv-section-chevron" style="transition: transform 0.2s;"></i>
+                        </div>
+                        <div class="adv-section-body" style="padding: 12px; flex: 1; display: flex; flex-direction: column;">
+                            <textarea id="xml-input" placeholder='&lt;Title&gt;Entry Name&lt;/Title&gt;
+&lt;Key&gt;key1, key2&lt;/Key&gt;
+&lt;Content&gt;Entry content goes here...&lt;/Content&gt;
+
+&lt;Title&gt;Another Entry&lt;/Title&gt;
+&lt;Key&gt;foo, bar&lt;/Key&gt;
+&lt;Secondary_keys&gt;sec1&lt;/Secondary_keys&gt;
+&lt;Constant&gt;true&lt;/Constant&gt;
+&lt;Content&gt;Different content.&lt;/Content&gt;' style="min-height: 280px; flex: 1; background: rgba(0,0,0,0.3); border: 1px solid var(--panel-border); color: var(--text-color); padding: 12px; border-radius: 6px; font-family: 'Consolas', 'Courier New', monospace; font-size: 0.9rem; outline: none; resize: vertical; white-space: pre-wrap; line-height: 1.5;"></textarea>
+                        </div>
+                    </div>
+
+                    <!-- Section 2: Default Settings -->
+                    <div class="adv-section active" id="xml-section-settings" style="border: 1px solid var(--panel-border); border-radius: var(--border-radius); background: rgba(0,0,0,0.15); display: flex; flex-direction: column; overflow: hidden;">
+                        <div class="adv-section-header" style="padding: 10px 16px; background: rgba(255,255,255,0.02); display: flex; justify-content: space-between; align-items: center; cursor: pointer; border-bottom: 1px solid var(--panel-border); user-select: none;">
+                            <span style="font-weight: 600; font-size: 0.95rem;"><i class="fa-solid fa-sliders" style="margin-right: 8px; color: var(--primary-color);"></i> Default Entry Settings (used when no XML override is present)</span>
+                            <i class="fa-solid fa-chevron-down adv-section-chevron" style="transition: transform 0.2s;"></i>
+                        </div>
+                        <div class="adv-section-body" style="padding: 12px; display: flex; flex-direction: column; gap: 10px;">
+                            <div style="font-size: 0.8rem; color: var(--text-muted);">Check a parameter to use its value as a default when no XML override tag is provided. Unchecked parameters will use SillyTavern's system defaults.</div>
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                                <div class="form-group row" style="margin-bottom: 0; gap: 8px;">
+                                    <input type="checkbox" id="xml-apply-order" checked style="width: 16px; height: 16px;">
+                                    <label for="xml-apply-order" style="min-width: 100px; font-size: 0.85rem;">Order:</label>
+                                    <input type="number" id="xml-order" value="100" style="flex:1; padding: 4px 8px; font-size: 0.85rem;">
+                                </div>
+                                <div class="form-group row" style="margin-bottom: 0; gap: 8px;">
+                                    <input type="checkbox" id="xml-apply-position" style="width: 16px; height: 16px;">
+                                    <label for="xml-apply-position" style="min-width: 100px; font-size: 0.85rem;">Strategy:</label>
+                                    <select id="xml-position" style="flex:1; padding: 4px 8px; font-size: 0.85rem;">
+                                        <option value="0" data-role="">↑Char</option>
+                                        <option value="1" data-role="">↓Char</option>
+                                        <option value="5" data-role="">↑EM</option>
+                                        <option value="6" data-role="">↓EM</option>
+                                        <option value="2" data-role="">↑AN</option>
+                                        <option value="3" data-role="">↓AN</option>
+                                        <option value="4" data-role="0">@D ⚙️</option>
+                                        <option value="4" data-role="1">@D 👤</option>
+                                        <option value="4" data-role="2">@D 🤖</option>
+                                        <option value="7" data-role="">➡️ Outlet</option>
+                                    </select>
+                                </div>
+                                <div class="form-group row" style="margin-bottom: 0; gap: 8px;">
+                                    <input type="checkbox" id="xml-apply-depth" style="width: 16px; height: 16px;">
+                                    <label for="xml-apply-depth" style="min-width: 100px; font-size: 0.85rem;">Depth:</label>
+                                    <input type="number" id="xml-depth" value="4" style="flex:1; padding: 4px 8px; font-size: 0.85rem;">
+                                </div>
+                                <div class="form-group row" style="margin-bottom: 0; gap: 8px;">
+                                    <input type="checkbox" id="xml-apply-probability" style="width: 16px; height: 16px;">
+                                    <label for="xml-apply-probability" style="min-width: 100px; font-size: 0.85rem;">Probability:</label>
+                                    <input type="number" id="xml-probability" value="100" min="0" max="100" style="flex:1; padding: 4px 8px; font-size: 0.85rem;">
+                                </div>
+                            </div>
+                            <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; margin-top: 6px; padding-top: 8px; border-top: 1px dashed var(--panel-border);">
+                                <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:0.8rem;"><input type="checkbox" id="xml-constant"> Constant</label>
+                                <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:0.8rem;"><input type="checkbox" id="xml-vectorized"> Vectorized</label>
+                                <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:0.8rem;"><input type="checkbox" id="xml-selective"> Selective</label>
+                                <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:0.8rem;"><input type="checkbox" id="xml-disable"> Disabled</label>
+                                <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:0.8rem;"><input type="checkbox" id="xml-exclude"> Exclude Recursion</label>
+                                <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:0.8rem;"><input type="checkbox" id="xml-prevent"> Prevent Recursion</label>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="modal-footer" style="padding: 12px 20px; border-top: 1px solid var(--panel-border); display: flex; justify-content: space-between; gap: 12px; background: rgba(255,255,255,0.02);">
+                <div style="display: flex; gap: 12px;">
+                    <button id="btn-copy-xml-template" class="btn btn-secondary" style="display: none;">Copy XML Template</button>
+                </div>
+                <div style="display: flex; gap: 12px;">
+                    <button id="btn-add-item-cancel" class="btn btn-secondary">Cancel</button>
+                    <button id="btn-add-item-create" class="btn btn-primary" style="padding: 6px 20px;">Create Items</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="xml-copy-toast" class="toast-notification">Template copied to clipboard!</div>
+
+    <script src="app.js?v=2"></script>
+    <script src="agent-prompts.js?v=2"></script>
+    <script src="agent-tools.js?v=2"></script>
+    <script src="agent-core.js?v=2"></script>
+    <script src="agent-backup.js?v=2"></script>
+    <script src="agent-ui.js?v=2"></script>
+</body>
+</html>

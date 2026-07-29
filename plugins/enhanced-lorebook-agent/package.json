@@ -1,0 +1,9 @@
+{
+    "name": "enhanced-lorebook-agent",
+    "version": "1.1.0",
+    "description": "Server backend for ST-EnhancedLorebook agent: API key storage, proposals, backups, and LLM proxy.",
+    "main": "index.js",
+    "type": "module",
+    "author": "SamYTTK",
+    "license": "AGPL-3.0"
+}

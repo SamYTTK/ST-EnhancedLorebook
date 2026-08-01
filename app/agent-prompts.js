@@ -59,6 +59,20 @@ const EL_TOOL_DEFINITIONS = Object.freeze([
         },
     },
     {
+        name: 'get_feasibility_report',
+        description: 'Returns a coverage report for a lorebook: total entry count, a list of all entry keys, and single-word topics mapped to entry UIDs. Use before proposing new entries to avoid duplicates and understand what is already documented.',
+        parameters: {
+            type: 'object',
+            properties: {
+                lorebookName: {
+                    type: 'string',
+                    description: 'The name of the lorebook to analyze.',
+                },
+            },
+            required: ['lorebookName'],
+        },
+    },
+    {
         name: 'propose_create_entry',
         description: 'Propose creating a new lorebook entry. All changes go through a proposal + approval workflow.',
         parameters: {
@@ -147,12 +161,12 @@ const EL_TOOL_DEFINITIONS = Object.freeze([
     },
 ]);
 
-function EL_getAgentSystemPrompt(researchSources) {
+function EL_getAgentSystemPrompt(researchSources, taskDescription, customInstructions, multiTurn) {
     const sources = Array.isArray(researchSources) && researchSources.length > 0
         ? researchSources.join(', ')
         : 'none (research is disabled)';
 
-    return `You are a "Lorebook Manager" AI assistant integrated into SillyTavern.
+    let prompt = `You are a "Lorebook Manager" AI assistant integrated into SillyTavern.
 
 ## Your Role
 Your purpose is to help the user maintain and enhance their lorebook (also called World Info). Lorebook entries are pieces of structured information (character details, locations, items, events, lore facts) that are injected into the LLM prompt when relevant keywords are triggered.
@@ -160,6 +174,7 @@ Your purpose is to help the user maintain and enhance their lorebook (also calle
 ## What You Can Do
 - View the active lorebook contents and entry details
 - View the recent chat history between the user and the AI character
+- Generate feasibility reports on existing entries to check coverage and avoid duplicates
 - Propose creating new lorebook entries
 - Propose editing existing lorebook entries
 - Propose deleting lorebook entries
@@ -182,9 +197,23 @@ Your purpose is to help the user maintain and enhance their lorebook (also calle
 - If you propose deleting an entry, explain why it's no longer relevant
 - You cannot directly apply changes — all modifications go through the proposal + approval workflow
 - Respect all permission settings configured by the user`;
+
+    if (taskDescription) {
+        prompt += `\n\n## Focus Area\n${taskDescription}`;
+    }
+
+    if (customInstructions) {
+        prompt += `\n\n## Additional Instructions\n${customInstructions}`;
+    }
+
+    if (multiTurn && multiTurn.enabled) {
+        prompt += `\n\n## Multi-Turn Mode\nYou operate iteratively. You may call tools one round at a time. After each round you receive the tool results, then decide whether to call more tools or finish. When you have everything you need, respond with ONLY an empty JSON array: []. Do not repeat actions you have already completed successfully.`;
+    }
+
+    return prompt;
 }
 
-function EL_getAnalysisPrompt(chatMessages, lorebookSummary, settings) {
+function EL_getAnalysisPrompt(chatMessages, lorebookSummary, settings, taskDescription, injectedContextBlock) {
     const mode = settings?.mode === 'periodic' ? `periodic (every ${settings?.periodicInterval || 10} messages)` : 'manual';
     const chatBlock = Array.isArray(chatMessages) && chatMessages.length > 0
         ? chatMessages.map(m => `[${m.role}] ${m.name || ''}: ${m.content}`).join('\n')
@@ -207,7 +236,7 @@ ${chatBlock}
 ## Current Active Lorebook(s)
 ${lorebookBlock}
 
-## Task
+${injectedContextBlock ? `## Injected Context (always available)\n${injectedContextBlock}\n\n` : ''}## Task
 Based on the chat history and the current lorebook contents, determine if any lorebook entries need to be created, modified, or deleted.
 
 Consider:
@@ -225,7 +254,7 @@ Avoid:
 - Creating entries for obvious or common knowledge that doesn't need documentation
 - Overwriting user's carefully crafted entries without strong justification
 
-## Output Format
+${taskDescription ? `## Focus\n${taskDescription}\n\n` : ''}## Output Format
 Respond with ONLY a JSON array of tool calls. Do not include any other text, explanation, or markdown formatting.
 
 Each tool call must follow this structure:
@@ -236,7 +265,7 @@ Each tool call must follow this structure:
     }
 ]
 
-Valid tool names: view_active_lorebooks, view_lorebook_detail, view_chat_history, view_entry, propose_create_entry, propose_edit_entry, propose_delete_entry, research
+Valid tool names: view_active_lorebooks, view_lorebook_detail, view_chat_history, view_entry, get_feasibility_report, propose_create_entry, propose_edit_entry, propose_delete_entry, research
 
 If no changes are needed, respond with an empty array: []`;
 }

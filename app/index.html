@@ -51,13 +51,15 @@
                     <h3>Agent</h3>
                 </div>
                 <div class="list-container">
-                    <div id="nav-agent-config" class="list-item agent-sidebar-item" style="cursor:pointer;">
-                        <i class="fa-solid fa-robot"></i><span>Agent Config</span>
+                    <div id="nav-agent-dashboard" class="list-item agent-sidebar-item" style="cursor:pointer;">
+                        <i class="fa-solid fa-robot"></i><span>Dashboard</span>
                     </div>
                     <div id="nav-agent-feed" class="list-item agent-sidebar-item" style="cursor:pointer;">
-                        <i class="fa-solid fa-clipboard-list"></i><span>Agent Feed</span>
+                        <i class="fa-solid fa-clipboard-list"></i><span>Feed</span>
                         <span class="badge-count" id="agent-pending-badge" style="display:none;">0</span>
                     </div>
+                    <div class="sidebar-section-label" style="font-size:0.75rem; color:var(--text-muted); padding:8px 12px 2px; letter-spacing:0.5px; text-transform:uppercase;">My Agents</div>
+                    <div id="agent-sidebar-list" style="display:flex; flex-direction:column;"></div>
                 </div>
             </div>
         </aside>
@@ -95,17 +97,75 @@
                 </div>
             </div>
 
+            <!-- Agent Dashboard Panel -->
+            <div id="agent-dashboard-panel" class="agent-dashboard-panel hidden" style="padding:24px; overflow-y:auto; height:100%;">
+                <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:20px;">
+                    <h2 style="margin:0; display:flex; align-items:center; gap:10px;"><i class="fa-solid fa-robot"></i> Agent Dashboard</h2>
+                    <button id="btn-create-agent" class="btn btn-primary" style="padding:8px 16px; font-size:0.9rem;"><i class="fa-solid fa-plus"></i> Create Agent</button>
+                </div>
+                <div id="agent-card-grid" class="agent-card-grid" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:16px;">
+                    <!-- Agent cards injected here -->
+                </div>
+                <div id="agent-dashboard-empty" class="empty-state" style="display:none; padding:60px 0;">
+                    <i class="fa-solid fa-robot fa-3x"></i>
+                    <p>No agents yet. Create your first agent to get started.</p>
+                </div>
+            </div>
+
             <!-- Agent Config Panel -->
             <div id="agent-config-panel" class="agent-config-panel hidden" style="padding:24px; overflow-y:auto; height:100%;">
-                <h2 style="margin:0 0 20px 0; display:flex; align-items:center; gap:10px;"><i class="fa-solid fa-robot"></i> Agent Configuration</h2>
-
-                <div class="form-group row" style="gap:12px; margin-bottom:16px;">
-                    <label style="font-weight:600; min-width:100px;">Enable Agent</label>
-                    <label class="toggle-switch">
+                <div style="display:flex; align-items:center; gap:10px; margin-bottom:16px;">
+                    <button id="btn-back-to-dashboard" class="btn btn-secondary btn-sm"><i class="fa-solid fa-arrow-left"></i> Back</button>
+                    <h2 style="margin:0; flex:1; display:flex; align-items:center; gap:8px;"><i class="fa-solid fa-robot"></i> <span id="agent-config-name-display">Agent</span></h2>
+                    <label class="toggle-switch" style="margin:0;">
                         <input type="checkbox" id="agent-enabled">
                         <span class="toggle-slider"></span>
                     </label>
                 </div>
+
+                <input type="hidden" id="agent-config-id" value="">
+
+                <!-- Identity -->
+                <details open style="margin-bottom:16px; background:rgba(0,0,0,0.1); padding:12px; border-radius:6px;">
+                    <summary style="cursor:pointer; font-weight:bold; margin-bottom:8px;">Identity</summary>
+                    <div style="display:flex; flex-direction:column; gap:10px;">
+                        <div class="form-group">
+                            <label>Agent Name</label>
+                            <input type="text" id="agent-config-name" placeholder="e.g. Lore Keeper, Fact Checker" style="width:100%;">
+                        </div>
+                        <div class="form-group">
+                            <label>Task Description</label>
+                            <textarea id="agent-task-description" placeholder="What should this agent focus on? e.g. Track character details, locations, and relationships" style="width:100%; min-height:60px; background:rgba(0,0,0,0.3); border:1px solid var(--panel-border); color:var(--text-color); padding:8px 12px; border-radius:6px; font-family:inherit; font-size:0.9rem; outline:none; resize:vertical;"></textarea>
+                        </div>
+                        <div class="form-group">
+                            <label>Custom Instructions</label>
+                            <textarea id="agent-custom-instructions" placeholder="Additional instructions for the agent's system prompt" style="width:100%; min-height:60px; background:rgba(0,0,0,0.3); border:1px solid var(--panel-border); color:var(--text-color); padding:8px 12px; border-radius:6px; font-family:inherit; font-size:0.9rem; outline:none; resize:vertical;"></textarea>
+                        </div>
+                    </div>
+                </details>
+
+                <!-- Tool Permissions -->
+                <details open style="margin-bottom:16px; background:rgba(0,0,0,0.1); padding:12px; border-radius:6px;">
+                    <summary style="cursor:pointer; font-weight:bold; margin-bottom:8px;">Tool Permissions</summary>
+                    <div id="agent-tool-permissions-container" class="tool-permission-grid">
+                        <!-- Populated dynamically from EL_TOOL_DEFINITIONS -->
+                    </div>
+                </details>
+
+                <!-- Injected Context -->
+                <details open style="margin-bottom:16px; background:rgba(0,0,0,0.1); padding:12px; border-radius:6px;">
+                    <summary style="cursor:pointer; font-weight:bold; margin-bottom:8px;">Injected Context <span id="agent-injected-count" style="font-weight:normal; opacity:0.7;"></span></summary>
+                    <div style="display:flex; flex-direction:column; gap:8px;">
+                        <div id="agent-injected-list" style="display:flex; flex-direction:column; gap:6px;">
+                            <!-- populated dynamically -->
+                        </div>
+                        <div style="display:flex; gap:8px;">
+                            <button id="btn-add-injected-context" class="btn btn-secondary btn-sm">Add Lorebook / Entries</button>
+                            <button id="btn-clear-injected-context" class="btn btn-secondary btn-sm">Clear All</button>
+                        </div>
+                        <small style="opacity:0.7;">Entries injected directly into the prompt each run — no tools needed. Works for non-active lorebooks (e.g. a status tracking lorebook).</small>
+                    </div>
+                </details>
 
                 <details open style="margin-bottom:16px; background:rgba(0,0,0,0.1); padding:12px; border-radius:6px;">
                     <summary style="cursor:pointer; font-weight:bold; margin-bottom:8px;">Mode</summary>
@@ -115,6 +175,33 @@
                     </div>
                     <div id="agent-periodic-config" style="display:none; margin-top:8px;">
                         <label>Interval (messages): <input type="number" id="agent-periodic-interval" value="10" min="1" style="width:70px;"></label>
+                    </div>
+                </details>
+
+                <!-- Multi-Turn (Agentic) -->
+                <details open style="margin-bottom:16px; background:rgba(0,0,0,0.1); padding:12px; border-radius:6px;">
+                    <summary style="cursor:pointer; font-weight:bold; margin-bottom:8px;">Multi-Turn (Agentic)</summary>
+                    <div style="display:flex; flex-direction:column; gap:8px;">
+                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer;"><input type="checkbox" id="agent-multiturn-enabled"> Enable multi-turn behavior (agent can call tools across multiple rounds)</label>
+                        <div id="agent-multiturn-config" style="display:none; flex-direction:column; gap:8px;">
+                            <div style="display:flex; gap:20px;">
+                                <label style="display:flex; align-items:center; gap:6px; cursor:pointer;"><input type="radio" name="agent-multiturn-mode" value="count" checked> Total calls per run</label>
+                                <label style="display:flex; align-items:center; gap:6px; cursor:pointer;"><input type="radio" name="agent-multiturn-mode" value="rate"> Calls per minute</label>
+                            </div>
+                            <div class="form-group" id="agent-multiturn-count-field">
+                                <label>Max total LLM calls per run</label>
+                                <input type="number" id="agent-multiturn-maxcalls" value="10" min="1" max="50">
+                            </div>
+                            <div class="form-group" id="agent-multiturn-rate-field" style="display:none;">
+                                <label>Calls per minute</label>
+                                <input type="number" id="agent-multiturn-cpm" value="5" min="1" max="60">
+                            </div>
+                            <div class="form-group">
+                                <label>Hard safety cap (max calls, any mode)</label>
+                                <input type="number" id="agent-multiturn-safety" value="30" min="1" max="100">
+                            </div>
+                            <small style="opacity:0.7;">Rate mode spaces calls 60/N apart. The safety cap always applies to prevent runaway loops.</small>
+                        </div>
                     </div>
                 </details>
 
@@ -206,14 +293,14 @@
                     </div>
                 </details>
 
-                <details open style="margin-bottom:16px; background:rgba(0,0,0,0.1); padding:12px; border-radius:6px;">
-                    <summary style="cursor:pointer; font-weight:bold; margin-bottom:8px;">Actions</summary>
-                    <div style="display:flex; gap:8px; flex-wrap:wrap;">
-                        <button id="btn-save-agent-settings" class="btn btn-primary"><i class="fa-solid fa-floppy-disk"></i> Save Settings</button>
-                        <button id="btn-run-agent-now" class="btn btn-secondary"><i class="fa-solid fa-play"></i> Run Agent Now</button>
-                    </div>
-                    <div id="agent-run-status" style="margin-top:8px; font-size:0.85rem; color:var(--text-muted);"></div>
-                </details>
+                <!-- Actions Bar -->
+                <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px; padding:12px; background:rgba(0,0,0,0.1); border-radius:6px;">
+                    <button id="btn-save-agent-settings" class="btn btn-primary"><i class="fa-solid fa-floppy-disk"></i> Save</button>
+                    <button id="btn-run-agent-now" class="btn btn-secondary"><i class="fa-solid fa-play"></i> Run Now</button>
+                    <button id="btn-config-duplicate" class="btn btn-secondary"><i class="fa-solid fa-copy"></i> Duplicate</button>
+                    <button id="btn-config-delete" class="btn btn-danger" style="background:rgba(239,68,68,0.2);color:#ef4444;"><i class="fa-solid fa-trash"></i> Delete</button>
+                    <div id="agent-run-status" style="margin-top:4px; font-size:0.85rem; color:var(--text-muted); width:100%;"></div>
+                </div>
 
                 <details open style="background:rgba(0,0,0,0.1); padding:12px; border-radius:6px;">
                     <summary style="cursor:pointer; font-weight:bold; margin-bottom:8px;">Backups</summary>
@@ -235,6 +322,13 @@
                     <button class="pill-btn" data-filter="accepted">Accepted</button>
                     <button class="pill-btn" data-filter="denied">Denied</button>
                     <button class="pill-btn" data-filter="auto-accepted">Auto-accepted</button>
+                </div>
+
+                <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
+                    <label style="font-size:0.82rem; font-weight:600; white-space:nowrap;">Agent:</label>
+                    <select id="agent-feed-agent-filter" style="flex:1; background:rgba(0,0,0,0.3); border:1px solid var(--panel-border); color:var(--text-color); padding:4px 8px; border-radius:6px; font-size:0.85rem;">
+                        <option value="all">All Agents</option>
+                    </select>
                 </div>
 
                 <div class="agent-feed-action-bar">
@@ -285,6 +379,56 @@
                     <input type="color" id="color-primary" value="#6366f1">
                 </div>
                 <button id="btn-reset-colors" class="btn btn-secondary mt-4">Reset to Defaults</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Create Agent Modal -->
+    <div id="create-agent-modal" class="modal">
+        <div class="modal-content glass-panel" style="width: 480px;">
+            <div class="modal-header">
+                <h3><i class="fa-solid fa-robot" style="margin-right: 8px;"></i>Create Agent</h3>
+                <button class="close-modal"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="modal-body" style="padding: 20px;">
+                <div class="form-group">
+                    <label>Agent Name</label>
+                    <input type="text" id="create-agent-name" placeholder="e.g. Lore Keeper, Fact Checker" style="width:100%;">
+                </div>
+                <div class="form-group">
+                    <label>Task Description</label>
+                    <textarea id="create-agent-task" placeholder="What should this agent focus on? e.g. Track character details, locations, and relationships" style="width:100%; min-height: 80px; background: rgba(0,0,0,0.3); border: 1px solid var(--panel-border); color: var(--text-color); padding: 8px 12px; border-radius: 6px; font-family: inherit; font-size: 0.9rem; outline: none; resize: vertical;"></textarea>
+                </div>
+                <div class="form-group">
+                    <label>Copy settings from</label>
+                    <select id="create-agent-copy-from" style="width:100%;">
+                        <option value="">-- Start fresh with defaults --</option>
+                    </select>
+                </div>
+                <div class="modal-actions">
+                    <button class="btn btn-secondary" id="btn-create-agent-cancel">Cancel</button>
+                    <button class="btn btn-primary" id="btn-create-agent-confirm"><i class="fa-solid fa-plus"></i> Create Agent</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Injected Context Picker Modal -->
+    <div id="injected-picker-modal" class="modal">
+        <div class="modal-content glass-panel" style="width: 720px; max-height: 85vh; display: flex; flex-direction: column;">
+            <div class="modal-header">
+                <h3><i class="fa-solid fa-book" style="margin-right: 8px;"></i>Add Injected Context</h3>
+                <button class="close-modal"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="modal-body" style="overflow-y: auto; flex: 1; padding: 16px; display: flex; flex-direction: column; gap: 12px;">
+                <input type="text" id="injected-picker-search" placeholder="Search entries by key, comment, or content..." style="width:100%;">
+                <div id="injected-picker-lorebooks"><!-- populated dynamically --></div>
+            </div>
+            <div class="modal-actions" style="padding: 12px 16px;">
+                <span id="injected-picker-count" style="opacity:0.7;"></span>
+                <span style="flex:1;"></span>
+                <button class="btn btn-secondary" id="btn-injected-cancel">Cancel</button>
+                <button class="btn btn-primary" id="btn-injected-confirm"><i class="fa-solid fa-check"></i> Add Selected</button>
             </div>
         </div>
     </div>
@@ -1137,11 +1281,12 @@
 
     <div id="xml-copy-toast" class="toast-notification">Template copied to clipboard!</div>
 
-    <script src="app.js?v=2"></script>
     <script src="agent-prompts.js?v=2"></script>
     <script src="agent-tools.js?v=2"></script>
+    <script src="agent-manager.js?v=2"></script>
     <script src="agent-core.js?v=2"></script>
     <script src="agent-backup.js?v=2"></script>
+    <script src="app.js?v=2"></script>
     <script src="agent-ui.js?v=2"></script>
 </body>
 </html>

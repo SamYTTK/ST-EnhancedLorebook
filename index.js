@@ -43,11 +43,17 @@ function openStandaloneApp(tab = '') {
     }
 }
 
-function sendPeriodicTriggerToApp() {
+function sendPeriodicTriggerToApp(agentIds) {
     if (appWindow && !appWindow.closed) {
         const context = SillyTavern.getContext();
         const chatInfo = { characterId: context.characterId, chatId: context.chat?.chat_id };
-        appWindow.postMessage({ source: 'enhanced-lorebook', type: 'el-agent-periodic-trigger', chatInfo }, window.location.origin);
+        appWindow.postMessage({
+            source: 'enhanced-lorebook',
+            type: 'el-agent-periodic-trigger',
+            chatInfo,
+            messageCounter: messageCounter,
+            agentIds: agentIds || undefined,
+        }, window.location.origin);
     }
 }
 
@@ -64,20 +70,30 @@ function sendSettingsSyncToApp(settings) {
     }
 }
 
+function sendAgentsSyncToApp() {
+    if (appWindow && !appWindow.closed) {
+        const context = SillyTavern.getContext();
+        const agents = context.extensionSettings?.SillyTavernEnhancedLorebook?.agents || [];
+        appWindow.postMessage({ source: 'enhanced-lorebook', type: 'el-agent-settings-sync', agents }, window.location.origin);
+    }
+}
+
 function handleNewMessage() {
     messageCounter++;
     try {
         const context = SillyTavern.getContext();
-        const settings = context.extensionSettings?.SillyTavernEnhancedLorebook?.agent;
-        if (!settings || settings.mode !== 'periodic' || !settings.enabled) return;
-        const interval = Number(settings.interval) || 5;
-        if (messageCounter % interval !== 0) return;
+        const agents = context.extensionSettings?.SillyTavernEnhancedLorebook?.agents || [];
+        if (!agents.length) return;
+
+        const agentsToTrigger = agents.filter(a => a.enabled && a.mode === 'periodic' && messageCounter % (a.interval || a.periodicInterval || 10) === 0);
+        if (!agentsToTrigger.length) return;
 
         messageCounter = 0;
         lastPeriodicRun = Date.now();
 
+        const agentIds = agentsToTrigger.map(a => a.id);
         if (appWindow && !appWindow.closed) {
-            sendPeriodicTriggerToApp();
+            sendPeriodicTriggerToApp(agentIds);
         } else {
             pendingPeriodicTrigger = true;
         }
@@ -98,8 +114,8 @@ function setupPostMessageBridge() {
             }
             case 'el-agent-trigger-now': {
                 const context = SillyTavern.getContext();
-                const settings = context.extensionSettings?.SillyTavernEnhancedLorebook?.agent;
-                if (settings?.enabled) {
+                const agents = context.extensionSettings?.SillyTavernEnhancedLorebook?.agents || [];
+                if (agents.length) {
                     handleNewMessage();
                 }
                 break;
@@ -108,14 +124,14 @@ function setupPostMessageBridge() {
                 const badge = document.getElementById('agent-pending-badge');
                 if (!badge) break;
                 const count = Number(msg.count) || 0;
-                badge.textContent = count;
+                badge.textContent = count > 99 ? '99+' : String(count);
                 badge.style.display = count > 0 ? 'inline' : 'none';
                 break;
             }
             case 'el-agent-trigger-periodic': {
                 const ctx = SillyTavern.getContext();
-                const s = ctx.extensionSettings?.SillyTavernEnhancedLorebook?.agent;
-                if (s?.enabled && s?.mode === 'periodic') {
+                const triggered = (ctx.extensionSettings?.SillyTavernEnhancedLorebook?.agents || []).some(a => a.enabled && a.mode === 'periodic');
+                if (triggered) {
                     handleNewMessage();
                 }
                 break;
@@ -123,7 +139,8 @@ function setupPostMessageBridge() {
             case 'el-agent-request-chat-info': {
                 const ctx2 = SillyTavern.getContext();
                 if (e.source) {
-                    e.source.postMessage({ source: 'enhanced-lorebook', type: 'el-agent-chat-info', characterId: ctx2.characterId, chatId: ctx2.chat?.chat_id }, window.location.origin);
+                    const agents = ctx2.extensionSettings?.SillyTavernEnhancedLorebook?.agents || [];
+                    e.source.postMessage({ source: 'enhanced-lorebook', type: 'el-agent-chat-info', characterId: ctx2.characterId, chatId: ctx2.chat?.chat_id, agents }, window.location.origin);
                 }
                 break;
             }
@@ -131,9 +148,21 @@ function setupPostMessageBridge() {
                 try {
                     const ctx3 = SillyTavern.getContext();
                     if (!ctx3.extensionSettings.SillyTavernEnhancedLorebook) ctx3.extensionSettings.SillyTavernEnhancedLorebook = {};
-                    ctx3.extensionSettings.SillyTavernEnhancedLorebook.agent = msg.settings;
+                    if (msg.agents && Array.isArray(msg.agents)) {
+                        delete ctx3.extensionSettings.SillyTavernEnhancedLorebook.agent;
+                        ctx3.extensionSettings.SillyTavernEnhancedLorebook.agents = msg.agents;
+                    } else if (msg.settings) {
+                        if (!ctx3.extensionSettings.SillyTavernEnhancedLorebook.agents) {
+                            ctx3.extensionSettings.SillyTavernEnhancedLorebook.agents = [];
+                        }
+                        const idx = ctx3.extensionSettings.SillyTavernEnhancedLorebook.agents.findIndex(a => a.id === msg.settings.id);
+                        if (idx !== -1) {
+                            ctx3.extensionSettings.SillyTavernEnhancedLorebook.agents[idx] = msg.settings;
+                        } else {
+                            ctx3.extensionSettings.SillyTavernEnhancedLorebook.agent = msg.settings;
+                        }
+                    }
                     ctx3.saveSettingsDebounced();
-                    sendSettingsSyncToApp(msg.settings);
                 } catch (e) {
                     console.error('Enhanced Lorebook: settings changed error', e);
                 }
@@ -253,9 +282,9 @@ function setupLauncherDropdown() {
             <span>Enhanced Lorebook</span>
         </div>
         <div class="el-launcher-divider"></div>
-        <div class="el-launcher-item" data-action="agent-config">
+        <div class="el-launcher-item" data-action="agent-dashboard">
             <i class="fa-solid fa-robot"></i>
-            <span>Agent Config</span>
+            <span>Agent Dashboard</span>
         </div>
         <div class="el-launcher-item" data-action="agent-feed">
             <i class="fa-solid fa-clipboard-list"></i>
@@ -348,8 +377,8 @@ function setupLauncherDropdown() {
             drawerToggle.click();
         } else if (item.dataset.action === 'enhanced') {
             openStandaloneApp();
-        } else if (item.dataset.action === 'agent-config') {
-            openStandaloneApp('agent-config');
+        } else if (item.dataset.action === 'agent-dashboard') {
+            openStandaloneApp('agent-dashboard');
         } else if (item.dataset.action === 'agent-feed') {
             openStandaloneApp('agent-feed');
         }

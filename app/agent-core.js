@@ -1,10 +1,43 @@
 class AgentEngine {
-    constructor(context) {
-        this.context = context || {};
+    constructor(agentConfig, stContextRef) {
+        this.agentConfig = agentConfig || {};
+        this.stContext = stContextRef || (typeof stContext !== 'undefined' ? stContext : null);
         this.state = 'idle';
         this.pendingProposals = [];
-        this.backupClient = new BackupClient(context);
+        this.backupClient = new BackupClient({ stContext: this.stContext });
         this._abortController = null;
+        this.context = this._buildContext();
+    }
+
+    _buildContext() {
+        const c = this.agentConfig;
+        return {
+            stContext: this.stContext,
+            settings: {
+                mode: c.mode || 'manual',
+                periodicInterval: c.interval ?? 10,
+                useSeparateApi: c.useSeparateApi || false,
+                apiEndpoint: c.apiEndpoint || '',
+                apiModel: c.apiModel || '',
+                temperature: c.temperature ?? 0.7,
+                maxEntriesPerRun: c.maxEntriesPerRun ?? 5,
+                requireKeyConfidence: c.requireKeyConfidence || 'low',
+                maxPendingProposals: c.maxPendingProposals ?? 20,
+                requireConfirmation: c.requireConfirmation !== false,
+                research: c.research || { source: 'disabled' },
+            },
+            permissions: {
+                canCreate: c.canCreate !== false,
+                canEdit: c.canEdit !== false,
+                canDelete: c.canDelete === true,
+                canResearch: c.canResearch === true,
+                autoAccept: c.autoAccept === true,
+                autoAcceptConfidence: c.autoAcceptConfidence ?? 0.8,
+                maxEntriesPerRun: c.maxEntriesPerRun ?? 5,
+                requireKeyConfidence: c.requireKeyConfidence || 'low',
+                requireConfirmation: c.requireConfirmation !== false,
+            },
+        };
     }
 
     stop() {
@@ -23,32 +56,33 @@ class AgentEngine {
         this._abortController = new AbortController();
         this.pendingProposals = [];
 
-        const trigger = triggerType || 'manual';
-        const st = this.context?.stContext || (typeof stContext !== 'undefined' ? stContext : null);
-        const settings = this.context?.settings || {};
-        const permissions = this.context?.permissions || {};
-        const apiConfig = this.context?.apiConfig || {};
+        const context = this._buildContext();
+        const settings = context.settings;
+        const permissions = context.permissions;
+        const config = this.agentConfig;
+
+        const st = this.stContext || (typeof stContext !== 'undefined' ? stContext : null);
         const errors = [];
         let proposalsCreated = 0;
         let autoAccepted = 0;
 
         try {
-            const chatResult = await view_chat_history({ count: 20, offset: 0 }, this.context);
+            const chatResult = await view_chat_history({ count: 20, offset: 0 }, context);
             const chatHistory = chatResult.success ? chatResult.data : [];
 
-            const activeResult = await view_active_lorebooks({}, this.context);
+            const activeResult = await view_active_lorebooks({}, context);
             const activeLorebooks = activeResult.success ? activeResult.data : [];
 
             const lorebookDetails = [];
             for (const lb of activeLorebooks) {
-                const detailResult = await view_lorebook_detail({ lorebookName: lb.name }, this.context);
+                const detailResult = await view_lorebook_detail({ lorebookName: lb.name }, context);
                 if (detailResult.success) {
                     lorebookDetails.push(detailResult.data);
                 }
             }
 
             const researchSources = settings?.research?.sources || [];
-            const systemPrompt = EL_getAgentSystemPrompt(researchSources);
+            const systemPrompt = EL_getAgentSystemPrompt(researchSources, config.taskDescription, config.customInstructions, this._getMultiTurnConfig(context));
 
             const lorebookSummary = lorebookDetails.map(d => ({
                 name: d.name,
@@ -65,7 +99,10 @@ class AgentEngine {
                 })),
             }));
 
-            const analysisPrompt = EL_getAnalysisPrompt(chatHistory, lorebookSummary, settings);
+            const injected = await EL_resolveInjectedContext(config.injectedContext, context);
+            const injectedContextBlock = (injected.warnings.length ? 'Warnings:\n' + injected.warnings.join('\n') + '\n\n' : '') + injected.block;
+
+            const analysisPrompt = EL_getAnalysisPrompt(chatHistory, lorebookSummary, settings, config.taskDescription, injectedContextBlock);
 
             const messages = [
                 { role: 'system', content: systemPrompt },
@@ -73,14 +110,48 @@ class AgentEngine {
             ];
 
             const guardrail = EL_createGuardrailValidator(permissions);
-            const toolCalls = await this._callLLM(messages, apiConfig, settings);
+            const apiConfig = {
+                useSeparateApi: config.useSeparateApi,
+                apiEndpoint: config.apiEndpoint,
+                apiModel: config.apiModel,
+                temperature: config.temperature,
+            };
+            const multi = this._getMultiTurnConfig(context);
+            let llmCalls = 0;
+            const cap = multi.enabled
+                ? Math.max(1, Math.min(multi.limitMode === 'rate' ? (multi.safetyCap ?? 30) : (multi.maxCalls ?? 10), 50))
+                : 1;
 
-            for (const tc of toolCalls) {
-                const result = await this._executeToolCall(tc, guardrail);
-                if (result && result.status === 'proposed') {
-                    proposalsCreated++;
-                    this.pendingProposals.push(result.data);
+            for (let round = 0; round < cap; round++) {
+                const callInfo = await this._callLLM(messages, apiConfig, settings);
+                llmCalls++;
+                if (!callInfo || !callInfo.toolCalls || callInfo.toolCalls.length === 0) break;
+
+                const roundResults = [];
+                for (const tc of callInfo.toolCalls) {
+                    const result = await this._executeToolCall(tc, guardrail);
+                    roundResults.push(result);
+                    if (result && result.status === 'proposed') {
+                        if (result.data?.proposal) {
+                            result.data.proposal.agentId = config.id;
+                            result.data.proposal.agentName = config.name;
+                        }
+                        proposalsCreated++;
+                        this.pendingProposals.push(result.data?.proposal || result.data);
+                    }
                 }
+
+                if (!multi.enabled) break;
+
+                const nextRound = round + 1;
+                if (nextRound >= cap) break;
+
+                if (multi.limitMode === 'rate') {
+                    const delayMs = Math.max(1000, Math.round(60000 / (multi.callsPerMinute ?? 5)));
+                    await this._sleep(delayMs);
+                }
+
+                messages.push(...this._buildContinuationMessages(roundResults, callInfo, round, cap));
             }
 
             if (this.pendingProposals.length > 0) {
@@ -144,6 +215,7 @@ class AgentEngine {
             return {
                 proposalsCreated,
                 autoAccepted,
+                llmCalls,
                 errors: errors.length > 0 ? errors : undefined,
                 success: true,
             };
@@ -162,24 +234,25 @@ class AgentEngine {
         const proposal = allProposals.find(p => p.id === proposalId || p.proposalId === proposalId);
         if (!proposal) throw new Error('Proposal ' + proposalId + ' not found');
 
-        const settings = this.context?.settings || {};
-        const apiConfig = this.context?.apiConfig || {};
-        const permissions = this.context?.permissions || {};
+        const config = this.agentConfig;
+        const context = this._buildContext();
+        const settings = context.settings;
+        const permissions = context.permissions;
 
-        const chatResult = await view_chat_history({ count: 20, offset: 0 }, this.context);
+        const chatResult = await view_chat_history({ count: 20, offset: 0 }, context);
         const chatHistory = chatResult.success ? chatResult.data : [];
 
-        const activeResult = await view_active_lorebooks({}, this.context);
+        const activeResult = await view_active_lorebooks({}, context);
         const activeLorebooks = activeResult.success ? activeResult.data : [];
 
         const lorebookDetails = [];
         for (const lb of activeLorebooks) {
-            const detailResult = await view_lorebook_detail({ lorebookName: lb.name }, this.context);
+            const detailResult = await view_lorebook_detail({ lorebookName: lb.name }, context);
             if (detailResult.success) lorebookDetails.push(detailResult.data);
         }
 
         const researchSources = settings?.research?.sources || [];
-        const systemPrompt = EL_getAgentSystemPrompt(researchSources);
+        const systemPrompt = EL_getAgentSystemPrompt(researchSources, config.taskDescription, config.customInstructions, this._getMultiTurnConfig(context));
 
         const lorebookSummary = lorebookDetails.map(d => ({
             name: d.name,
@@ -187,7 +260,10 @@ class AgentEngine {
             entries: d.entries,
         }));
 
-        const analysisPrompt = EL_getAnalysisPrompt(chatHistory, lorebookSummary, settings);
+        const injected = await EL_resolveInjectedContext(config.injectedContext, context);
+        const injectedContextBlock = (injected.warnings.length ? 'Warnings:\n' + injected.warnings.join('\n') + '\n\n' : '') + injected.block;
+
+        const analysisPrompt = EL_getAnalysisPrompt(chatHistory, lorebookSummary, settings, config.taskDescription, injectedContextBlock);
 
         const reviseMsg = '\n\n## Revision Request\nProposal ID: ' + proposalId + '\nUser Feedback: ' + feedback + '\nOriginal Proposal: ' + JSON.stringify(proposal, null, 2) + '\n\nPlease revise the proposal based on this feedback.';
 
@@ -196,7 +272,14 @@ class AgentEngine {
             { role: 'user', content: analysisPrompt + reviseMsg },
         ];
 
-        const toolCalls = await this._callLLM(messages, apiConfig, settings);
+        const apiConfig = {
+            useSeparateApi: config.useSeparateApi,
+            apiEndpoint: config.apiEndpoint,
+            apiModel: config.apiModel,
+            temperature: config.temperature,
+        };
+        const callInfo = await this._callLLM(messages, apiConfig, settings);
+        const toolCalls = callInfo.toolCalls;
         let revisedProposal = null;
 
         for (const tc of toolCalls) {
@@ -206,6 +289,8 @@ class AgentEngine {
                     const prop = result.data.proposal || result.data;
                     prop.id = proposalId;
                     prop.revises = proposalId;
+                    if (config.id) prop.agentId = config.id;
+                    if (config.name) prop.agentName = config.name;
                     revisedProposal = prop;
                 }
             }
@@ -218,7 +303,7 @@ class AgentEngine {
     }
 
     async applyProposal(proposal) {
-        const st = this.context?.stContext || (typeof stContext !== 'undefined' ? stContext : null);
+        const st = this.stContext || (typeof stContext !== 'undefined' ? stContext : null);
         if (!st) throw new Error('No SillyTavern context available');
 
         const data = await st.loadWorldInfo(proposal.lorebookName);
@@ -286,10 +371,67 @@ class AgentEngine {
     }
 
     async runPeriodicIfNeeded(messagesSinceLastRun) {
-        const settings = this.context?.settings || {};
-        if (settings.mode !== 'periodic') return;
-        if (typeof messagesSinceLastRun !== 'number' || messagesSinceLastRun < (settings.periodicInterval || 10)) return;
+        const config = this.agentConfig;
+        if (config.mode !== 'periodic') return;
+        if (typeof messagesSinceLastRun !== 'number' || messagesSinceLastRun < (config.interval || 10)) return;
         return this.analyze('periodic');
+    }
+
+    _sleep(ms) {
+        return new Promise(resolve => {
+            const t = setTimeout(resolve, ms);
+            if (this._abortController) {
+                this._abortController.signal.addEventListener('abort', () => clearTimeout(t));
+            }
+        });
+    }
+
+    _buildContinuationMessages(roundResults, callInfo, roundIndex, maxCalls) {
+        const messages = [];
+        if (callInfo.rawToolCalls && callInfo.rawToolCalls.length > 0) {
+            messages.push({
+                role: 'assistant',
+                content: callInfo.assistantContent || null,
+                tool_calls: callInfo.rawToolCalls,
+            });
+            callInfo.rawToolCalls.forEach((rawTc, i) => {
+                const result = roundResults[i] || { status: 'error', error: 'No result recorded' };
+                messages.push({
+                    role: 'tool',
+                    tool_call_id: rawTc.id,
+                    content: JSON.stringify(result),
+                });
+            });
+        } else {
+            messages.push({
+                role: 'assistant',
+                content: JSON.stringify(callInfo.toolCalls),
+            });
+            const lines = roundResults.map(r => {
+                const head = `- ${r.tool}: ${r.status}`;
+                const body = r.status === 'ok' || r.status === 'proposed'
+                    ? JSON.stringify(r.data ?? null)
+                    : (r.reason || r.error || '');
+                return `${head}\n${body}`;
+            });
+            const remaining = maxCalls - roundIndex - 1;
+            messages.push({
+                role: 'user',
+                content: `## Tool Results (round ${roundIndex + 1})\n${lines.join('\n\n')}\n\nYou may call more tools if needed. You have up to ${remaining} more round(s). If done, respond with ONLY an empty array: []`,
+            });
+        }
+        return messages;
+    }
+
+    _getMultiTurnConfig(context) {
+        const mt = this.agentConfig.multiTurn || {};
+        return {
+            enabled: mt.enabled === true,
+            limitMode: mt.limitMode === 'rate' ? 'rate' : 'count',
+            maxCalls: mt.maxCalls ?? 10,
+            callsPerMinute: mt.callsPerMinute ?? 5,
+            safetyCap: mt.safetyCap ?? 30,
+        };
     }
 
     async _callLLM(messages, apiConfig, settings) {
@@ -301,7 +443,7 @@ class AgentEngine {
 
     async _callStPipeline(messages, settings) {
         const signal = this._abortController?.signal;
-        const st = this.context?.stContext || (typeof stContext !== 'undefined' ? stContext : null);
+        const st = this.stContext || (typeof stContext !== 'undefined' ? stContext : null);
         const maxTokens = settings?.maxTokens || 1024;
         const temperature = settings?.temperature ?? 0.7;
         const options = {
@@ -318,11 +460,10 @@ class AgentEngine {
 
         if (st?.generateRaw) {
             const text = await st.generateRaw(messages, options, signal);
-            return this._parseToolCalls(text);
+            return { toolCalls: this._parseToolCalls(text), rawToolCalls: null, assistantContent: text };
         }
 
-        const text = await this._fallbackGenerate(messages, options);
-        return this._parseToolCalls(text);
+        return this._fallbackGenerate(messages, options);
     }
 
     async _callSeparateApi(messages, apiConfig, settings) {
@@ -336,13 +477,16 @@ class AgentEngine {
             function: { name: def.name, description: def.description, parameters: def.parameters },
         }));
 
+        const effectiveEndpoint = apiConfig.apiEndpoint || configResp.apiEndpoint || '';
+        const effectiveModel = apiConfig.apiModel || configResp.model || '';
+
         const payload = {
             messages,
-            model: configResp.model || '',
-            apiEndpoint: configResp.apiEndpoint || '',
+            model: effectiveModel,
+            apiEndpoint: effectiveEndpoint,
             apiKey: '',
             maxTokens: settings?.maxTokens ?? configResp.maxTokens ?? 1024,
-            temperature: settings?.temperature ?? configResp.temperature ?? 0.7,
+            temperature: apiConfig.temperature ?? configResp.temperature ?? 0.7,
             topP: settings?.topP ?? configResp.topP ?? 1,
             topK: settings?.topK ?? configResp.topK ?? 0,
             reasoningEffort: settings?.reasoningEffort ?? configResp.reasoningEffort ?? '',
@@ -360,21 +504,27 @@ class AgentEngine {
 
         const choice = result.choices[0];
         if (choice.message?.tool_calls && choice.message.tool_calls.length > 0) {
-            return choice.message.tool_calls.map(tc => ({
-                tool: tc.function.name,
-                args: JSON.parse(tc.function.arguments || '{}'),
-            }));
+            const rawToolCalls = choice.message.tool_calls;
+            return {
+                toolCalls: rawToolCalls.map(tc => ({
+                    tool: tc.function.name,
+                    args: JSON.parse(tc.function.arguments || '{}'),
+                })),
+                rawToolCalls,
+                assistantContent: choice.message?.content || '',
+            };
         }
 
         const text = choice.message?.content || '';
-        return this._parseToolCalls(text);
+        return { toolCalls: this._parseToolCalls(text), rawToolCalls: null, assistantContent: text };
     }
 
     async _fallbackGenerate(messages, options) {
+        const config = this.agentConfig;
         const textResp = await EL_apiFetch('POST', '/agent/chat', {
             messages,
             model: 'fallback',
-            apiEndpoint: '',
+            apiEndpoint: config.apiEndpoint || '',
             apiKey: '',
             maxTokens: options.max_tokens || 1024,
             temperature: options.temperature ?? 0.7,
@@ -391,17 +541,23 @@ class AgentEngine {
         });
 
         if (!textResp || !textResp.choices || !textResp.choices[0]) {
-            return '[]';
+            return { toolCalls: [], rawToolCalls: null, assistantContent: '[]' };
         }
 
         const choice = textResp.choices[0];
         if (choice.message?.tool_calls && choice.message.tool_calls.length > 0) {
-            return JSON.stringify(choice.message.tool_calls.map(tc => ({
-                tool: tc.function.name,
-                args: JSON.parse(tc.function.arguments || '{}'),
-            })));
+            const rawToolCalls = choice.message.tool_calls;
+            return {
+                toolCalls: rawToolCalls.map(tc => ({
+                    tool: tc.function.name,
+                    args: JSON.parse(tc.function.arguments || '{}'),
+                })),
+                rawToolCalls,
+                assistantContent: choice.message?.content || '',
+            };
         }
-        return choice.message?.content || '[]';
+        const content = choice.message?.content || '[]';
+        return { toolCalls: this._parseToolCalls(content), rawToolCalls: null, assistantContent: content };
     }
 
     _parseToolCalls(text) {
@@ -428,38 +584,48 @@ class AgentEngine {
         const { tool, args } = tc;
         if (!tool || !args) return null;
 
+        const toolPermissions = this.agentConfig.toolPermissions || {};
+        if (toolPermissions[tool] === false) {
+            return { tool, status: 'blocked', reason: 'Tool not permitted for this agent', data: null };
+        }
+
+        const context = this._buildContext();
+
         switch (tool) {
             case 'view_active_lorebooks': {
-                const res = await view_active_lorebooks(args || {}, this.context);
+                const res = await view_active_lorebooks(args || {}, context);
                 return { tool, status: res.success ? 'ok' : 'error', data: res.data, error: res.error };
             }
             case 'view_lorebook_detail': {
-                const res = await view_lorebook_detail(args, this.context);
+                const res = await view_lorebook_detail(args, context);
                 return { tool, status: res.success ? 'ok' : 'error', data: res.data, error: res.error };
             }
             case 'view_chat_history': {
-                const res = await view_chat_history(args || {}, this.context);
+                const res = await view_chat_history(args || {}, context);
                 return { tool, status: res.success ? 'ok' : 'error', data: res.data, error: res.error };
             }
             case 'view_entry': {
-                const res = await view_entry(args, this.context);
+                const res = await view_entry(args, context);
                 return { tool, status: res.success ? 'ok' : 'error', data: res.data, error: res.error };
             }
             case 'get_feasibility_report': {
-                const res = await get_feasibility_report(args, this.context);
+                const res = await get_feasibility_report(args, context);
                 return { tool, status: res.success ? 'ok' : 'error', data: res.data, error: res.error };
             }
             case 'research': {
-                const res = await research(args, this.context);
+                const res = await research(args, context);
                 return { tool, status: res.success ? 'ok' : 'error', data: res.data, error: res.error };
             }
             case 'propose_create_entry': {
                 const validation = guardrail.validateProposal('create', args?.entryData);
                 if (!validation.allowed) return { tool, status: 'blocked', reason: validation.reason };
-                const res = await propose_create_entry(args, this.context);
+                const res = await propose_create_entry(args, context);
                 guardrail.incrementCount();
                 if (res.success) {
-                    this.pendingProposals.push(res.data.proposal);
+                    const proposal = res.data.proposal;
+                    proposal.agentId = this.agentConfig.id;
+                    proposal.agentName = this.agentConfig.name;
+                    this.pendingProposals.push(proposal);
                     return { tool, status: 'proposed', data: res.data };
                 }
                 return { tool, status: 'error', error: res.error };
@@ -467,10 +633,13 @@ class AgentEngine {
             case 'propose_edit_entry': {
                 const validation = guardrail.validateProposal('edit', args?.changes);
                 if (!validation.allowed) return { tool, status: 'blocked', reason: validation.reason };
-                const res = await propose_edit_entry(args, this.context);
+                const res = await propose_edit_entry(args, context);
                 guardrail.incrementCount();
                 if (res.success) {
-                    this.pendingProposals.push(res.data.proposal);
+                    const proposal = res.data.proposal;
+                    proposal.agentId = this.agentConfig.id;
+                    proposal.agentName = this.agentConfig.name;
+                    this.pendingProposals.push(proposal);
                     return { tool, status: 'proposed', data: res.data };
                 }
                 return { tool, status: 'error', error: res.error };
@@ -478,10 +647,13 @@ class AgentEngine {
             case 'propose_delete_entry': {
                 const validation = guardrail.validateProposal('delete', { uid: args?.uid });
                 if (!validation.allowed) return { tool, status: 'blocked', reason: validation.reason };
-                const res = await propose_delete_entry(args, this.context);
+                const res = await propose_delete_entry(args, context);
                 guardrail.incrementCount();
                 if (res.success) {
-                    this.pendingProposals.push(res.data.proposal);
+                    const proposal = res.data.proposal;
+                    proposal.agentId = this.agentConfig.id;
+                    proposal.agentName = this.agentConfig.name;
+                    this.pendingProposals.push(proposal);
                     return { tool, status: 'proposed', data: res.data };
                 }
                 return { tool, status: 'error', error: res.error };

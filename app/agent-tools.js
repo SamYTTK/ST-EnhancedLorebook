@@ -59,6 +59,40 @@ async function view_active_lorebooks(args, context) {
     }
 }
 
+async function EL_resolveInjectedContext(selections, context) {
+    if (!Array.isArray(selections) || selections.length === 0) {
+        return { block: '', warnings: [] };
+    }
+    const st = EL_resolveSt(context);
+    if (!st) return { block: '', warnings: ['Injected context unavailable: no SillyTavern context'] };
+    const warnings = [];
+    const sections = [];
+    for (const sel of selections) {
+        if (!sel || !sel.lorebook) continue;
+        let data = null;
+        try { data = await st.loadWorldInfo(sel.lorebook); } catch (_) { data = null; }
+        if (!data || !data.entries) {
+            warnings.push(`Injected context: lorebook "${sel.lorebook}" not found (skipped)`);
+            continue;
+        }
+        const allEntries = Object.entries(data.entries).map(([uid, e]) => ({ uid: parseInt(uid), entry: e }));
+        const picked = sel.all === true
+            ? allEntries
+            : allEntries.filter(({ uid }) => Array.isArray(sel.uids) && sel.uids.map(String).includes(String(uid)));
+        if (picked.length === 0) {
+            warnings.push(`Injected context: no selected entries found in "${sel.lorebook}" (skipped)`);
+            continue;
+        }
+        const lines = picked.map(({ uid, entry }) => {
+            const content = String(entry.content || '');
+            const shown = content.length > 8000 ? content.slice(0, 8000) + ' ...[truncated]' : content;
+            return `UID ${uid}:\n  keys=[${(entry.key || []).join(', ')}]\n  comment="${entry.comment || ''}"\n  order=${entry.order ?? 100} depth=${entry.depth ?? 4} prob=${entry.probability ?? 100}\n  content="${shown}"`;
+        });
+        sections.push(`Lorebook: "${sel.lorebook}" (${picked.length} of ${allEntries.length} entries injected)\n${lines.join('\n\n')}`);
+    }
+    return { block: sections.join('\n\n'), warnings };
+}
+
 async function view_lorebook_detail(args, context) {
     try {
         const st = EL_resolveSt(context);

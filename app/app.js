@@ -11,6 +11,7 @@ let extensionSettings = {};
 let expandedFolders = new Set();
 let downloadFn = null;
 let agentEngine = null;
+let agentManager = null;
 let agentUIInitialized = false;
 let currentViewMode = 'lorebook';
 
@@ -91,48 +92,48 @@ async function init() {
     createContextMenu();
     await refreshSidebar();
 
-    if (!extensionSettings.agent) {
-        extensionSettings.agent = {
-            enabled: true,
-            mode: 'manual',
-            periodicInterval: 10,
-            useSeparateApi: false,
-            canCreate: true,
-            canEdit: true,
-            canDelete: false,
-            canResearch: false,
-            autoAccept: false,
-            autoAcceptConfidence: 0.8,
-            maxEntriesPerRun: 5,
-            requireKeyConfidence: 'low',
-            requireConfirmation: true,
-            research: { source: 'disabled' },
-        };
-    }
-
     try {
+        const managerModule = await import('./agent-manager.js');
         const agentCoreModule = await import('./agent-core.js');
         const agentUiModule = await import('./agent-ui.js');
-        const context = {
-            stContext,
-            settings: extensionSettings.agent,
-            permissions: {
-                canCreate: extensionSettings.agent.canCreate,
-                canEdit: extensionSettings.agent.canEdit,
-                canDelete: extensionSettings.agent.canDelete,
-                canResearch: extensionSettings.agent.canResearch,
-                autoAccept: extensionSettings.agent.autoAccept,
-                autoAcceptConfidence: extensionSettings.agent.autoAcceptConfidence,
-                maxEntriesPerRun: extensionSettings.agent.maxEntriesPerRun,
-                requireKeyConfidence: extensionSettings.agent.requireKeyConfidence,
-                requireConfirmation: extensionSettings.agent.requireConfirmation,
-            },
-            currentLorebookName: currentLorebookName,
-            currentLorebookData: currentLorebookData,
-        };
-        if (typeof initAgentUI === 'function') {
-            await initAgentUI(context);
-            agentUIInitialized = true;
+        agentManager = new AgentManager();
+        const defaultAgent = agentManager.getAgents()[0];
+        if (defaultAgent) {
+            agentEngine = new AgentEngine(defaultAgent, stContext);
+            const context = {
+                stContext,
+                agentManager,
+                settings: {
+                    mode: defaultAgent.mode,
+                    periodicInterval: defaultAgent.interval,
+                    useSeparateApi: defaultAgent.useSeparateApi,
+                    apiEndpoint: defaultAgent.apiEndpoint,
+                    apiModel: defaultAgent.apiModel,
+                    temperature: defaultAgent.temperature,
+                    maxEntriesPerRun: defaultAgent.maxEntriesPerRun,
+                    requireKeyConfidence: defaultAgent.requireKeyConfidence,
+                    maxPendingProposals: defaultAgent.maxPendingProposals,
+                    requireConfirmation: defaultAgent.requireConfirmation,
+                    research: defaultAgent.research,
+                },
+                permissions: {
+                    canCreate: defaultAgent.canCreate,
+                    canEdit: defaultAgent.canEdit,
+                    canDelete: defaultAgent.canDelete,
+                    canResearch: defaultAgent.canResearch,
+                    autoAccept: defaultAgent.autoAccept,
+                    autoAcceptConfidence: defaultAgent.autoAcceptConfidence,
+                    maxEntriesPerRun: defaultAgent.maxEntriesPerRun,
+                    requireKeyConfidence: defaultAgent.requireKeyConfidence,
+                    requireConfirmation: defaultAgent.requireConfirmation,
+                },
+                currentLorebookName: currentLorebookName,
+                currentLorebookData: currentLorebookData,
+            };
+            if (typeof initAgentUI === 'function') {
+                await initAgentUI(context);
+                agentUIInitialized = true;
+            }
         }
     } catch (e) {
         console.error('Failed to initialize agent UI:', e);
@@ -140,7 +141,8 @@ async function init() {
 
     const urlParams = new URLSearchParams(window.location.search);
     const initialTab = urlParams.get('tab');
-    if (initialTab === 'agent-config') switchToView('agent-config');
+    if (initialTab === 'agent-dashboard') switchToView('agent-dashboard');
+    else if (initialTab === 'agent-config') switchToView('agent-config');
     else if (initialTab === 'agent-feed') switchToView('agent-feed');
 }
 
@@ -3497,9 +3499,9 @@ function setupEventListeners() {
     mutualExclusive('xml-constant', 'xml-vectorized');
 
     // Agent sidebar routing
-    const navConfig = document.getElementById('nav-agent-config');
-    if (navConfig) {
-        navConfig.addEventListener('click', function () { switchToView('agent-config'); });
+    const navDashboard = document.getElementById('nav-agent-dashboard');
+    if (navDashboard) {
+        navDashboard.addEventListener('click', function () { switchToView('agent-dashboard'); });
     }
 
     const navFeed = document.getElementById('nav-agent-feed');
@@ -3514,16 +3516,29 @@ function switchToView(view) {
     document.querySelectorAll('.agent-sidebar-item').forEach(i => i.classList.remove('active'));
     els.mainToolbar.style.display = 'none';
 
+    const dashboardPanel = document.getElementById('agent-dashboard-panel');
     const configPanel = document.getElementById('agent-config-panel');
     const feedPanel = document.getElementById('agent-feed-panel');
+    if (dashboardPanel) dashboardPanel.classList.add('hidden');
     if (configPanel) configPanel.classList.add('hidden');
     if (feedPanel) feedPanel.classList.add('hidden');
 
-    if (view === 'agent-config') {
+    if (view === 'agent-dashboard') {
+        const nav = document.getElementById('nav-agent-dashboard');
+        if (nav) nav.classList.add('active');
+        if (dashboardPanel) dashboardPanel.classList.remove('hidden');
+        els.currentTitle.textContent = 'Agent Dashboard';
+        if (typeof renderDashboard === 'function') {
+            renderDashboard();
+        }
+    } else if (view === 'agent-config') {
         const nav = document.getElementById('nav-agent-config');
         if (nav) nav.classList.add('active');
         if (configPanel) configPanel.classList.remove('hidden');
         els.currentTitle.textContent = 'Agent Configuration';
+        if (typeof openAgentConfig === 'function') {
+            openAgentConfig(activeAgentId || null);
+        }
     } else if (view === 'agent-feed') {
         const nav = document.getElementById('nav-agent-feed');
         if (nav) nav.classList.add('active');

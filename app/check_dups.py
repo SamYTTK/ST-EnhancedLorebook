@@ -1,6 +1,8 @@
+import os
 import re
 
-with open('d:/Games/OTHERS/SillyTavern-Launcher/SillyTavern/public/scripts/extensions/third-party/ST-EnhancedLorebook/app/index.html', encoding='utf8') as f:
+_base = os.path.dirname(__file__)
+with open(os.path.join(_base, 'index.html'), encoding='utf8') as f:
     html = f.read()
 
 ids = re.findall(r'id="([^"]+)"', html)

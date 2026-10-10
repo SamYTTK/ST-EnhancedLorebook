@@ -9,11 +9,74 @@ let selectedEntries = new Set();
 let lastClickedEntryUid = null;
 let extensionSettings = {};
 let expandedFolders = new Set();
-let downloadFn = null;
 let agentEngine = null;
 let agentManager = null;
 let agentUIInitialized = false;
 let currentViewMode = 'lorebook';
+let panelHeights = {};
+let panelCollapsed = {};
+// Clipboard for copy/paste that respects folder URL (extension-only)
+let EL_clipboard = null; // { book, items: [{ entry, url }] }
+const PANEL_KEYS = ['character', 'lorebooks', 'agent'];
+
+// ── EL Logger helpers (reuse ST's minLogLevel, Q2 file + console, Q4 toastr for data-loss) ─
+function EL_log(...args){ try { (window.ELLogger||console).log('[EL]', ...args); } catch {} }
+function EL_info(...args){ try { (window.ELLogger||console).info('[EL]', ...args); } catch {} }
+function EL_warn(...args){ try { (window.ELLogger||console).warn('[EL]', ...args); } catch {} }
+function EL_error(...args){ try { (window.ELLogger||console).error('[EL]', ...args); } catch {} }
+function EL_debugPromoted(...args){ try { const L=window.ELLogger||console; if(L.debugPromoted) L.debugPromoted('[EL]', ...args); else L.log('[EL]', ...args); } catch {} }
+function EL_isGenerating(){
+    try {
+        if (typeof window !== 'undefined' && Number(window._elHubRunning) > 0) return true;
+        // ST global generation flag
+        if (typeof ST_Window !== 'undefined' && ST_Window.SillyTavern && ST_Window.SillyTavern.getContext) {
+            const ctx = ST_Window.SillyTavern.getContext();
+            if (ctx && (ctx.isGenerating || ctx.is_send_press)) return true;
+        }
+        if (typeof stContext !== 'undefined' && stContext && (stContext.isGenerating || stContext.is_send_press)) return true;
+    } catch {}
+    return false;
+}
+function EL_logGuardResult(ok, action, book, detail){
+    if (ok) EL_info(`guardSave ok action=${action} book="${book}"`, detail||'');
+    else { EL_error(`guardSave FAILED/BLOCKED action=${action} book="${book}"`, detail||''); try { if(typeof toastr!=='undefined') toastr.error(`Save failed/blocked for "${book}" (${action})`); else if(ST_Window?.toastr) ST_Window.toastr.error(`Save failed/blocked for "${book}" (${action})`);} catch {} }
+}
+const PANEL_MIN_H = 60;
+
+// ── Dynamic Sync Engine (region-based updates) ─────────────────────────
+// Named "regions" refresh independently. Signals (ST events + a lightweight
+// server poll) are routed to the affected region only; signature gating skips
+// DOM rebuilds when nothing actually changed, so bursts never cause a full
+// reload or UI freeze.
+const SYNC_REGIONS = {
+    LIST: 'list',
+    ACTIVE_GLOBALS: 'active_globals',
+    ACTIVE_CHAR: 'active_char',
+    ENTRIES: 'entries',
+};
+
+const sync = {
+    enabled: true,
+    interval: 5000,
+    settingsData: null,
+    debounceTimers: {},
+    pendingHidden: new Set(),
+    signatures: {
+        list: null,
+        activeGlobals: null,
+        activeChar: null,
+        entries: null,
+    },
+    poll: {
+        globalSelectSig: '',
+        charLoreSig: '',
+        entriesSig: '',
+        entriesBook: null,
+    },
+    lastSave: {},
+    timer: null,
+    unsubscribers: [],
+};
 
 // DOM Elements
 const els = {
@@ -23,6 +86,10 @@ const els = {
     btnSaveTemplate: document.getElementById('btn-save-template'),
 
     listActive: document.getElementById('active-lorebooks-list'),
+    chatLoreList: document.getElementById('chat-lore-list'),
+    characterLoreList: document.getElementById('character-lore-list'),
+    activeCharacterName: document.getElementById('active-character-name'),
+    sidebarPanels: document.getElementById('sidebar-panels'),
     listTemplates: document.getElementById('templates-list'),
     listAll: document.getElementById('all-lorebooks-list'),
 
@@ -57,21 +124,6 @@ async function init() {
         return;
     }
 
-    try {
-        const wiModule = await import('../../../../world-info.js');
-        duplicateWorldInfoEntry = wiModule.duplicateWorldInfoEntry;
-        moveWorldInfoEntry = wiModule.moveWorldInfoEntry;
-    } catch (e) {
-        console.error('Failed to dynamically import world-info.js core functions:', e);
-    }
-
-    try {
-        const utilsModule = await import('../../../../utils.js');
-        downloadFn = utilsModule.download;
-    } catch (e) {
-        console.error('Failed to dynamically import download utility:', e);
-    }
-
     // Load settings
     if (!stContext.extensionSettings[EL_SETTINGS_KEY]) {
         stContext.extensionSettings[EL_SETTINGS_KEY] = {
@@ -83,57 +135,143 @@ async function init() {
     extensionSettings = stContext.extensionSettings[EL_SETTINGS_KEY];
     if (!extensionSettings.folders) extensionSettings.folders = {};
     if (!extensionSettings.templates) extensionSettings.templates = {};
+    if (!extensionSettings.sidebarPanelHeights) extensionSettings.sidebarPanelHeights = {};
+    if (!extensionSettings.sidebarPanelsCollapsed) extensionSettings.sidebarPanelsCollapsed = {};
+    if (!extensionSettings.sync) extensionSettings.sync = {};
+    // Logging prefs: batched + relevance-filtered (verbose off by default)
+    if (typeof extensionSettings.sync.logLevel !== 'string' || !['OFF','ERROR','WARN','INFO','DEBUG'].includes(extensionSettings.sync.logLevel.toUpperCase())) {
+        extensionSettings.sync.logLevel = extensionSettings.sync.logLevel || 'INFO';
+        // Normalize
+        extensionSettings.sync.logLevel = String(extensionSettings.sync.logLevel).toUpperCase();
+        if (!['OFF','ERROR','WARN','INFO','DEBUG'].includes(extensionSettings.sync.logLevel)) extensionSettings.sync.logLevel = 'INFO';
+    } else {
+        extensionSettings.sync.logLevel = extensionSettings.sync.logLevel.toUpperCase();
+    }
+    if (typeof extensionSettings.sync.verbose !== 'boolean') extensionSettings.sync.verbose = false;
+    panelHeights = extensionSettings.sidebarPanelHeights;
+    panelCollapsed = extensionSettings.sidebarPanelsCollapsed;
+    sync.enabled = extensionSettings.sync.enabled !== false;
+    sync.interval = Math.max(1, Number(extensionSettings.sync.interval) || 5) * 1000;
     if (extensionSettings.sidebarWidth) {
         document.documentElement.style.setProperty('--sidebar-width', `${extensionSettings.sidebarWidth}px`);
     }
 
     applyColors();
+    applyPanelHeights();
+    applyPanelCollapsed();
     setupEventListeners();
     createContextMenu();
+
+    // Register the bridge listener BEFORE the first refresh so an in-flight
+    // response (e.g. active lorebooks) can never be missed.
+    window.addEventListener('message', (e) => {
+        if (e.origin !== window.location.origin) return;
+        const msg = e.data;
+        if (!msg || typeof msg !== 'object' || msg.source !== 'enhanced-lorebook') return;
+        if (msg.type === 'el-navigate') {
+            if (msg.tab) {
+                switchToView(msg.tab);
+            } else {
+                showLorebookView();
+            }
+        } else if (msg.type === 'el-agent-character-lorebooks') {
+            renderCharacterLorebooks(msg);
+        } else if (msg.type === 'el-agent-chat-changed') {
+            scheduleRegion(SYNC_REGIONS.ACTIVE_CHAR);
+        } else if (msg.type === 'el-agent-periodic-trigger') {
+            handlePeriodicTriggerFromHost(msg);
+        } else if (msg.type === 'el-agent-settings-sync') {
+            // Host pushed agent list (e.g. after save in main window). Refresh UI.
+            try {
+                if (typeof renderDashboard === 'function') renderDashboard();
+                if (typeof renderAgentSidebar === 'function') renderAgentSidebar();
+                if (typeof initAgentChatPanel === 'function' && currentViewMode === 'agent-chat') initAgentChatPanel();
+            } catch {}
+        }
+    });
+
     await refreshSidebar();
+
+    // Logging: minimal, relevance-filtered, batched (no per-token stream spam)
+    // - Only lorebook-relevant generation summary (single END, not per token/combine)
+    // - Prompt ready only when verbose
+    try {
+        const L = window.ELLogger || console;
+        if (stContext?.eventSource && stContext?.event_types) {
+            const et = stContext.event_types;
+            const es = stContext.eventSource;
+            let _elGenStartTs = 0;
+            const _isVerboseGen = () => {
+                try { return !!extensionSettings?.sync?.verbose; } catch { return false; }
+            };
+            // START: capture ts for duration, single START log (INFO batched)
+            const evStart = et['GENERATION_STARTED'];
+            if (evStart) {
+                try {
+                    es.on(evStart, () => {
+                        _elGenStartTs = Date.now();
+                        try { L.info(`[EL:Gen] generation STARTED book="${currentLorebookName||''}"`); } catch {}
+                    });
+                } catch (e) { try { L.warn(`[EL] failed to hook GENERATION_STARTED`, e); } catch {} }
+            }
+            // END / STOPPED: single summary (duration + single 500-char preview intent)
+            ['GENERATION_ENDED','GENERATION_STOPPED'].forEach(evName => {
+                const ev = et[evName];
+                if (!ev) return;
+                try {
+                    es.on(ev, () => {
+                        try {
+                            const dur = _elGenStartTs ? (Date.now() - _elGenStartTs) : 0;
+                            _elGenStartTs = 0;
+                            L.info(`[EL:Gen] generation ${evName} duration=${dur}ms book="${currentLorebookName||''}"`);
+                        } catch {}
+                    });
+                } catch (e) { try { L.warn(`[EL] failed to hook generation event ${evName}`, e); } catch {} }
+            });
+            // Prompt ready: verbose-only (was spamming each gen)
+            const evPrompt = et['CHAT_COMPLETION_PROMPT_READY'];
+            if (evPrompt) {
+                try {
+                    es.on(evPrompt, (...args) => {
+                        if (!_isVerboseGen()) return;
+                        try {
+                            const L2 = window.ELLogger || console;
+                            const data = args[0]||{};
+                            const prompt = data.prompt || data.chat || '';
+                            const preview = String(prompt).slice(0,500).replace(/\n/g,' ');
+                            L2.info(`[EL:Prompt] prompt_ready verbose len=${String(prompt).length} preview=${preview.slice(0,80)}…`);
+                        } catch {}
+                    });
+                } catch (e) { try { (window.ELLogger||console).warn(`[EL] failed to hook CHAT_COMPLETION_PROMPT_READY`, e); } catch {} }
+            }
+            // Intentionally NOT hooking: STREAM_TOKEN_RECEIVED, GENERATE_BEFORE_COMBINE_PROMPTS, GENERATE_AFTER_COMBINE_PROMPTS, GENERATE_AFTER_DATA
+            // These were per-token / per-combine spam. Agent summary (agent-core.js generation end) already covers needed info in one pass.
+            if (_isVerboseGen()) {
+                try { L.info('[EL] generation hooks installed (filtered, verbose prompt on)'); } catch {}
+            }
+        }
+    } catch (e) { try { console.warn('[EL] generation hook setup failed', e); } catch {} }
+
+    // Dynamic sync: route ST events to the affected region (instant), plus a
+    // lightweight server poll that catches external edits which emit no events.
+    setupSyncSubscriptions();
+    startSyncPolling();
 
     try {
         const managerModule = await import('./agent-manager.js');
-        const agentCoreModule = await import('./agent-core.js');
         const agentUiModule = await import('./agent-ui.js');
         agentManager = new AgentManager();
-        const defaultAgent = agentManager.getAgents()[0];
-        if (defaultAgent) {
-            agentEngine = new AgentEngine(defaultAgent, stContext);
-            const context = {
-                stContext,
-                agentManager,
-                settings: {
-                    mode: defaultAgent.mode,
-                    periodicInterval: defaultAgent.interval,
-                    useSeparateApi: defaultAgent.useSeparateApi,
-                    apiEndpoint: defaultAgent.apiEndpoint,
-                    apiModel: defaultAgent.apiModel,
-                    temperature: defaultAgent.temperature,
-                    maxEntriesPerRun: defaultAgent.maxEntriesPerRun,
-                    requireKeyConfidence: defaultAgent.requireKeyConfidence,
-                    maxPendingProposals: defaultAgent.maxPendingProposals,
-                    requireConfirmation: defaultAgent.requireConfirmation,
-                    research: defaultAgent.research,
-                },
-                permissions: {
-                    canCreate: defaultAgent.canCreate,
-                    canEdit: defaultAgent.canEdit,
-                    canDelete: defaultAgent.canDelete,
-                    canResearch: defaultAgent.canResearch,
-                    autoAccept: defaultAgent.autoAccept,
-                    autoAcceptConfidence: defaultAgent.autoAcceptConfidence,
-                    maxEntriesPerRun: defaultAgent.maxEntriesPerRun,
-                    requireKeyConfidence: defaultAgent.requireKeyConfidence,
-                    requireConfirmation: defaultAgent.requireConfirmation,
-                },
-                currentLorebookName: currentLorebookName,
-                currentLorebookData: currentLorebookData,
-            };
-            if (typeof initAgentUI === 'function') {
-                await initAgentUI(context);
-                agentUIInitialized = true;
-            }
+        // Always init agent UI (even with zero agents) so Dashboard empty-state
+        // + Create Agent button are wired. Runs go through the hub (hub-client.js).
+        const context = {
+            stContext,
+            agentManager,
+            currentLorebookName: currentLorebookName,
+            currentLorebookData: currentLorebookData,
+        };
+        if (typeof initAgentUI === 'function') {
+            await initAgentUI(context);
+            agentUIInitialized = true;
         }
     } catch (e) {
         console.error('Failed to initialize agent UI:', e);
@@ -144,6 +282,7 @@ async function init() {
     if (initialTab === 'agent-dashboard') switchToView('agent-dashboard');
     else if (initialTab === 'agent-config') switchToView('agent-config');
     else if (initialTab === 'agent-feed') switchToView('agent-feed');
+    else if (initialTab === 'agent-chat') switchToView('agent-chat');
 }
 
 function saveSettings() {
@@ -152,6 +291,10 @@ function saveSettings() {
 
 function refreshAfterAgentChange(lorebookName) {
     if (currentLorebookName === lorebookName && currentViewMode === 'lorebook') {
+        sync.poll.entriesSig = entriesSignature(currentLorebookData);
+        sync.poll.entriesBook = currentLorebookName;
+        sync.signatures.entries = sync.poll.entriesSig;
+        sync.lastSave[lorebookName] = Date.now();
         renderEntries();
     }
 }
@@ -174,6 +317,14 @@ function openSettings() {
     document.getElementById('color-panel').value = colors.panel || '#1a1c29'; /* Simplified */
     document.getElementById('color-text').value = colors.text || '#e2e8f0';
     document.getElementById('color-primary').value = colors.primary || '#6366f1';
+    const syncEnabled = document.getElementById('sync-enabled');
+    if (syncEnabled) syncEnabled.checked = sync.enabled;
+    const syncInterval = document.getElementById('sync-interval');
+    if (syncInterval) syncInterval.value = Math.round(sync.interval / 1000);
+    const syncLogLevel = document.getElementById('sync-loglevel');
+    if (syncLogLevel) syncLogLevel.value = (extensionSettings.sync?.logLevel || 'INFO').toUpperCase();
+    const syncVerbose = document.getElementById('sync-verbose');
+    if (syncVerbose) syncVerbose.checked = !!extensionSettings.sync?.verbose;
     els.settingsModal.classList.add('active');
 }
 
@@ -189,14 +340,7 @@ function updateColor(key, cssVar, value) {
 // ==========================================
 async function refreshSidebar() {
     const allNames = stContext.getWorldInfoNames();
-
-    // In standard ST, active global lorebooks are in stContext.world_info_settings ?
-    // We'll just read from ST's world_info element if possible, or global settings.
-    const stSelect = ST_Window.document.getElementById('world_info');
-    let activeGlobals = [];
-    if (stSelect) {
-        activeGlobals = Array.from(stSelect.selectedOptions).map(opt => opt.text).filter(v => v);
-    }
+    const activeGlobals = getActiveGlobals();
 
     renderLorebookList(els.listAll, allNames, (name) => {
         openLorebook(name);
@@ -207,6 +351,512 @@ async function refreshSidebar() {
     }, false, true);
 
     renderTemplatesList();
+    requestCharacterLorebooks();
+}
+
+function requestCharacterLorebooks() {
+    try {
+        if (ST_Window && typeof ST_Window.postMessage === 'function') {
+            ST_Window.postMessage({ source: 'enhanced-lorebook', type: 'el-agent-request-character-lorebooks' }, window.location.origin);
+        }
+    } catch (e) {
+        console.error('Enhanced Lorebook: failed to request character lorebooks', e);
+    }
+}
+
+function renderCharacterLorebooks(payload) {
+    // Skip redundant re-renders when the active-lorebook set didn't change.
+    const sig = JSON.stringify({
+        id: payload?.characterId ?? null,
+        name: payload?.characterName || '',
+        chat: payload?.chatLorebook || '',
+        chars: payload?.characterLorebooks || [],
+        embedded: payload?.embeddedBook || '',
+    });
+    if (sig === sync.signatures.activeChar) return;
+    sync.signatures.activeChar = sig;
+
+    const characterName = payload?.characterName || '';
+    if (els.activeCharacterName) {
+        els.activeCharacterName.textContent = characterName || (payload?.characterId === null || payload?.characterId === undefined ? 'No Character' : '');
+        els.activeCharacterName.title = characterName || 'No character selected';
+    }
+    if (!els.chatLoreList && !els.characterLoreList) return;
+
+    const allNames = stContext.getWorldInfoNames ? stContext.getWorldInfoNames() : [];
+
+    const chatLore = (payload && typeof payload.chatLorebook === 'string') ? payload.chatLorebook : '';
+    const chatExisting = (chatLore && allNames.includes(chatLore)) ? [chatLore] : [];
+
+    const charBooks = (payload && Array.isArray(payload.characterLorebooks)) ? payload.characterLorebooks : [];
+    const charExisting = charBooks.filter(name => allNames.includes(name));
+
+    // An embedded-only primary (never imported as a file) won't be in world_names,
+    // so append it explicitly so it is never silently dropped.
+    const embeddedBook = (payload && typeof payload.embeddedBook === 'string' && payload.embeddedBook) ? payload.embeddedBook : '';
+    if (embeddedBook && !charExisting.includes(embeddedBook)) {
+        charExisting.unshift(embeddedBook);
+    }
+
+    if (els.chatLoreList) {
+        renderLorebookList(els.chatLoreList, chatExisting, (name) => {
+            openLorebook(name);
+        }, false, false);
+    }
+    if (els.characterLoreList) {
+        renderLorebookList(els.characterLoreList, charExisting, (name) => {
+            openLorebook(name);
+        }, false, false);
+    }
+
+    if (extensionSettings.sync?.verbose) try { (window.ELLogger||console).debug('Enhanced Lorebook: rendered active lorebooks', payload); } catch {}
+    else if (window.ELLogger?.sync) try { window.ELLogger.sync('rendered active lorebooks', payload); } catch {}
+}
+
+// ==========================================
+// Dynamic Sync Engine (region-based updates)
+// ==========================================
+
+function getActiveGlobals() {
+    const stSelect = ST_Window.document.getElementById('world_info');
+    if (stSelect) {
+        return Array.from(stSelect.selectedOptions).map(opt => opt.text).filter(v => v);
+    }
+    return [];
+}
+
+function namesSignature(names) {
+    return (names || []).slice().sort().join('\n');
+}
+
+function entriesSignature(book) {
+    if (!book || !book.entries) return '';
+    const parts = [];
+    for (const uid of Object.keys(book.entries)) {
+        const e = book.entries[uid] || {};
+        parts.push(uid + ':' + (e.content ? e.content.length : 0) + ':' + safeJoin(e.key) + ':' + (e.comment || '').length);
+    }
+    return parts.join('|');
+}
+
+function isEntryEditorOpen() {
+    return ['edit-entry-modal', 'add-item-modal', 'batch-options-modal'].some(id => {
+        const el = document.getElementById(id);
+        return !!(el && el.classList.contains('active'));
+    });
+}
+
+async function fetchSettingsData() {
+    try {
+        const headers = (typeof stContext.getRequestHeaders === 'function') ? stContext.getRequestHeaders() : { 'Content-Type': 'application/json' };
+        const resp = await fetch('/api/settings/get', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({}),
+            cache: 'no-cache',
+        });
+        if (!resp.ok) return null;
+        return await resp.json();
+    } catch (e) {
+        console.error('Enhanced Lorebook: settings poll failed', e);
+        return null;
+    }
+}
+
+function scheduleRegion(region) {
+    if (sync.debounceTimers[region]) clearTimeout(sync.debounceTimers[region]);
+    sync.debounceTimers[region] = setTimeout(() => {
+        sync.debounceTimers[region] = null;
+        refreshRegion(region);
+    }, 300);
+}
+
+function refreshRegion(region) {
+    if (document.hidden) {
+        sync.pendingHidden.add(region);
+        return;
+    }
+    switch (region) {
+        case SYNC_REGIONS.LIST:
+            refreshListRegion();
+            break;
+        case SYNC_REGIONS.ACTIVE_GLOBALS:
+            refreshActiveGlobalsFrom(getActiveGlobals());
+            break;
+        case SYNC_REGIONS.ACTIVE_CHAR:
+            requestCharacterLorebooks();
+            break;
+        case SYNC_REGIONS.ENTRIES:
+            if (currentViewMode === 'lorebook' && currentLorebookName && !isEntryEditorOpen()) {
+                ensureFoldersStructure(currentLorebookName);
+                renderEntries();
+            }
+            break;
+    }
+}
+
+function refreshListRegion() {
+    const allNames = stContext.getWorldInfoNames();
+    const sig = namesSignature(allNames);
+    if (sig === sync.signatures.list) return;
+    sync.signatures.list = sig;
+    renderLorebookList(els.listAll, allNames, (name) => {
+        openLorebook(name);
+    }, true);
+    renderTemplatesList();
+}
+
+function refreshActiveGlobalsFrom(globals) {
+    const list = (globals || []).filter(n => typeof n === 'string' && n);
+    const sig = list.slice().sort().join('\n');
+    if (sig === sync.signatures.activeGlobals) return;
+    sync.signatures.activeGlobals = sig;
+    renderLorebookList(els.listActive, list, (name) => {
+        openLorebook(name);
+    }, false, true);
+}
+
+function applyEntriesData(name, data) {
+    const newData = (data && data.entries) ? data : { entries: {} };
+    currentLorebookData = newData;
+    const sig = entriesSignature(newData);
+    sync.poll.entriesSig = sig;
+    sync.poll.entriesBook = name;
+    sync.signatures.entries = sig;
+    if (!document.hidden && currentViewMode === 'lorebook' && currentLorebookName && !isEntryEditorOpen()) {
+        ensureFoldersStructure(currentLorebookName);
+        renderEntries();
+    }
+}
+
+async function syncPollTick() {
+    if (document.hidden || !sync.enabled) return;
+
+    const settingsData = await fetchSettingsData();
+    if (!settingsData) return;
+    sync.settingsData = settingsData;
+
+    // LIST: external creates/deletes emit no events, so reconcile the parent's
+    // world_names against the authoritative server list.
+    if (Array.isArray(settingsData.world_names)) {
+        const authSig = namesSignature(settingsData.world_names);
+        const parentNames = stContext.getWorldInfoNames();
+        const parentSig = namesSignature(parentNames);
+        if (authSig !== parentSig) {
+            const authNames = settingsData.world_names;
+            const added = authNames.filter(n => !parentNames.includes(n));
+            try {
+                if (typeof stContext.updateWorldInfoList === 'function') {
+                    await stContext.updateWorldInfoList();
+                }
+            } catch (e) {
+                console.error('Enhanced Lorebook: failed to re-sync world info list', e);
+            }
+            scheduleRegion(SYNC_REGIONS.LIST);
+            // Lorebook duplication with URL-aware folder clone (extension-only, no ST pollution)
+            if (added.length) {
+                // Defer a tick so ST has the new file on disk
+                setTimeout(() => {
+                    for (const nb of added) EL_checkAndPromptLorebookFolderClone(nb).catch(() => {});
+                }, 800);
+            }
+        }
+    }
+
+    // ACTIVE: globalSelect / charLore bindings changed.
+    const wi = settingsData?.world_info_settings?.world_info;
+    const gsSig = namesSignature(wi?.globalSelect || []);
+    if (gsSig !== sync.poll.globalSelectSig) {
+        sync.poll.globalSelectSig = gsSig;
+        refreshActiveGlobalsFrom(wi?.globalSelect || []);
+    }
+    const charSig = JSON.stringify(wi?.charLore || []);
+    if (charSig !== sync.poll.charLoreSig) {
+        sync.poll.charLoreSig = charSig;
+        scheduleRegion(SYNC_REGIONS.ACTIVE_CHAR);
+    }
+
+    // ENTRIES: the open book changed on the server without an event.
+    if (currentLorebookName && currentViewMode === 'lorebook' && !isEntryEditorOpen()) {
+        const book = currentLorebookName;
+        const savedBefore = sync.lastSave[book] || 0;
+        const serverData = await ELG_fetchServerState(book);
+        if (serverData && serverData.entries && (sync.lastSave[book] || 0) === savedBefore) {
+            const serverSig = entriesSignature(serverData);
+            if (serverSig !== sync.poll.entriesSig || sync.poll.entriesBook !== book) {
+                applyEntriesData(book, serverData);
+            }
+        }
+    }
+}
+
+function startSyncPolling() {
+    stopSyncPolling();
+    if (!sync.enabled) return;
+    sync.timer = setInterval(syncPollTick, sync.interval);
+}
+
+function stopSyncPolling() {
+    if (sync.timer) {
+        clearInterval(sync.timer);
+        sync.timer = null;
+    }
+}
+
+async function EL_checkAndPromptLorebookFolderClone(newBookName) {
+    try {
+        if (!newBookName || typeof newBookName !== 'string') return;
+        if (!extensionSettings || !extensionSettings.folders) return;
+        // If new book already has folders, skip
+        const existing = extensionSettings.folders[newBookName];
+        if (Array.isArray(existing) && existing.length > 0) return;
+        // Fetch new book entries
+        let newData = null;
+        try { newData = await ELG_loadFresh(newBookName); } catch {}
+        if (!newData || !newData.entries || Object.keys(newData.entries).length === 0) return;
+        const newUids = new Set(Object.keys(newData.entries).map(String));
+        // Find best source book whose folders overlap heavily with new book's UID set
+        let bestSource = null;
+        let bestScore = 0;
+        let bestIdMap = null;
+        for (const [candName, folders] of Object.entries(extensionSettings.folders)) {
+            if (!Array.isArray(folders) || !folders.length) continue;
+            if (candName === newBookName) continue;
+            const candUids = new Set();
+            for (const f of folders) {
+                if (Array.isArray(f.entries)) f.entries.forEach(uid => candUids.add(String(uid)));
+            }
+            if (!candUids.size) continue;
+            // Score = intersection size / candidate size
+            let inter = 0;
+            for (const uid of candUids) if (newUids.has(uid)) inter++;
+            const score = inter / candUids.size;
+            if (score > bestScore) {
+                bestScore = score;
+                bestSource = candName;
+            }
+            // Also try content-based match if score low but entry counts equal (file copy may have regenerated UIDs)
+            if (score < 0.5) {
+                try {
+                    const candData = await ELG_loadFresh(candName);
+                    if (candData && candData.entries) {
+                        const candEntries = Object.values(candData.entries);
+                        const newEntries = Object.values(newData.entries);
+                        if (candEntries.length === newEntries.length && candEntries.length > 0) {
+                            // Build map by content hash (keys+comment+content)
+                            const hash = e => `${(e.key||[]).join('|')}::${e.comment||''}::${(e.content||'').slice(0,200)}`;
+                            const candMap = new Map();
+                            for (const [uid, e] of Object.entries(candData.entries)) candMap.set(hash(e), String(uid));
+                            let matched = 0;
+                            const uidRemap = new Map();
+                            for (const [newUid, ne] of Object.entries(newData.entries)) {
+                                const oldUid = candMap.get(hash(ne));
+                                if (oldUid) { matched++; uidRemap.set(String(oldUid), String(newUid)); }
+                            }
+                            const contentScore = matched / candEntries.length;
+                            if (contentScore > bestScore && contentScore >= 0.7) {
+                                bestScore = contentScore;
+                                bestSource = candName;
+                                bestIdMap = uidRemap;
+                            }
+                        }
+                    }
+                } catch {}
+            }
+        }
+        if (!bestSource || bestScore < 0.5) return;
+        // Prompt user — this is extension-only clone, avoid ST pollution
+        const foldersSnapshot = window.ELFolderUrl ? window.ELFolderUrl.getFoldersSnapshot(bestSource) : (extensionSettings.folders[bestSource] || []);
+        if (!foldersSnapshot.length) return;
+        const msg = `New lorebook "${newBookName}" looks like a copy of "${bestSource}" (${Math.round(bestScore * 100)}% match). Copy its folder structure (groups) as well? This only affects the extension's group mapping, not ST data.`;
+        let doClone = false;
+        try { doClone = confirm(msg); } catch { doClone = false; }
+        if (!doClone) return;
+        if (bestIdMap && bestIdMap.size) {
+            if (window.ELFolderUrl) window.ELFolderUrl.restoreFoldersWithRemap(newBookName, foldersSnapshot, bestIdMap);
+            else extensionSettings.folders[newBookName] = JSON.parse(JSON.stringify(foldersSnapshot));
+            // Reassign entries that were remapped but not yet in folders due to path
+            saveSettings();
+            if (typeof showToast === 'function') showToast(`Folder structure copied from "${bestSource}" (content-matched)`);
+        } else {
+            // Direct clone — UIDs identical
+            if (window.ELFolderUrl) {
+                // Use clone helper to re-id folders to avoid id collision but keep entries
+                const srcSnap = window.ELFolderUrl.getFoldersSnapshot(bestSource);
+                // Preserve entries verbatim if UIDs match
+                window.ELFolderUrl.setFoldersSnapshot(newBookName, srcSnap);
+            } else {
+                extensionSettings.folders[newBookName] = JSON.parse(JSON.stringify(foldersSnapshot));
+            }
+            saveSettings();
+            if (typeof showToast === 'function') showToast(`Folder structure copied from "${bestSource}"`);
+        }
+        // If new book is currently open, re-render
+        if (currentLorebookName === newBookName) {
+            ensureFoldersStructure(newBookName);
+            renderEntries();
+        }
+    } catch (e) {
+        console.warn('[EL] lorebook folder clone check failed', e);
+    }
+}
+
+function flushPendingHiddenRegions() {
+    const pending = Array.from(sync.pendingHidden);
+    sync.pendingHidden.clear();
+    for (const region of pending) refreshRegion(region);
+}
+
+function setupSyncSubscriptions() {
+    if (!stContext.eventSource || !stContext.event_types) return;
+    const es = stContext.eventSource;
+    const et = stContext.event_types;
+
+    const handlers = [
+        {
+            event: et.WORLDINFO_UPDATED,
+            handler: (name, data) => {
+                if (name === currentLorebookName) {
+                    sync.lastSave[name] = Date.now();
+                    applyEntriesData(name, data);
+                } else {
+                    scheduleRegion(SYNC_REGIONS.LIST);
+                }
+            },
+        },
+        {
+            event: et.WORLDINFO_SETTINGS_UPDATED,
+            handler: () => {
+                scheduleRegion(SYNC_REGIONS.LIST);
+                scheduleRegion(SYNC_REGIONS.ACTIVE_GLOBALS);
+                scheduleRegion(SYNC_REGIONS.ACTIVE_CHAR);
+            },
+        },
+        {
+            event: et.WORLDINFO_ENTRIES_LOADED,
+            handler: () => scheduleRegion(SYNC_REGIONS.ACTIVE_CHAR),
+        },
+        {
+            event: et.EXTENSION_SETTINGS_LOADED,
+            handler: () => scheduleRegion(SYNC_REGIONS.LIST),
+        },
+    ];
+
+    for (const h of handlers) {
+        try {
+            es.on(h.event, h.handler);
+            sync.unsubscribers.push(() => es.removeListener(h.event, h.handler));
+        } catch (e) {
+            console.error('Enhanced Lorebook: failed to subscribe to ' + h.event, e);
+        }
+    }
+
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) return;
+        flushPendingHiddenRegions();
+        syncPollTick();
+    });
+    window.addEventListener('focus', () => {
+        if (!document.hidden) syncPollTick();
+    });
+    window.addEventListener('beforeunload', () => {
+        stopSyncPolling();
+        for (const unsub of sync.unsubscribers) {
+            try { unsub(); } catch (e) { }
+        }
+        sync.unsubscribers = [];
+    });
+}
+
+// ==========================================
+// Sidebar Panels (collapsible / resizable)
+// ==========================================
+function clamp(val, min, max) {
+    return Math.min(Math.max(val, min), max);
+}
+
+function applyPanelHeights() {
+    if (!els.sidebarPanels) return;
+    for (const key of PANEL_KEYS) {
+        const h = panelHeights[key];
+        if (typeof h === 'number' && h > 0) {
+            els.sidebarPanels.style.setProperty(`--panel-h-${key}`, `${Math.round(h)}px`);
+        }
+    }
+}
+
+function setPanelHeight(key, px) {
+    panelHeights[key] = Math.round(px);
+    if (els.sidebarPanels) {
+        els.sidebarPanels.style.setProperty(`--panel-h-${key}`, `${Math.round(px)}px`);
+    }
+}
+
+function applyPanelCollapsed() {
+    if (!els.sidebarPanels) return;
+    for (const key of PANEL_KEYS) {
+        const panel = document.getElementById(`panel-${key}`);
+        const collapsed = !!panelCollapsed[key];
+        if (panel) panel.classList.toggle('collapsed', collapsed);
+        els.sidebarPanels.classList.toggle(`${key}-collapsed`, collapsed);
+    }
+    updateResizerVisibility();
+}
+
+function updateResizerVisibility() {
+    document.querySelectorAll('.panel-resizer').forEach(resizer => {
+        const key = resizer.dataset.panel;
+        let hidden = !!panelCollapsed[key];
+        if (key === 'lorebooks' && !!panelCollapsed['agent']) {
+            hidden = true; // lorebooks becomes the filler when agent is collapsed
+        }
+        resizer.classList.toggle('collapsed-hidden', hidden);
+    });
+}
+
+function togglePanel(key) {
+    panelCollapsed[key] = !panelCollapsed[key];
+    applyPanelCollapsed();
+    saveSettings();
+}
+
+function wirePanelControls() {
+    if (!els.sidebarPanels) return;
+
+    document.querySelectorAll('.panel-header').forEach(header => {
+        header.addEventListener('click', () => togglePanel(header.dataset.panel));
+    });
+
+    document.querySelectorAll('.panel-resizer').forEach(resizer => {
+        const key = resizer.dataset.panel;
+        if (!key) return;
+        resizer.addEventListener('mousedown', (e) => {
+            e.preventDefault();
+            const panel = document.getElementById(`panel-${key}`);
+            const container = els.sidebarPanels;
+            const startY = e.clientY;
+            const startH = panel ? panel.getBoundingClientRect().height : 0;
+            const maxH = Math.max(PANEL_MIN_H, container.clientHeight - PANEL_MIN_H * 2 - 60);
+
+            const onMove = (ev) => {
+                const delta = ev.clientY - startY;
+                setPanelHeight(key, clamp(startH + delta, PANEL_MIN_H, maxH));
+            };
+            const onUp = () => {
+                window.removeEventListener('mousemove', onMove);
+                window.removeEventListener('mouseup', onUp);
+                resizer.classList.remove('active');
+                document.body.style.userSelect = '';
+                document.body.style.cursor = '';
+                saveSettings();
+            };
+            window.addEventListener('mousemove', onMove);
+            window.addEventListener('mouseup', onUp);
+            resizer.classList.add('active');
+            document.body.style.userSelect = 'none';
+            document.body.style.cursor = 'row-resize';
+        });
+    });
 }
 
 function renderLorebookList(container, names, onClick, showToggle = false, showRemove = false) {
@@ -362,6 +1012,23 @@ async function openLorebook(name) {
 
     ensureFoldersStructure(name);
     renderEntries();
+}
+
+function showLorebookView() {
+    currentViewMode = 'lorebook';
+    hideAgentPanels();
+    document.querySelectorAll('.agent-sidebar-item').forEach(i => i.classList.remove('active'));
+    if (currentLorebookName) {
+        els.currentTitle.textContent = currentLorebookName;
+        els.entriesContainer.classList.remove('hidden');
+        els.mainToolbar.style.display = 'flex';
+        renderEntries();
+    } else {
+        els.currentTitle.textContent = 'No Lorebook Selected';
+        els.entriesContainer.classList.remove('hidden');
+        els.mainToolbar.style.display = 'none';
+        els.entriesContainer.innerHTML = '<div class="empty-state"><i class="fa-solid fa-book-open fa-3x"></i><p>Select a lorebook from the sidebar</p></div>';
+    }
 }
 
 function ensureFoldersStructure(lbName) {
@@ -909,7 +1576,7 @@ function createEntryCard(uid) {
                 }
             }
             if (e.target.classList.contains('inline-entry-prob')) entry.probability = val;
-            await stContext.saveWorldInfo(currentLorebookName, currentLorebookData);
+            { const _inlineOk = await ELG_guardSave(currentLorebookName, currentLorebookData, { explicitDelete: false, source: 'user', note: 'Inline edit' }); EL_logGuardResult(_inlineOk,'Inline edit',currentLorebookName); if(!_inlineOk){ EL_error('Inline edit blocked/failed'); try{ const f=await ELG_loadFresh(currentLorebookName); if(f) currentLorebookData=f; renderEntries(); }catch(e){ EL_warn('reload after inline fail',e);} } }
             if (e.target.classList.contains('inline-entry-order')) {
                 renderEntries();
             }
@@ -1090,21 +1757,21 @@ async function downloadSelectedEntries(format) {
 
     const filename = `${sanitizedName}_${entries.length}_entries.${ext}`;
 
-    if (downloadFn) {
-        downloadFn(content, filename, mimeType);
-    } else {
-        const blob = new Blob([content], { type: mimeType });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        setTimeout(() => URL.revokeObjectURL(url), 1000);
-    }
+    download(content, filename, mimeType);
 
     showToast(`Downloaded ${entries.length} entries as ${ext.toUpperCase()}`);
+}
+
+function download(content, fileName, contentType) {
+    const blob = new Blob([content], { type: contentType });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 // ==========================================
@@ -1929,14 +2596,9 @@ async function createItems() {
             const role = selectedOption.dataset.role !== '' ? parseInt(selectedOption.dataset.role) : null;
 
             const newUids = [];
-            let maxUid = 0;
-            Object.keys(currentLorebookData.entries).forEach(uid => {
-                if (parseInt(uid) > maxUid) maxUid = parseInt(uid);
-            });
-
             for (let i = 0; i < count; i++) {
-                maxUid++;
-                const newUid = maxUid;
+                const newUid = getFreeWorldEntryUid(currentLorebookData);
+                if (newUid === null) { console.error('Enhanced Lorebook: Couldn\'t assign UID'); break; }
                 const entryComment = commentsList[i] || '';
                 
                 currentLorebookData.entries[newUid] = {
@@ -1970,7 +2632,7 @@ async function createItems() {
                 }
             }
 
-            await stContext.saveWorldInfo(currentLorebookName, currentLorebookData);
+            { const _qaOk = await ELG_guardSave(currentLorebookName, currentLorebookData, { explicitDelete: false, source: 'user', note: 'Quick add entry' }); EL_logGuardResult(_qaOk,'Quick add',currentLorebookName); if(!_qaOk) EL_error('Quick add blocked/failed'); }
             closeAddItemModal();
             renderEntries();
         }
@@ -1983,10 +2645,6 @@ async function createItems() {
 
         const sView = document.querySelector('.settings-tab-btn.active').dataset.sview;
         const newUids = [];
-        let maxUid = 0;
-        Object.keys(currentLorebookData.entries).forEach(uid => {
-            if (parseInt(uid) > maxUid) maxUid = parseInt(uid);
-        });
 
         const applyOrder = document.getElementById('g-apply-order').checked;
         const orderVal = parseInt(document.getElementById('g-order').value) || 100;
@@ -2011,8 +2669,9 @@ async function createItems() {
         const preventRecursionVal = document.getElementById('g-prevent').checked;
 
         for (let i = 0; i < advancedRows.length; i++) {
-            maxUid++;
-            const newUid = maxUid;
+            const newUid = getFreeWorldEntryUid(currentLorebookData);
+
+            if (newUid === null) { console.error('Enhanced Lorebook: Couldn\'t assign UID'); continue; }
             const row = advancedRows[i];
 
             const keys = row.key ? row.key.split(',').map(s => s.trim()).filter(Boolean) : [];
@@ -2070,7 +2729,7 @@ async function createItems() {
             }
         }
 
-        await stContext.saveWorldInfo(currentLorebookName, currentLorebookData);
+        { const _advOk = await ELG_guardSave(currentLorebookName, currentLorebookData, { explicitDelete: false, source: 'user', note: 'Advanced add entries' }); EL_logGuardResult(_advOk,'Advanced add',currentLorebookName); if(!_advOk) EL_error('Advanced add blocked/failed'); }
         closeAddItemModal();
         renderEntries();
     } else if (activeTab === 'xml') {
@@ -2123,14 +2782,12 @@ async function createItems() {
         };
 
         const newUids = [];
-        let maxUid = 0;
-        Object.keys(currentLorebookData.entries).forEach(uid => {
-            if (parseInt(uid) > maxUid) maxUid = parseInt(uid);
-        });
+
 
         for (const parsed of parsedEntries) {
-            maxUid++;
-            const newUid = maxUid;
+            const newUid = getFreeWorldEntryUid(currentLorebookData);
+
+            if (newUid === null) { console.error('Enhanced Lorebook: Couldn\'t assign UID'); continue; }
             const ov = parsed.overrides;
 
             currentLorebookData.entries[newUid] = {
@@ -2188,7 +2845,7 @@ async function createItems() {
             }
         }
 
-        await stContext.saveWorldInfo(currentLorebookName, currentLorebookData);
+        { const _xmlOk = await ELG_guardSave(currentLorebookName, currentLorebookData, { explicitDelete: false, source: 'user', note: 'XML add entries' }); EL_logGuardResult(_xmlOk,'XML add',currentLorebookName); if(!_xmlOk) EL_error('XML add blocked/failed'); }
         closeAddItemModal();
         renderEntries();
     }
@@ -2439,7 +3096,7 @@ async function applyBatchOptions() {
         saveSettings();
     }
 
-    await stContext.saveWorldInfo(currentLorebookName, currentLorebookData);
+    { const _batchOk = await ELG_guardSave(currentLorebookName, currentLorebookData, { explicitDelete: false, source: 'user', note: 'Batch edit' }); EL_logGuardResult(_batchOk,'Batch edit',currentLorebookName); if(!_batchOk) EL_error('Batch edit blocked/failed'); }
     els.batchModal.classList.remove('active');
     renderEntries();
 }
@@ -2623,7 +3280,10 @@ async function saveEditedEntry() {
     entry.delay_until_recursion = document.getElementById('edit-delay-recursion').checked;
     entry.ignoreBudget = document.getElementById('edit-ignore-budget').checked;
 
-    await stContext.saveWorldInfo(currentLorebookName, currentLorebookData);
+    if (EL_isGenerating()) EL_warn(`saveEditedEntry: generation running (agent=${agentEngine?.state}) — save may race with agent`, { uid: entry.uid, book: currentLorebookName });
+    const _guardOk = await ELG_guardSave(currentLorebookName, currentLorebookData, { explicitDelete: false, source: 'user', note: 'Save edited entry' });
+    EL_logGuardResult(_guardOk, 'saveEditedEntry', currentLorebookName, { uid: entry.uid });
+    if (!_guardOk) { EL_error('saveEditedEntry blocked/failed — entry not persisted, will reload from server'); try { const fresh = await ELG_loadFresh(currentLorebookName); if(fresh){ currentLorebookData=fresh; } } catch(e){ EL_warn('reload after failed save failed', e);} }
     document.getElementById('edit-entry-modal').classList.remove('active');
     renderEntries();
 }
@@ -2631,11 +3291,10 @@ async function saveEditedEntry() {
 // ==========================================
 // Context Menu
 // ==========================================
-let duplicateWorldInfoEntry = null;
-let moveWorldInfoEntry = null;
 
 function getFreeWorldEntryUid(data) {
     if (!data || !('entries' in data)) {
+        EL_warn('getFreeWorldEntryUid: invalid data', data);
         return null;
     }
     const MAX_UID = 1000000;
@@ -2645,7 +3304,200 @@ function getFreeWorldEntryUid(data) {
         }
         return uid;
     }
+    EL_error('getFreeWorldEntryUid: UID space exhausted (1M)', { book: currentLorebookName, entries: Object.keys(data.entries).length });
+    try { if(typeof toastr!=='undefined') toastr.error('UID space exhausted — cannot create entry'); } catch {}
     return null;
+}
+
+function duplicateWorldInfoEntry(data, uid) {
+    if (!data || !('entries' in data) || !data.entries[uid]) {
+        EL_warn('duplicateWorldInfoEntry: invalid data/uid', { uid, hasData: !!data, hasEntry: !!(data && data.entries && data.entries[uid]) });
+        return null;
+    }
+
+    const newUid = getFreeWorldEntryUid(data);
+    if (newUid === null) {
+        EL_error('duplicateWorldInfoEntry: Couldn\'t assign UID', { uid, book: currentLorebookName });
+        try { if(typeof toastr!=='undefined') toastr.error('Duplicate failed: no free UID'); } catch {}
+        return null;
+    }
+    try { EL_info(`duplicateWorldInfoEntry uid=${uid} → newUid=${newUid} book="${currentLorebookName}"`); } catch {}
+
+    const newEntry = {
+        uid: newUid,
+        ...structuredClone(data.entries[uid]),
+    };
+    const maxDisplayIndex = Object.values(data.entries).reduce((max, entry) => Math.max(max, entry.displayIndex ?? -1), -1);
+    newEntry.displayIndex = maxDisplayIndex + 1;
+    data.entries[newUid] = newEntry;
+
+    return newEntry;
+}
+
+function deleteWIOriginalDataValue(data, uid) {
+    if (data.originalData && Array.isArray(data.originalData.entries)) {
+        const originalIndex = data.originalData.entries.findIndex(x => String(x.uid) === String(uid));
+        if (originalIndex >= 0) {
+            data.originalData.entries.splice(originalIndex, 1);
+        }
+    }
+}
+
+async function moveWorldInfoEntry(sourceName, targetName, uid, { deleteOriginal = true } = {}) {
+    if (sourceName === targetName) {
+        return false;
+    }
+
+    const sourceData = await ELG_loadFresh(sourceName);
+    const targetData = await ELG_loadFresh(targetName);
+    if (!sourceData || !sourceData.entries || !targetData || !targetData.entries) {
+        return false;
+    }
+    if (!sourceData.entries[uid]) {
+        return false;
+    }
+
+    const entryToMove = structuredClone(sourceData.entries[uid]);
+    const newUid = getFreeWorldEntryUid(targetData);
+    if (newUid === null) {
+        console.error('Enhanced Lorebook: Couldn\'t assign UID to a moved entry');
+        return false;
+    }
+    const maxDisplayIndex = Object.values(targetData.entries).reduce((max, entry) => Math.max(max, entry.displayIndex ?? -1), -1);
+    entryToMove.uid = newUid;
+    entryToMove.displayIndex = maxDisplayIndex + 1;
+    targetData.entries[newUid] = entryToMove;
+
+    if (deleteOriginal) {
+        delete sourceData.entries[uid];
+        deleteWIOriginalDataValue(sourceData, uid);
+    }
+
+    EL_info(`Move entry uid=${uid} "${currentLorebookName}" → "${targetName}" deleteOriginal=${deleteOriginal}`);
+    { const _moveTOk = await ELG_guardSave(targetName, targetData, { explicitDelete: false, source: 'user', note: 'Move entry to lorebook (target)' }); EL_logGuardResult(_moveTOk,'Move target',targetName); if(!_moveTOk){ EL_error('Move failed at target — aborting source delete (prevent loss)', { uid, targetName, sourceName }); try{ if(typeof toastr!=='undefined') toastr.error('Move failed at target — entry not lost'); }catch{} throw new Error('Move target save failed'); } }
+    if (deleteOriginal) {
+        const _moveSOk = await ELG_guardSave(sourceName, sourceData, { explicitDelete: true, source: 'user', note: 'Move entry out of source lorebook' }); EL_logGuardResult(_moveSOk,'Move source',sourceName); if(!_moveSOk) EL_error('Move source delete failed — entry may be duplicated', { uid, sourceName });
+    }
+    EL_info('Move ok', { uid, newUid, targetName, sourceName });
+
+    return true;
+}
+
+// ── Copy / Paste that respects folder URL (extension-only) ─────────────
+function EL_copySelectedEntries() {
+    if (!currentLorebookName || !currentLorebookData || selectedEntries.size === 0) {
+        if (typeof showToast === 'function') showToast('No entries selected');
+        return false;
+    }
+    const items = [];
+    for (const uid of selectedEntries) {
+        const entry = currentLorebookData.entries[uid];
+        if (!entry) continue;
+        const cloned = structuredClone(entry);
+        let url = null;
+        try {
+            if (window.ELFolderUrl) url = window.ELFolderUrl.getUrlForUid(uid, currentLorebookName);
+        } catch {}
+        items.push({ entry: cloned, url, _origUid: String(uid) });
+    }
+    if (!items.length) return false;
+    EL_clipboard = { book: currentLorebookName, items, ts: Date.now() };
+    try {
+        const text = JSON.stringify({ source: 'enhanced-lorebook', book: currentLorebookName, items: items.map(i => ({ entry: i.entry, url: i.url })) });
+        if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).catch(() => {});
+    } catch {}
+    if (typeof showToast === 'function') showToast(`Copied ${items.length} entr${items.length === 1 ? 'y' : 'ies'} (URL-aware)`);
+    return true;
+}
+
+async function EL_pasteEntries(targetFolderId = null, targetBook = null) {
+    const book = targetBook || currentLorebookName;
+    if (!book) {
+        if (typeof showToast === 'function') showToast('Open a lorebook first');
+        return;
+    }
+    // Try to hydrate from system clipboard if EL_clipboard is empty / stale (recent browser paste)
+    let items = EL_clipboard?.items || null;
+    if (!items) {
+        try {
+            if (navigator.clipboard && navigator.clipboard.readText) {
+                const text = await navigator.clipboard.readText();
+                if (text) {
+                    const parsed = JSON.parse(text);
+                    if (parsed && parsed.source === 'enhanced-lorebook' && Array.isArray(parsed.items)) items = parsed.items;
+                }
+            }
+        } catch {}
+    }
+    if (!items || !items.length) {
+        if (typeof showToast === 'function') showToast('Clipboard empty — copy entries first (Copy respects folder URL)');
+        return;
+    }
+    if (!currentLorebookData || currentLorebookName !== book) {
+        // If pasting into a different book than copied, we still respect URLs but ensure targetData is fresh
+        const fresh = await ELG_loadFresh(book);
+        if (fresh && fresh.entries) currentLorebookData = fresh;
+        currentLorebookName = book;
+    }
+    // Ensure target folder exists; if targetFolderId provided (paste into folder), use its path, else use each item's URL path
+    let targetPathForEmpty = null;
+    if (targetFolderId && window.ELFolderUrl) {
+        try { targetPathForEmpty = window.ELFolderUrl.getFolderPathById(book, targetFolderId); } catch {}
+    }
+    const newUids = [];
+    const urlMapForNew = new Map();
+    for (const it of items) {
+        const origEntry = it.entry;
+        if (!origEntry) continue;
+        // Decide URL to respect
+        let urlToRespect = it.url || null;
+        // If user pasted explicitly into a folder, override path but keep original's name path if copying group?
+        // For entry copy, respect original path unless targetFolderId is set, then rebase to target folder path
+        if (targetFolderId) {
+            const targetPath = window.ELFolderUrl ? window.ELFolderUrl.getFolderPathById(book, targetFolderId) : '';
+            // Rebase: keep entry's leaf path? Simpler: put directly into target folder irrespective of original path
+            // If original was in "A / B", and target is "C", result should be "C / B"? But user expects paste into C.
+            // We choose: paste into target folder directly for explicit paste-into-folder, otherwise respect original.
+            urlToRespect = window.ELFolderUrl ? window.ELFolderUrl.buildUrl(book, targetPath, 'tmp') : null;
+            // will be rebased per newUid below
+        }
+        const newUid = getFreeWorldEntryUid(currentLorebookData);
+        if (newUid === null) {
+            console.error('Enhanced Lorebook: Couldn\'t assign UID for paste');
+            continue;
+        }
+        const newEntry = { uid: newUid, ...structuredClone(origEntry) };
+        // Fix displayIndex to append
+        try {
+            const maxIdx = Object.values(currentLorebookData.entries).reduce((m, e) => Math.max(m, e.displayIndex ?? -1), -1);
+            newEntry.displayIndex = maxIdx + 1;
+        } catch {}
+        // Preserve order field similarly
+        currentLorebookData.entries[newUid] = newEntry;
+        const sNew = String(newUid);
+        newUids.push(sNew);
+        if (urlToRespect && window.ELFolderUrl) {
+            const newUrl = window.ELFolderUrl.buildUrlForNewUid(urlToRespect, sNew);
+            urlMapForNew.set(sNew, newUrl);
+        }
+    }
+    // Now assign each new entry to its URL folder (extension-only)
+    if (window.ELFolderUrl) {
+        for (const sNew of newUids) {
+            const url = urlMapForNew.get(sNew);
+            if (url) {
+                try { window.ELFolderUrl.assignEntryToUrl(sNew, url, book); } catch {}
+            }
+        }
+    }
+    ensureFoldersStructure(book);
+    saveSettings();
+    await ELG_guardSave(book, currentLorebookData, { explicitDelete: false, source: 'user', note: `Paste ${newUids.length} entr${newUids.length === 1 ? 'y' : 'ies'} (URL-aware)` });
+    selectedEntries.clear();
+    newUids.forEach(uid => selectedEntries.add(uid));
+    updateBatchButton();
+    renderEntries();
+    if (typeof showToast === 'function') showToast(`Pasted ${newUids.length} entr${newUids.length === 1 ? 'y' : 'ies'} — folder URL respected`);
 }
 
 async function duplicateFolderHelper(fId, newParentId) {
@@ -2663,23 +3515,9 @@ async function duplicateFolderHelper(fId, newParentId) {
     };
     
     for (const entryUid of f.entries) {
-        if (duplicateWorldInfoEntry && currentLorebookData.entries[entryUid]) {
-            const newEntry = duplicateWorldInfoEntry(currentLorebookData, entryUid);
-            if (newEntry) {
-                newFolder.entries.push(String(newEntry.uid));
-            }
-        } else {
-            const originalEntry = currentLorebookData.entries[entryUid];
-            if (originalEntry) {
-                const newUid = getFreeWorldEntryUid(currentLorebookData);
-                if (newUid !== null) {
-                    currentLorebookData.entries[newUid] = {
-                        ...structuredClone(originalEntry),
-                        uid: newUid
-                    };
-                    newFolder.entries.push(String(newUid));
-                }
-            }
+        const newEntry = duplicateWorldInfoEntry(currentLorebookData, entryUid);
+        if (newEntry) {
+            newFolder.entries.push(String(newEntry.uid));
         }
     }
     
@@ -2711,35 +3549,16 @@ async function sendFolderToLorebookHelper(folderId, targetBook, targetData, targ
     };
     
     for (const entryUid of f.entries) {
-        const originalEntry = currentLorebookData.entries[entryUid];
-        if (originalEntry) {
-            if (moveWorldInfoEntry) {
-                const beforeKeys = new Set(Object.keys(targetData.entries));
-                await moveWorldInfoEntry(currentLorebookName, targetBook, entryUid, { deleteOriginal: isMove });
-                const updatedTargetData = await stContext.loadWorldInfo(targetBook);
-                Object.assign(targetData.entries, updatedTargetData.entries);
-                const newUid = Object.keys(targetData.entries).find(uid => !beforeKeys.has(uid));
-                if (newUid) {
-                    newFolder.entries.push(String(newUid));
-                }
-            } else {
-                targetData.entries[entryUid] = originalEntry;
-                const newEntry = duplicateWorldInfoEntry ? duplicateWorldInfoEntry(targetData, entryUid) : null;
-                delete targetData.entries[entryUid];
-                
-                if (newEntry) {
-                    newFolder.entries.push(String(newEntry.uid));
-                } else {
-                    const newUid = getFreeWorldEntryUid(targetData);
-                    if (newUid !== null) {
-                        targetData.entries[newUid] = {
-                            ...structuredClone(originalEntry),
-                            uid: newUid
-                        };
-                        newFolder.entries.push(String(newUid));
-                    }
-                }
-            }
+        if (!currentLorebookData.entries[entryUid]) {
+            continue;
+        }
+        const beforeKeys = new Set(Object.keys(targetData.entries));
+        await moveWorldInfoEntry(currentLorebookName, targetBook, entryUid, { deleteOriginal: isMove });
+        const updatedTargetData = await stContext.loadWorldInfo(targetBook);
+        Object.assign(targetData.entries, updatedTargetData.entries);
+        const newUid = Object.keys(targetData.entries).find(uid => !beforeKeys.has(uid));
+        if (newUid) {
+            newFolder.entries.push(String(newUid));
         }
     }
     
@@ -2751,14 +3570,8 @@ async function sendFolderToLorebookHelper(folderId, targetBook, targetData, targ
     }
     
     if (isMove) {
-        if (!moveWorldInfoEntry) {
-            for (const entryUid of f.entries) {
-                delete currentLorebookData.entries[entryUid];
-            }
-        } else {
-            const updatedSourceData = await stContext.loadWorldInfo(currentLorebookName);
-            currentLorebookData.entries = updatedSourceData.entries;
-        }
+        const updatedSourceData = await stContext.loadWorldInfo(currentLorebookName);
+        currentLorebookData.entries = updatedSourceData.entries;
         extensionSettings.folders[currentLorebookName] = folders.filter(x => x.id !== folderId);
     }
     
@@ -2800,41 +3613,114 @@ function showContextMenu(x, y, targetType = 'entry', targetId = null) {
         dupItem.addEventListener('click', async () => {
             els.contextMenu.classList.remove('visible');
             const newUids = [];
+            // Capture URL for each original before mutation (extension-only, avoid ST pollution)
+            const urlMap = new Map();
+            if (window.ELFolderUrl) {
+                for (const uid of selectedEntries) {
+                    if (currentLorebookData.entries[uid]) {
+                        const u = window.ELFolderUrl.getUrlForUid(uid, currentLorebookName);
+                        if (u) urlMap.set(String(uid), u);
+                    }
+                }
+            }
             for (const uid of selectedEntries) {
-                if (duplicateWorldInfoEntry && currentLorebookData.entries[uid]) {
+                if (currentLorebookData.entries[uid]) {
                     const newEntry = duplicateWorldInfoEntry(currentLorebookData, uid);
                     if (newEntry) {
                         newUids.push({ original: uid, duplicate: String(newEntry.uid) });
                     }
-                } else {
-                    const originalEntry = currentLorebookData.entries[uid];
-                    if (originalEntry) {
-                        const newUid = getFreeWorldEntryUid(currentLorebookData);
-                        if (newUid !== null) {
-                            currentLorebookData.entries[newUid] = {
-                                ...structuredClone(originalEntry),
-                                uid: newUid
-                            };
-                            newUids.push({ original: uid, duplicate: String(newUid) });
-                        }
-                    }
                 }
             }
-            // Add duplicated entries to the same folders
-            const folders = extensionSettings.folders[currentLorebookName] || [];
-            newUids.forEach(({ original, duplicate }) => {
-                const folder = folders.find(f => f.entries.map(String).includes(String(original)));
-                if (folder) {
-                    folder.entries.push(duplicate);
+            // Place duplicated entries next to their original via stable URL, not at root
+            if (window.ELFolderUrl && urlMap.size) {
+                for (const { original, duplicate } of newUids) {
+                    const sourceUrl = urlMap.get(String(original));
+                    if (!sourceUrl) continue;
+                    const newUrl = window.ELFolderUrl.buildUrlForNewUid(sourceUrl, duplicate);
+                    window.ELFolderUrl.assignEntryToUrl(duplicate, newUrl, currentLorebookName);
+                    // Keep display order close to original and splice right after original inside folder
+                    try {
+                        const folders = extensionSettings.folders[currentLorebookName] || [];
+                        const origId = window.ELFolderUrl.getFolderIdForUid(original, currentLorebookName);
+                        const dupId = window.ELFolderUrl.getFolderIdForUid(duplicate, currentLorebookName);
+                        if (origId && origId === dupId) {
+                            const folder = folders.find(f => f.id === origId);
+                            if (folder && Array.isArray(folder.entries)) {
+                                const sDup = String(duplicate);
+                                // assignEntryToUrl pushed to end; move it right after original
+                                const idxOrig = folder.entries.indexOf(String(original));
+                                const idxDup = folder.entries.indexOf(sDup);
+                                if (idxOrig !== -1 && idxDup !== -1 && idxDup !== idxOrig + 1) {
+                                    folder.entries.splice(idxDup, 1);
+                                    folder.entries.splice(idxOrig + 1, 0, sDup);
+                                }
+                            }
+                        }
+                        // Copy order so duplicate sorts next to original (tiny delta keeps it adjacent)
+                        if (currentLorebookData.entries[original] && currentLorebookData.entries[duplicate]) {
+                            const origOrder = currentLorebookData.entries[original].order ?? 100;
+                            currentLorebookData.entries[duplicate].order = origOrder;
+                        }
+                    } catch {}
                 }
-            });
+            } else {
+                // Fallback: old path — add to same folder, else root
+                const folders = extensionSettings.folders[currentLorebookName] || [];
+                newUids.forEach(({ original, duplicate }) => {
+                    const folder = folders.find(f => f.entries.map(String).includes(String(original)));
+                    if (folder) {
+                        const idx = folder.entries.indexOf(String(original));
+                        if (idx !== -1) folder.entries.splice(idx + 1, 0, duplicate);
+                        else folder.entries.push(duplicate);
+                    }
+                });
+            }
             saveSettings();
-            await stContext.saveWorldInfo(currentLorebookName, currentLorebookData);
+            if (EL_isGenerating()) EL_warn('Duplicate selected: generation running — may race', { book: currentLorebookName, count: selectedEntries.size });
+            { const _dupOk = await ELG_guardSave(currentLorebookName, currentLorebookData, { explicitDelete: false, source: 'user', note: 'Duplicate selected entries' }); EL_logGuardResult(_dupOk,'Duplicate selected',currentLorebookName); if(!_dupOk){ EL_error('Duplicate save blocked/failed — entries not persisted, will vanish on next sync (LOSS RISK)'); try{ const fresh=await ELG_loadFresh(currentLorebookName); if(fresh) currentLorebookData=fresh; }catch(e){} } else EL_info('Duplicate save ok', { book: currentLorebookName }); }
             selectedEntries.clear();
             updateBatchButton();
             renderEntries();
         });
         els.contextMenu.appendChild(dupItem);
+
+        // Copy (URL-aware)
+        if (selectedEntries.size > 0) {
+            const copyItem = document.createElement('div');
+            copyItem.className = 'context-item';
+            copyItem.innerHTML = '<i class="fa-solid fa-clipboard"></i> Copy Selected';
+            copyItem.addEventListener('click', () => {
+                els.contextMenu.classList.remove('visible');
+                EL_copySelectedEntries();
+            });
+            els.contextMenu.appendChild(copyItem);
+        }
+        // Paste (URL-aware) — respects stored folder path URLs
+        {
+            const hasClip = EL_clipboard && Array.isArray(EL_clipboard.items) && EL_clipboard.items.length > 0;
+            const pasteItem = document.createElement('div');
+            pasteItem.className = 'context-item' + (hasClip ? '' : ' disabled');
+            pasteItem.style.opacity = hasClip ? '' : '0.45';
+            pasteItem.style.pointerEvents = hasClip ? '' : 'none';
+            pasteItem.innerHTML = '<i class="fa-solid fa-paste"></i> Paste' + (hasClip ? ` (${EL_clipboard.items.length})` : '');
+            if (hasClip) {
+                pasteItem.addEventListener('click', async () => {
+                    els.contextMenu.classList.remove('visible');
+                    // If right-clicked an entry, paste into its folder for intuitive placement
+                    let targetFolderId = null;
+                    if (targetId !== null && currentLorebookData.entries[targetId]) {
+                        try {
+                            if (window.ELFolderUrl) targetFolderId = window.ELFolderUrl.getFolderIdForUid(targetId, currentLorebookName);
+                        } catch {}
+                    }
+                    // For entry paste we respect URLs; if targetFolderId provided we rebase there via EL_pasteEntries logic
+                    // Here we want URL-respect: don't force rebase — just respect original URLs (null = root)
+                    // So we call with null to respect stored URLs
+                    await EL_pasteEntries(targetFolderId, currentLorebookName);
+                });
+            }
+            els.contextMenu.appendChild(pasteItem);
+        }
 
         // Send to another lorebook
         const sendItem = document.createElement('div');
@@ -2878,7 +3764,8 @@ function showContextMenu(x, y, targetType = 'entry', targetId = null) {
                     folders.forEach(f => f.entries = f.entries.filter(e => String(e) !== String(uid)));
                 });
                 saveSettings();
-                await stContext.saveWorldInfo(currentLorebookName, currentLorebookData);
+                EL_info(`Delete selected: ${selectedEntries.size} entries book="${currentLorebookName}"`, Array.from(selectedEntries).slice(0,10));
+                { const _delOk = await ELG_guardSave(currentLorebookName, currentLorebookData, { explicitDelete: true, source: 'user', note: 'Delete selected entries' }); EL_logGuardResult(_delOk,'Delete selected',currentLorebookName); if(!_delOk){ EL_error('Delete blocked/failed — entries still on disk, reloading'); try{ const fresh=await ELG_loadFresh(currentLorebookName); if(fresh) currentLorebookData=fresh; }catch(e){} } else EL_info('Delete ok, entries moved to Trash', { book: currentLorebookName }); }
                 selectedEntries.clear();
                 updateBatchButton();
                 renderEntries();
@@ -2897,6 +3784,23 @@ function showContextMenu(x, y, targetType = 'entry', targetId = null) {
         });
         els.contextMenu.appendChild(addSubItem);
 
+        // Paste into Folder (URL-aware rebase)
+        {
+            const hasClip = EL_clipboard && Array.isArray(EL_clipboard.items) && EL_clipboard.items.length > 0;
+            const pasteIntoItem = document.createElement('div');
+            pasteIntoItem.className = 'context-item' + (hasClip ? '' : ' disabled');
+            pasteIntoItem.style.opacity = hasClip ? '' : '0.45';
+            pasteIntoItem.style.pointerEvents = hasClip ? '' : 'none';
+            pasteIntoItem.innerHTML = '<i class="fa-solid fa-paste"></i> Paste into Folder' + (hasClip ? ` (${EL_clipboard.items.length})` : '');
+            if (hasClip) {
+                pasteIntoItem.addEventListener('click', async () => {
+                    els.contextMenu.classList.remove('visible');
+                    await EL_pasteEntries(targetId, currentLorebookName);
+                });
+            }
+            els.contextMenu.appendChild(pasteIntoItem);
+        }
+
         // Duplicate Folder
         const dupFolderItem = document.createElement('div');
         dupFolderItem.className = 'context-item';
@@ -2907,7 +3811,7 @@ function showContextMenu(x, y, targetType = 'entry', targetId = null) {
             if (!folder) return;
             await duplicateFolderHelper(targetId, folder.parentId);
             saveSettings();
-            await stContext.saveWorldInfo(currentLorebookName, currentLorebookData);
+            await ELG_guardSave(currentLorebookName, currentLorebookData, { explicitDelete: false, source: 'user', note: 'Duplicate folder' });
             renderEntries();
         });
         els.contextMenu.appendChild(dupFolderItem);
@@ -3016,61 +3920,63 @@ function showSendToLorebookMenu(_x, _y, type, targetIds) {
         const isMove = actionRadio && actionRadio.value === 'move';
 
         if (type === 'entry') {
-            for (const uid of targetIds) {
-                if (moveWorldInfoEntry) {
-                    await moveWorldInfoEntry(currentLorebookName, targetBook, uid, { deleteOriginal: isMove });
-                } else {
-                    const targetData = await stContext.loadWorldInfo(targetBook);
-                    const originalEntry = currentLorebookData.entries[uid];
-                    if (originalEntry) {
-                        targetData.entries[uid] = originalEntry;
-                        const newEntry = duplicateWorldInfoEntry ? duplicateWorldInfoEntry(targetData, uid) : null;
-                        delete targetData.entries[uid];
-                        if (!newEntry) {
-                            const newUid = getFreeWorldEntryUid(targetData);
-                            if (newUid !== null) {
-                                targetData.entries[newUid] = {
-                                    ...structuredClone(originalEntry),
-                                    uid: newUid
-                                };
-                            }
-                        }
-                    }
-                    await stContext.saveWorldInfo(targetBook, targetData);
-                    if (isMove) {
-                        delete currentLorebookData.entries[uid];
-                    }
+            // Capture URLs before move so target respects folder path (extension-only)
+            const urlMap = new Map();
+            if (window.ELFolderUrl) {
+                for (const uid of targetIds) {
+                    try { urlMap.set(String(uid), window.ELFolderUrl.getUrlForUid(uid, currentLorebookName)); } catch {}
                 }
+            }
+            // Track new UIDs per old UID for folder assignment
+            const uidRemap = new Map();
+            for (const uid of targetIds) {
+                const beforeData = await ELG_loadFresh(targetBook);
+                const beforeKeys = new Set(Object.keys(beforeData?.entries || {}));
+                await moveWorldInfoEntry(currentLorebookName, targetBook, uid, { deleteOriginal: isMove });
+                // Find new UID in target
+                let newUid = null;
+                try {
+                    const afterData = await ELG_loadFresh(targetBook);
+                    for (const k of Object.keys(afterData?.entries || {})) if (!beforeKeys.has(k)) { newUid = k; break; }
+                } catch {}
+                if (newUid !== null) uidRemap.set(String(uid), String(newUid));
                 if (isMove) {
                     const folders = extensionSettings.folders[currentLorebookName] || [];
                     folders.forEach(f => f.entries = f.entries.filter(e => String(e) !== String(uid)));
                 }
             }
+            // Assign each new entry in target book to same folder path as source URL
+            if (window.ELFolderUrl && uidRemap.size) {
+                if (!extensionSettings.folders[targetBook]) extensionSettings.folders[targetBook] = [];
+                for (const [oldUid, newUid] of uidRemap.entries()) {
+                    const srcUrl = urlMap.get(String(oldUid));
+                    if (!srcUrl) continue;
+                    const parsed = window.ELFolderUrl.parseUrl(srcUrl);
+                    const path = parsed ? parsed.folderPath : '';
+                    try {
+                        const folderId = window.ELFolderUrl.ensureFolderByPath(targetBook, path);
+                        window.ELFolderUrl.assignEntryToFolderId(newUid, folderId, targetBook);
+                    } catch {}
+                }
+                saveSettings();
+            }
             if (isMove) {
                 saveSettings();
-                if (!moveWorldInfoEntry) {
-                    await stContext.saveWorldInfo(currentLorebookName, currentLorebookData);
-                } else {
-                    const updatedSourceData = await stContext.loadWorldInfo(currentLorebookName);
-                    currentLorebookData.entries = updatedSourceData.entries;
-                }
+                const updatedSourceData = await stContext.loadWorldInfo(currentLorebookName);
+                currentLorebookData.entries = updatedSourceData.entries;
+            } else {
+                // Copy also needs save for target folders
+                saveSettings();
             }
         } else if (type === 'folder') {
             const targetData = await stContext.loadWorldInfo(targetBook);
             for (const folderId of targetIds) {
                 await sendFolderToLorebookHelper(folderId, targetBook, targetData, null, isMove);
             }
-            if (!moveWorldInfoEntry) {
-                await stContext.saveWorldInfo(targetBook, targetData);
-            }
             if (isMove) {
                 saveSettings();
-                if (!moveWorldInfoEntry) {
-                    await stContext.saveWorldInfo(currentLorebookName, currentLorebookData);
-                } else {
-                    const updatedSourceData = await stContext.loadWorldInfo(currentLorebookName);
-                    currentLorebookData.entries = updatedSourceData.entries;
-                }
+                const updatedSourceData = await stContext.loadWorldInfo(currentLorebookName);
+                currentLorebookData.entries = updatedSourceData.entries;
             }
         }
 
@@ -3233,6 +4139,8 @@ function toggleAllFolders() {
 // Event Listeners & Utilities
 // ==========================================
 function setupEventListeners() {
+    wirePanelControls();
+
     // Top buttons
     els.btnCloseApp.addEventListener('click', () => {
         window.close();
@@ -3263,6 +4171,60 @@ function setupEventListeners() {
 
     els.btnSettings.addEventListener('click', openSettings);
     els.btnRefresh.addEventListener('click', refreshSidebar);
+
+    // Auto-refresh (dynamic sync) controls
+    const syncEnabledInput = document.getElementById('sync-enabled');
+    if (syncEnabledInput) {
+        syncEnabledInput.addEventListener('change', () => {
+            sync.enabled = syncEnabledInput.checked;
+            extensionSettings.sync = extensionSettings.sync || {};
+            extensionSettings.sync.enabled = sync.enabled;
+            saveSettings();
+            if (sync.enabled) startSyncPolling(); else stopSyncPolling();
+        });
+    }
+    const syncIntervalInput = document.getElementById('sync-interval');
+    if (syncIntervalInput) {
+        syncIntervalInput.addEventListener('change', () => {
+            const secs = Math.max(1, Math.min(300, Number(syncIntervalInput.value) || 5));
+            syncIntervalInput.value = secs;
+            sync.interval = secs * 1000;
+            extensionSettings.sync = extensionSettings.sync || {};
+            extensionSettings.sync.interval = secs;
+            saveSettings();
+            if (sync.enabled) startSyncPolling();
+        });
+    }
+    const syncRefreshNow = document.getElementById('sync-refresh-now');
+    if (syncRefreshNow) {
+        syncRefreshNow.addEventListener('click', async () => {
+            await refreshSidebar();
+            syncPollTick();
+        });
+    }
+    // Logging prefs (batched + filtered)
+    const syncLogLevelInput = document.getElementById('sync-loglevel');
+    if (syncLogLevelInput) {
+        syncLogLevelInput.addEventListener('change', () => {
+            const lvl = String(syncLogLevelInput.value||'INFO').toUpperCase();
+            const allowed = ['OFF','ERROR','WARN','INFO','DEBUG'];
+            const final = allowed.includes(lvl) ? lvl : 'INFO';
+            syncLogLevelInput.value = final;
+            extensionSettings.sync = extensionSettings.sync || {};
+            extensionSettings.sync.logLevel = final;
+            saveSettings();
+            try { (window.ELLogger||console).info(`[EL] logLevel → ${final}`); } catch {}
+        });
+    }
+    const syncVerboseInput = document.getElementById('sync-verbose');
+    if (syncVerboseInput) {
+        syncVerboseInput.addEventListener('change', () => {
+            extensionSettings.sync = extensionSettings.sync || {};
+            extensionSettings.sync.verbose = !!syncVerboseInput.checked;
+            saveSettings();
+            try { (window.ELLogger||console).info(`[EL] verbose → ${extensionSettings.sync.verbose}`); } catch {}
+        });
+    }
 
     // Search Lorebooks
     const searchLorebooksInput = document.getElementById('search-lorebooks');
@@ -3316,6 +4278,15 @@ function setupEventListeners() {
             showDownloadFormatPicker();
         });
     }
+
+    // Backup Watch
+    const btnBackupWatch = document.getElementById('btn-backup-watch');
+    if (btnBackupWatch) {
+        btnBackupWatch.addEventListener('click', () => {
+            if (currentLorebookName) openBackupWatchModal();
+        });
+    }
+    wireBackupWatchModalEvents();
 
     // Search Entries - Auto-toggle Sort mode to Relevance
     let previousSortMode = 'order_desc';
@@ -3508,6 +4479,57 @@ function setupEventListeners() {
     if (navFeed) {
         navFeed.addEventListener('click', function () { switchToView('agent-feed'); });
     }
+
+    const navChat = document.getElementById('nav-agent-chat');
+    if (navChat) {
+        navChat.addEventListener('click', function () { switchToView('agent-chat'); });
+    }
+
+    const navRecovery = document.getElementById('nav-recovery');
+    if (navRecovery) {
+        navRecovery.addEventListener('click', function () { switchToView('recovery'); });
+    }
+
+    // Recovery sub-tab routing
+    document.querySelectorAll('.pill-btn[data-recovery-tab]').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('.pill-btn[data-recovery-tab]').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            currentRecoveryTab = btn.dataset.recoveryTab;
+            renderRecoveryTab();
+        });
+    });
+
+    // Global copy/paste that respects folder URL (Ctrl+C / Ctrl+V)
+    // Intentionally ignored when an input/textarea/contenteditable is focused so ST native clipboard is untouched
+    function EL_isInputFocused() {
+        const el = document.activeElement;
+        if (!el) return false;
+        const tag = (el.tagName || '').toLowerCase();
+        if (tag === 'input' || tag === 'textarea' || tag === 'select') return true;
+        if (el.isContentEditable) return true;
+        // Also ignore when editing inside a modal's form
+        if (el.closest && el.closest('.modal.active')) {
+            // Allow copy/paste inside modals to behave normally; don't hijack
+            return true;
+        }
+        return false;
+    }
+    document.addEventListener('keydown', (e) => {
+        const isMod = e.ctrlKey || e.metaKey;
+        if (!isMod) return;
+        const key = (e.key || '').toLowerCase();
+        if (key === 'c' && !EL_isInputFocused() && selectedEntries.size > 0 && currentViewMode === 'lorebook' && currentLorebookName) {
+            // Let native copy still happen for system clipboard, but also capture URL-aware
+            EL_copySelectedEntries();
+            // Do not preventDefault — allow native copy to also succeed for fallback
+        } else if (key === 'v' && !EL_isInputFocused() && currentViewMode === 'lorebook' && currentLorebookName) {
+            const hasClip = EL_clipboard && Array.isArray(EL_clipboard.items) && EL_clipboard.items.length > 0;
+            if (!hasClip) return;
+            e.preventDefault();
+            EL_pasteEntries(null, currentLorebookName);
+        }
+    });
 }
 
 function switchToView(view) {
@@ -3519,9 +4541,13 @@ function switchToView(view) {
     const dashboardPanel = document.getElementById('agent-dashboard-panel');
     const configPanel = document.getElementById('agent-config-panel');
     const feedPanel = document.getElementById('agent-feed-panel');
+    const recoveryPanel = document.getElementById('recovery-panel');
+    const chatPanel = document.getElementById('agent-chat-panel');
     if (dashboardPanel) dashboardPanel.classList.add('hidden');
     if (configPanel) configPanel.classList.add('hidden');
     if (feedPanel) feedPanel.classList.add('hidden');
+    if (recoveryPanel) recoveryPanel.classList.add('hidden');
+    if (chatPanel) chatPanel.classList.add('hidden');
 
     if (view === 'agent-dashboard') {
         const nav = document.getElementById('nav-agent-dashboard');
@@ -3547,7 +4573,324 @@ function switchToView(view) {
         if (typeof loadProposalsForCurrentChat === 'function') {
             loadProposalsForCurrentChat();
         }
+    } else if (view === 'recovery') {
+        const nav = document.getElementById('nav-recovery');
+        if (nav) nav.classList.add('active');
+        const recoveryPanel = document.getElementById('recovery-panel');
+        if (recoveryPanel) recoveryPanel.classList.remove('hidden');
+        els.currentTitle.textContent = 'Recovery';
+        renderRecovery();
+    } else if (view === 'agent-chat') {
+        const nav = document.getElementById('nav-agent-chat');
+        if (nav) nav.classList.add('active');
+        const chatPanel = document.getElementById('agent-chat-panel');
+        if (chatPanel) chatPanel.classList.remove('hidden');
+        els.currentTitle.textContent = 'Agent Chat';
+        if (typeof initAgentChatPanel === 'function') initAgentChatPanel();
+        if (typeof renderAgentChat === 'function') renderAgentChat();
     }
+}
+
+let _elPeriodicRunning = false;
+async function handlePeriodicTriggerFromHost(msg) {
+    if (_elPeriodicRunning) return;
+    if (typeof agentManager === 'undefined' || !agentManager) return;
+    const ids = Array.isArray(msg?.agentIds) && msg.agentIds.length ? msg.agentIds : null;
+    const candidates = ids
+        ? ids.map(id => agentManager.getAgent(id)).filter(a => a && a.enabled && a.mode === 'periodic')
+        : agentManager.getAgents().filter(a => a && a.enabled && a.mode === 'periodic');
+    if (!candidates.length) return;
+    _elPeriodicRunning = true;
+    try {
+        for (const agent of candidates) {
+            try {
+                if (typeof agentManager.isActiveForChat === 'function' && !agentManager.isActiveForChat(agent, stContext)) continue;
+                if (typeof EL_isHubReady === 'function' && !EL_isHubReady()) {
+                    try { (window.ELLogger || console).warn('[EL:Periodic] hub unavailable, skipping', agent?.id); } catch {}
+                    continue;
+                }
+                await agentManager.runAgent(agent.id, { label: `lorebook-periodic:${agent?.name || agent?.id}` });
+            } catch (e) {
+                try { (window.ELLogger || console).warn('[EL:Periodic] agent run failed', agent?.id, e); } catch {}
+            }
+        }
+        try {
+            if (typeof loadProposalsForCurrentChat === 'function') await loadProposalsForCurrentChat();
+            if (typeof renderDashboard === 'function') renderDashboard();
+            if (typeof renderAgentSidebar === 'function') renderAgentSidebar();
+        } catch {}
+    } finally {
+        _elPeriodicRunning = false;
+    }
+}
+
+// ==========================================
+// Recovery (Trash / Snapshots / Audit)
+// ==========================================
+let currentRecoveryTab = 'trash';
+
+function renderRecovery() {
+    const nameEl = document.getElementById('recovery-book-name');
+    if (nameEl) {
+        nameEl.textContent = currentLorebookName || 'No lorebook open';
+    }
+    document.querySelectorAll('.pill-btn[data-recovery-tab]').forEach(b => {
+        b.classList.toggle('active', b.dataset.recoveryTab === currentRecoveryTab);
+    });
+    renderRecoveryTab();
+}
+
+async function renderRecoveryTab() {
+    const container = document.getElementById('recovery-content');
+    const toolbar = document.getElementById('recovery-toolbar');
+    if (!container) return;
+    container.innerHTML = '';
+    if (toolbar) toolbar.innerHTML = '';
+
+    if (!currentLorebookName) {
+        container.innerHTML = '<div class="empty-state" style="padding:40px 0;"><i class="fa-solid fa-book fa-3x"></i><p>Open a lorebook from the sidebar to manage its deleted entries and backups.</p></div>';
+        return;
+    }
+
+    try {
+        if (currentRecoveryTab === 'trash') {
+            await renderRecoveryTrash(container, toolbar);
+        } else if (currentRecoveryTab === 'snapshots') {
+            await renderRecoverySnapshots(container, toolbar);
+        } else if (currentRecoveryTab === 'backups') {
+            await renderRecoveryBackups(container, toolbar);
+        } else if (currentRecoveryTab === 'audit') {
+            await renderRecoveryAudit(container, toolbar);
+        }
+    } catch (e) {
+        console.error('Recovery render failed', e);
+        container.innerHTML = '<div class="empty-state" style="padding:40px 0;"><p>Failed to load: ' + escapeHtml(e.message) + '</p></div>';
+    }
+}
+
+function formatRecoveryTime(ts) {
+    if (!ts) return 'unknown time';
+    try {
+        const d = new Date(ts);
+        return d.toLocaleString();
+    } catch {
+        return String(ts);
+    }
+}
+
+function renderEmptyRecovery(container, text) {
+    container.innerHTML = `<div class="empty-state" style="padding:40px 0;"><i class="fa-solid fa-box-open fa-3x"></i><p>${escapeHtml(text)}</p></div>`;
+}
+
+async function renderRecoveryTrash(container, toolbar) {
+    const book = currentLorebookName;
+    const trash = await ELG_listTrash(book);
+
+    if (trash.length === 0) {
+        renderEmptyRecovery(container, 'No deleted entries. Anything removed from now on will be kept here for recovery.');
+        return;
+    }
+
+    toolbar.innerHTML = `
+        <button id="recovery-trash-restore-all" class="btn btn-sm" style="background:var(--success-color,#10b981); color:#fff;"><i class="fa-solid fa-arrow-rotate-left"></i> Restore All</button>
+        <button id="recovery-trash-empty" class="btn btn-sm" style="background:var(--danger-color,#ef4444); color:#fff;"><i class="fa-solid fa-trash-can"></i> Empty Trash</button>
+        <span style="flex:1;"></span>
+        <span style="font-size:0.85rem; color:var(--text-muted);">${trash.length} deleted entr${trash.length === 1 ? 'y' : 'ies'}</span>
+    `;
+
+    container.innerHTML = trash.map((t, idx) => `
+        <div class="recovery-trash-item" style="display:flex; align-items:flex-start; gap:12px; background:rgba(0,0,0,0.15); border:1px solid var(--panel-border); border-radius:8px; padding:10px 12px; margin-bottom:8px;">
+            <input type="checkbox" class="recovery-trash-check" data-uid="${escapeHtml(t.uid)}" style="margin-top:4px;">
+            <div style="flex:1; min-width:0;">
+                <div style="font-weight:600; font-size:0.9rem; word-break:break-word;">${escapeHtml(t.entry?.comment || '(no comment)')}</div>
+                <div style="font-size:0.78rem; color:var(--text-muted); margin-top:4px; display:flex; flex-wrap:wrap; gap:10px;">
+                    ${t.entry?.key?.length ? `<span><i class="fa-solid fa-key"></i> ${escapeHtml(t.entry.key.join(', '))}</span>` : ''}
+                    <span><i class="fa-solid fa-clock"></i> Deleted ${formatRecoveryTime(t.deletedAt)}</span>
+                    <span><i class="fa-solid fa-tag"></i> ${escapeHtml(t.source || 'unknown')}</span>
+                </div>
+                <div style="font-size:0.78rem; color:var(--text-muted); margin-top:4px; max-height:60px; overflow:hidden; white-space:pre-wrap; word-break:break-word;">${escapeHtml((t.entry?.content || '').slice(0, 300))}</div>
+            </div>
+            <div style="display:flex; flex-direction:column; gap:6px;">
+                <button class="btn btn-secondary btn-sm recovery-trash-restore" data-uid="${escapeHtml(t.uid)}"><i class="fa-solid fa-arrow-rotate-left"></i> Restore</button>
+                <button class="btn btn-danger btn-sm recovery-trash-delete" data-uid="${escapeHtml(t.uid)}" style="background:rgba(239,68,68,0.15);color:#ef4444;"><i class="fa-solid fa-xmark"></i> Delete</button>
+            </div>
+        </div>
+    `).join('');
+
+    container.querySelectorAll('.recovery-trash-restore').forEach(btn => {
+        btn.addEventListener('click', () => restoreTrashEntries([btn.dataset.uid], container));
+    });
+    container.querySelectorAll('.recovery-trash-delete').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            if (confirm('Permanently delete this entry from Trash? This cannot be undone.')) {
+                await ELG_deleteTrash(book, [btn.dataset.uid]);
+                renderRecoveryTab();
+            }
+        });
+    });
+
+    const restoreAllBtn = toolbar.querySelector('#recovery-trash-restore-all');
+    if (restoreAllBtn) {
+        restoreAllBtn.addEventListener('click', () => {
+            const allUids = trash.map(t => String(t.uid));
+            restoreTrashEntries(allUids, container);
+        });
+    }
+    const emptyBtn = toolbar.querySelector('#recovery-trash-empty');
+    if (emptyBtn) {
+        emptyBtn.addEventListener('click', async () => {
+            if (confirm(`Permanently delete all ${trash.length} entries from Trash? This cannot be undone.`)) {
+                await ELG_deleteTrash(book, trash.map(t => String(t.uid)));
+                renderRecoveryTab();
+            }
+        });
+    }
+}
+
+async function restoreTrashEntries(uids, container) {
+    const book = currentLorebookName;
+    if (!book || !uids.length) return;
+    const restoring = await ELG_restoreTrash(book, uids);
+    if (!restoring.length) {
+        if (typeof showToast === 'function') showToast('Nothing restored');
+        return;
+    }
+
+    // Re-load authoritative data, then re-insert restored entries with fresh UIDs.
+    const fresh = await ELG_loadFresh(book);
+    if (!fresh || !fresh.entries) {
+        if (typeof showToast === 'function') showToast('Could not load lorebook to restore into');
+        return;
+    }
+
+    let restoredCount = 0;
+    for (const t of restoring) {
+        const newUid = getFreeWorldEntryUid(fresh);
+        if (newUid === null) continue;
+        const entry = structuredClone(t.entry || {});
+        entry.uid = newUid;
+        fresh.entries[newUid] = entry;
+
+        if (t.folderId) {
+            const folders = extensionSettings.folders[book] || [];
+            const folder = folders.find(f => f.id === t.folderId);
+            if (folder && !folder.entries.map(String).includes(String(newUid))) {
+                folder.entries.push(String(newUid));
+                saveSettings();
+            }
+        }
+        restoredCount++;
+    }
+
+    await ELG_guardSave(book, fresh, { explicitDelete: false, source: 'user', note: 'Restore ' + restoredCount + ' entr' + (restoredCount === 1 ? 'y' : 'ies') + ' from Trash' });
+
+    if (typeof showToast === 'function') showToast(`Restored ${restoredCount} entr${restoredCount === 1 ? 'y' : 'ies'}`);
+    currentLorebookData = fresh;
+    renderRecoveryTab();
+    if (currentViewMode === 'lorebook') renderEntries();
+}
+
+async function renderRecoverySnapshots(container, toolbar) {
+    const book = currentLorebookName;
+    const snapshots = await ELG_listSnapshots(book);
+
+    if (snapshots.length === 0) {
+        renderEmptyRecovery(container, 'No snapshots yet. Every save now creates a snapshot automatically, so this list will grow as you work.');
+        return;
+    }
+
+    toolbar.innerHTML = `<span style="font-size:0.85rem; color:var(--text-muted);">${snapshots.length} snapshots — kept for 90 days / last 50 per lorebook</span>`;
+
+    container.innerHTML = snapshots.map(s => `
+        <div style="display:flex; align-items:center; gap:12px; background:rgba(0,0,0,0.15); border:1px solid var(--panel-border); border-radius:8px; padding:10px 12px; margin-bottom:8px;">
+            <i class="fa-solid fa-camera" style="opacity:0.6;"></i>
+            <div style="flex:1;">
+                <div style="font-weight:600; font-size:0.9rem;">${formatRecoveryTime(s.timestamp)}</div>
+                <div style="font-size:0.78rem; color:var(--text-muted);">${escapeHtml(s.id)}</div>
+            </div>
+            <button class="btn btn-secondary btn-sm recovery-snapshot-restore" data-id="${escapeHtml(s.id)}"><i class="fa-solid fa-arrow-rotate-left"></i> Restore</button>
+            <button class="btn btn-danger btn-sm recovery-snapshot-delete" data-id="${escapeHtml(s.id)}" style="background:rgba(239,68,68,0.15);color:#ef4444;"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+    `).join('');
+
+    container.querySelectorAll('.recovery-snapshot-restore').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            if (!confirm(`Restore snapshot from ${formatRecoveryTime(btn.dataset.id.replace('snap_', ''))}? Entries and folder URLs will be restored; current differing entries go to Trash.`)) return;
+            try {
+                const result = await ELG_restoreSnapshot(btn.dataset.id, book);
+                if (!result?.lorebookData) {
+                    if (typeof showToast === 'function') showToast('Snapshot not found');
+                    return;
+                }
+                // Extension-only URL-respecting restore: folders sidecar first (if snapshot has them)
+                const foldersSnapshot = Array.isArray(result.folders) ? result.folders : null;
+                const hasFolders = Array.isArray(foldersSnapshot) && foldersSnapshot.length > 0;
+                // Set entries in memory so folder prune can see them
+                currentLorebookData = result.lorebookData;
+                if (hasFolders && window.ELFolderUrl) {
+                    try { window.ELFolderUrl.restoreFoldersWithRemap(book, foldersSnapshot, null); } catch {}
+                    try { saveSettings(); } catch {}
+                } else if (hasFolders === false && result.folders !== undefined && Array.isArray(result.folders) && result.folders.length === 0) {
+                    // Snapshot explicitly had empty folders — clear current mapping to respect URL (no folders)
+                    if (window.ELFolderUrl) {
+                        try { window.ELFolderUrl.setFoldersSnapshot(book, []); saveSettings(); } catch {}
+                    }
+                }
+                await ELG_guardSave(book, result.lorebookData, { explicitDelete: true, source: 'user', note: 'Restore snapshot ' + btn.dataset.id });
+                if (typeof showToast === 'function') showToast(hasFolders ? 'Snapshot restored (folders URL-respected)' : 'Snapshot restored');
+                renderRecoveryTab();
+                if (currentViewMode === 'lorebook') renderEntries();
+            } catch (e) {
+                if (typeof showToast === 'function') showToast('Restore failed: ' + e.message);
+            }
+        });
+    });
+    container.querySelectorAll('.recovery-snapshot-delete').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            if (confirm('Delete this snapshot permanently?')) {
+                await ELG_deleteSnapshot(btn.dataset.id, book);
+                renderRecoveryTab();
+            }
+        });
+    });
+}
+
+async function renderRecoveryAudit(container, toolbar) {
+    const book = currentLorebookName;
+    const entries = await ELG_listAudit(book);
+
+    if (entries.length === 0) {
+        renderEmptyRecovery(container, 'No audit records yet. Every guarded save is logged here.');
+        return;
+    }
+
+    toolbar.innerHTML = `<span style="font-size:0.85rem; color:var(--text-muted);">${entries.length} events (newest first)</span>`;
+
+    container.innerHTML = `<table style="width:100%; border-collapse:collapse; font-size:0.82rem;">
+        <thead>
+            <tr style="text-align:left; color:var(--text-muted); border-bottom:1px solid var(--panel-border);">
+                <th style="padding:6px 8px;">Time</th>
+                <th style="padding:6px 8px;">Action</th>
+                <th style="padding:6px 8px;">Source</th>
+                <th style="padding:6px 8px;">Details</th>
+            </tr>
+        </thead>
+        <tbody>
+            ${entries.map(e => `
+                <tr style="border-bottom:1px solid rgba(255,255,255,0.06); vertical-align:top;">
+                    <td style="padding:6px 8px; white-space:nowrap;">${formatRecoveryTime(e.ts)}</td>
+                    <td style="padding:6px 8px; font-weight:600;">${escapeHtml(e.action || '')}</td>
+                    <td style="padding:6px 8px;">${escapeHtml(e.source || '')}</td>
+                    <td style="padding:6px 8px; word-break:break-word;">
+                        ${e.note ? `<div style="color:var(--text-muted);">${escapeHtml(e.note)}</div>` : ''}
+                        ${e.removed?.length ? `<div style="color:var(--danger-color,#ef4444);">Removed: ${e.removed.map(r => escapeHtml(r.comment || r.uid)).join('; ')}</div>` : ''}
+                        ${e.added?.length ? `<div style="color:var(--success-color,#10b981);">Added: ${e.added.map(r => escapeHtml(r.comment || r.uid)).join('; ')}</div>` : ''}
+                        ${e.changedCount ? `<div>Changed: ${e.changedCount}</div>` : ''}
+                    </td>
+                </tr>
+            `).join('')}
+        </tbody>
+    </table>`;
 }
 
 function escapeHtml(unsafe) {
@@ -3557,6 +4900,434 @@ function escapeHtml(unsafe) {
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#039;');
+}
+
+// ==========================================
+// Backup Watch
+// ==========================================
+
+function closeModalById(id) {
+    const modal = document.getElementById(id);
+    if (modal) {
+        modal.classList.remove('active');
+        modal.classList.remove('peek-mode');
+    }
+}
+
+function getBackupWatchEntryLabel(entry) {
+    if (!entry) return '(unknown entry)';
+    const label = [];
+    if (entry.comment) label.push(entry.comment);
+    if (Array.isArray(entry.key) && entry.key.length) label.push(`Keys: ${entry.key.join(', ')}`);
+    if (!label.length && entry.content) {
+        const firstLine = String(entry.content).split(/\r?\n/).filter(l => l.trim())[0];
+        if (firstLine) label.push(firstLine.slice(0, 80));
+    }
+    return label.join(' — ') || `UID ${entry.uid ?? '?'}`;
+}
+
+async function openBackupWatchModal() {
+    if (!currentLorebookName) {
+        if (typeof showToast === 'function') showToast('Open a lorebook first');
+        return;
+    }
+    const modal = document.getElementById('backup-watch-modal');
+    if (!modal) return;
+    const nameEl = document.getElementById('backup-watch-book-name');
+    if (nameEl) nameEl.textContent = currentLorebookName;
+
+    document.querySelectorAll('input[name="backup-watch-mode"]').forEach(r => r.checked = r.value === 'simple');
+    const detail = document.getElementById('backup-watch-auto-detail');
+    if (detail) detail.style.display = 'none';
+
+    await refreshBackupWatchStatus();
+
+    modal.classList.remove('peek-mode');
+    modal.classList.add('active');
+}
+
+async function refreshBackupWatchStatus() {
+    const statusEl = document.getElementById('backup-watch-status');
+    const removeBtn = document.getElementById('btn-backup-watch-remove');
+    const confirmBtn = document.getElementById('btn-backup-watch-confirm');
+    if (!statusEl) return;
+
+    let status;
+    try {
+        status = await EL_apiFetch('GET', '/backup-watch/status?lorebookName=' + encodeURIComponent(currentLorebookName));
+    } catch (e) {
+        statusEl.innerHTML = '<span style="color:var(--danger-color,#ef4444);">Failed to load status: ' + escapeHtml(e.message) + '</span>';
+        return;
+    }
+
+    let summary = '';
+    try {
+        const list = await EL_apiFetch('GET', '/backup-watch/list?lorebookName=' + encodeURIComponent(currentLorebookName));
+        const auto = (list?.backups || []).filter(b => b.kind === 'auto').length;
+        const simple = (list?.backups || []).filter(b => b.kind === 'simple').length;
+        summary = `<div style="margin-top:6px;">${list.count} existing backup(s) — <span style="color:var(--text-color);">${auto} automatic</span> / ${simple} simple</div>`;
+    } catch (_) {}
+
+    if (status?.watched) {
+        const last = status.lastBackupAt ? new Date(status.lastBackupAt).toLocaleString() : '—';
+        const next = status.nextBackupAt ? new Date(status.nextBackupAt).toLocaleString() : '—';
+        statusEl.innerHTML = `<div><i class="fa-solid fa-circle-check" style="color:var(--success-color,#10b981);"></i> <b>Automatic watch active</b></div>
+            <div style="margin-top:4px;">Last automatic copy: ${escapeHtml(last)}</div>
+            <div>Next automatic copy: ${escapeHtml(next)}</div>${summary}`;
+        document.querySelectorAll('input[name="backup-watch-mode"]').forEach(r => r.checked = r.value === 'auto');
+        if (removeBtn) removeBtn.style.display = '';
+        if (confirmBtn) confirmBtn.textContent = 'Update & Save Backup';
+        updateBackupWatchAutoDetail(status);
+    } else {
+        statusEl.innerHTML = `<div><i class="fa-solid fa-circle-info"></i> <b>Not on the automatic schedule.</b></div>
+            <div style="margin-top:4px;">Pick a mode below to add this lorebook to the backup watch.</div>${summary}`;
+        if (removeBtn) removeBtn.style.display = 'none';
+        if (confirmBtn) confirmBtn.textContent = 'Save Backup';
+        const detail = document.getElementById('backup-watch-auto-detail');
+        if (detail) detail.style.display = 'none';
+    }
+}
+
+function updateBackupWatchAutoDetail(status) {
+    const el = document.getElementById('backup-watch-auto-detail');
+    if (!el) return;
+    const next = status?.nextBackupAt ? status.nextBackupAt : null;
+    el.innerHTML = next
+        ? `Automatic copies run every 5 hours while SillyTavern is running. Next copy at <b>${escapeHtml(new Date(next).toLocaleString())}</b>.`
+        : 'Automatic copies run every 5 hours while SillyTavern is running. Recent copies are kept whole for a week; after that only one per day is retained.';
+    el.style.display = '';
+}
+
+async function confirmBackupWatch() {
+    if (!currentLorebookName) return;
+    const mode = document.querySelector('input[name="backup-watch-mode"]:checked')?.value || 'simple';
+    const confirmBtn = document.getElementById('btn-backup-watch-confirm');
+    if (confirmBtn) confirmBtn.disabled = true;
+    try {
+        const data = currentLorebookData || await stContext.loadWorldInfo(currentLorebookName);
+        if (!data || !data.entries) throw new Error('Could not read lorebook data');
+        let folders = [];
+        try {
+            if (window.ELFolderUrl) folders = window.ELFolderUrl.getFoldersSnapshot(currentLorebookName);
+            else if (extensionSettings?.folders?.[currentLorebookName]) folders = extensionSettings.folders[currentLorebookName];
+        } catch {}
+        const result = await EL_apiFetch('POST', '/backup-watch/create', { lorebookName: currentLorebookName, mode, lorebookData: data, folders });
+        if (typeof showToast === 'function') {
+            showToast(mode === 'auto' ? 'Automatic backup enabled' : 'Simple backup saved');
+        }
+        closeModalById('backup-watch-modal');
+        if (currentRecoveryTab === 'backups' && currentViewMode === 'recovery') renderRecoveryTab();
+    } catch (e) {
+        if (typeof showToast === 'function') showToast('Backup failed: ' + e.message);
+    } finally {
+        if (confirmBtn) confirmBtn.disabled = false;
+    }
+}
+
+async function removeFromBackupWatch() {
+    if (!currentLorebookName) return;
+    if (!confirm('Remove "' + currentLorebookName + '" from the automatic backup watch? Existing backups are kept.')) return;
+    try {
+        await EL_apiFetch('POST', '/backup-watch/disable', { lorebookName: currentLorebookName });
+        if (typeof showToast === 'function') showToast('Removed from backup watch');
+        closeModalById('backup-watch-modal');
+    } catch (e) {
+        if (typeof showToast === 'function') showToast('Failed: ' + e.message);
+    }
+}
+
+function wireBackupWatchModalEvents() {
+    const modal = document.getElementById('backup-watch-modal');
+    if (!modal) return;
+
+    document.querySelectorAll('input[name="backup-watch-mode"]').forEach(r => {
+        r.addEventListener('change', (e) => {
+            const detail = document.getElementById('backup-watch-auto-detail');
+            if (!detail) return;
+            if (e.target.value === 'auto' && e.target.checked) {
+                detail.innerHTML = 'Automatic copies run every 5 hours while SillyTavern is running. Recent copies are kept whole for a week; after that only one per day is retained.';
+                detail.style.display = '';
+            } else {
+                detail.style.display = 'none';
+            }
+        });
+    });
+
+    const removeBtn = document.getElementById('btn-backup-watch-remove');
+    if (removeBtn) removeBtn.addEventListener('click', removeFromBackupWatch);
+
+    const cancelBtn = document.getElementById('btn-backup-watch-cancel');
+    if (cancelBtn) cancelBtn.addEventListener('click', () => closeModalById('backup-watch-modal'));
+
+    const confirmBtn = document.getElementById('btn-backup-watch-confirm');
+    if (confirmBtn) confirmBtn.addEventListener('click', confirmBackupWatch);
+}
+
+async function renderRecoveryBackups(container, toolbar) {
+    const book = currentLorebookName;
+    const result = await EL_apiFetch('GET', '/backup-watch/list?lorebookName=' + encodeURIComponent(book));
+    const backups = result?.backups || [];
+    const autoCount = backups.filter(b => b.kind === 'auto').length;
+    const simpleCount = backups.length - autoCount;
+
+    let watchStatus = '';
+    try {
+        const status = await EL_apiFetch('GET', '/backup-watch/status?lorebookName=' + encodeURIComponent(book));
+        if (status?.watched) {
+            const next = status.nextBackupAt ? formatRecoveryTime(status.nextBackupAt) : 'soon';
+            watchStatus = `<span><i class="fa-solid fa-circle-check" style="color:var(--success-color,#10b981);"></i> Automatic watch active — next copy ~${escapeHtml(next)}</span>`;
+        }
+    } catch (_) {}
+
+    toolbar.innerHTML = `
+        <button id="recovery-backup-watch" class="btn btn-sm" style="background:var(--primary-color,#6366f1); color:#fff;"><i class="fa-solid fa-shield-halved"></i> Backup Watch</button>
+        ${watchStatus ? `<span style="font-size:0.85rem; color:var(--text-muted);">${watchStatus}</span>` : ''}
+        <span style="flex:1;"></span>
+        <span style="font-size:0.85rem; color:var(--text-muted);">${backups.length} backup(s) — ${autoCount} automatic / ${simpleCount} simple</span>
+    `;
+
+    const btnWatch = toolbar.querySelector('#recovery-backup-watch');
+    if (btnWatch) btnWatch.addEventListener('click', openBackupWatchModal);
+
+    if (backups.length === 0) {
+        renderEmptyRecovery(container, 'No backup-watch backups yet. Use the "Backup Watch" button to add one.');
+        return;
+    }
+
+    container.innerHTML = backups.map(b => {
+        const auto = b.kind === 'auto';
+        return `
+            <div style="display:flex; align-items:center; gap:12px; background:rgba(0,0,0,0.15); border:1px solid var(--panel-border); border-radius:8px; padding:10px 12px; margin-bottom:8px;">
+                <i class="fa-solid ${auto ? 'fa-rotate' : 'fa-camera'}" style="opacity:0.6; ${auto ? 'color:#ffb347;' : ''}"></i>
+                <div style="flex:1; min-width:0;">
+                    <div style="font-weight:600; font-size:0.9rem;">${formatRecoveryTime(b.timestamp)}</div>
+                    <div style="font-size:0.78rem; color:var(--text-muted); display:flex; gap:8px; flex-wrap:wrap; margin-top:2px;">
+                        <span style="font-size:0.72rem; padding:2px 6px; border-radius:4px; ${auto ? 'background:rgba(255,179,71,0.15); color:#ffb347;' : 'background:rgba(100,116,139,0.25); color:var(--text-muted);'}">${auto ? 'Automatic' : 'Simple'}</span>
+                        <span>${escapeHtml(b.id)}</span>
+                    </div>
+                </div>
+                <button class="btn btn-secondary btn-sm recovery-backup-view" data-id="${escapeHtml(b.id)}"><i class="fa-solid fa-eye"></i> View</button>
+                <button class="btn btn-sm recovery-backup-restore" data-id="${escapeHtml(b.id)}" style="background:var(--success-color,#10b981); color:#fff;"><i class="fa-solid fa-arrow-rotate-left"></i> Restore</button>
+                <button class="btn btn-danger btn-sm recovery-backup-delete" data-id="${escapeHtml(b.id)}" style="background:rgba(239,68,68,0.15);color:#ef4444;"><i class="fa-solid fa-xmark"></i></button>
+            </div>`;
+    }).join('');
+
+    container.querySelectorAll('.recovery-backup-view').forEach(btn => {
+        btn.addEventListener('click', () => viewBackupWatch(btn.dataset.id));
+    });
+    container.querySelectorAll('.recovery-backup-restore').forEach(btn => {
+        btn.addEventListener('click', () => restoreBackupWatch(btn.dataset.id));
+    });
+    container.querySelectorAll('.recovery-backup-delete').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            if (!confirm('Delete this backup permanently?')) return;
+            try {
+                await EL_apiFetch('POST', '/backup-watch/delete', { lorebookName: book, backupId: btn.dataset.id });
+                renderRecoveryTab();
+            } catch (e) {
+                if (typeof showToast === 'function') showToast('Delete failed: ' + e.message);
+            }
+        });
+    });
+}
+
+async function viewBackupWatch(backupId) {
+    const modal = document.getElementById('backup-view-modal');
+    if (!modal) return;
+    let backup;
+    try {
+        const result = await EL_apiFetch('POST', '/backup-watch/get', { lorebookName: currentLorebookName, backupId });
+        backup = result?.backup;
+    } catch (e) {
+        if (typeof showToast === 'function') showToast('Failed to load backup: ' + e.message);
+        return;
+    }
+    if (!backup) {
+        if (typeof showToast === 'function') showToast('Backup not found');
+        return;
+    }
+
+    const titleEl = document.getElementById('backup-view-title');
+    if (titleEl) titleEl.textContent = formatRecoveryTime(backup.timestamp) + (backup.kind === 'auto' ? ' (Automatic)' : ' (Simple)');
+
+    const data = backup.data || {};
+    const entries = data.entries || {};
+    const arr = Object.values(entries).sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+
+    const metaEl = document.getElementById('backup-view-meta');
+    if (metaEl) metaEl.innerHTML = `${escapeHtml(currentLorebookName)} — ${arr.length} entries — ID ${escapeHtml(backup.id)}`;
+
+    const entriesEl = document.getElementById('backup-view-entries');
+    if (!arr.length) {
+        entriesEl.innerHTML = '<div style="color:var(--text-muted); font-style:italic;">No entries in this backup.</div>';
+    } else {
+        entriesEl.innerHTML = arr.map(e => `
+            <div style="background:rgba(0,0,0,0.12); border:1px solid var(--panel-border); border-radius:8px; padding:8px 12px; margin-bottom:6px;">
+                <div style="font-weight:600; font-size:0.85rem;">${escapeHtml(e.comment || '(no comment)')} <span style="color:var(--text-muted); font-weight:400;">UID ${escapeHtml(String(e.uid))}</span></div>
+                ${e.key && e.key.length ? `<div style="font-size:0.78rem; color:var(--text-muted);"><i class="fa-solid fa-key"></i> ${escapeHtml(e.key.join(', '))}</div>` : ''}
+                <div style="font-size:0.78rem; color:var(--text-muted); margin-top:2px; max-height:40px; overflow:hidden;">${escapeHtml((e.content || '').slice(0, 200))}</div>
+            </div>
+        `).join('');
+    }
+
+    const jsonEl = document.getElementById('backup-view-json');
+    if (jsonEl) jsonEl.value = JSON.stringify(data, null, 2);
+
+    const restoreBtn = document.getElementById('btn-backup-view-restore');
+    if (restoreBtn) {
+        const newBtn = restoreBtn.cloneNode(true);
+        restoreBtn.replaceWith(newBtn);
+        newBtn.addEventListener('click', () => restoreBackupWatch(backup.id, true));
+    }
+
+    modal.classList.remove('peek-mode');
+    modal.classList.add('active');
+}
+
+/**
+ * Show a blocking confirmation that lists, entry by entry, exactly what a
+ * restore would remove/overwrite. Nothing touches the lorebook until the
+ * user explicitly confirms.
+ */
+function showBackupRestoreConfirm(book, backupTs, diff) {
+    return new Promise(resolve => {
+        const overlay = document.createElement('div');
+        overlay.className = 'modal active elg-confirm-modal';
+
+        const removedList = diff.removed.map(([uid, e]) => `
+            <div class="elg-delete-item"><span class="elg-delete-icon"><i class="fa-solid fa-triangle-exclamation"></i></span><span class="elg-delete-label">${escapeHtml(getBackupWatchEntryLabel(e))}</span></div>
+        `).join('');
+
+        const addedNote = diff.added.length ? `<div style="margin-top:8px;"><i class="fa-solid fa-circle-plus" style="color:var(--success-color,#10b981);"></i> <b>${diff.added.length}</b> entr${diff.added.length === 1 ? 'y' : 'ies'} will be <b>re-added</b> from the backup.</div>` : '';
+        const overwrittenNote = diff.overwritten.length ? `<div style="margin-top:4px;"><i class="fa-solid fa-pen-to-square" style="color:#ffb347;"></i> <b>${diff.overwritten.length}</b> entr${diff.overwritten.length === 1 ? 'y' : 'ies'} will be <b>overwritten</b> with the backup version.</div>` : '';
+
+        overlay.innerHTML = `
+            <div class="modal-content glass-panel" style="width: 640px; max-width: 92vw; max-height: 85vh; display: flex; flex-direction: column;">
+                <div class="modal-header">
+                    <h3><i class="fa-solid fa-arrow-rotate-left" style="margin-right: 8px; color: var(--primary-color);"></i>Confirm Restore</h3>
+                    <button class="close-modal el-bw-cancel"><i class="fa-solid fa-xmark"></i></button>
+                </div>
+                <div class="modal-body" style="overflow-y: auto; flex: 1; padding: 16px;">
+                    <p style="margin-bottom: 12px; color: var(--text-muted); font-size: 0.9rem;">
+                        Restore <strong style="color: var(--text-color);">${escapeHtml(book)}</strong> to its state from <strong style="color: var(--text-color);">${escapeHtml(formatRecoveryTime(backupTs))}</strong>?
+                    </p>
+                    ${diff.removed.length ? `
+                        <div style="margin: 8px 0; color: var(--danger-color, #ef4444); font-weight: 700; font-size: 0.9rem;">
+                            <i class="fa-solid fa-triangle-exclamation"></i> ${diff.removed.length} entr${diff.removed.length === 1 ? 'y' : 'ies'} will be REMOVED (they are not in this backup):
+                        </div>
+                        <div class="elg-delete-list" style="max-height: 220px; overflow-y: auto;">${removedList}</div>
+                    ` : ''}
+                    ${addedNote}
+                    ${overwrittenNote}
+                    <p style="margin-top: 12px; font-size: 0.82rem; color: var(--text-muted);">
+                        The current state is snapshotted automatically before the restore, and any removed entries are quarantined to <b>Deleted Entries</b> (Trash) so nothing is truly lost.
+                    </p>
+                </div>
+                <div class="modal-footer" style="padding: 12px 16px; border-top: 1px solid var(--panel-border); display: flex; justify-content: flex-end; gap: 12px;">
+                    <button class="btn btn-secondary el-bw-cancel">Cancel</button>
+                    <button class="btn el-bw-apply" style="background: var(--success-color, #10b981); color: #fff;"><i class="fa-solid fa-arrow-rotate-left"></i> Restore Backup</button>
+                </div>
+            </div>
+        `;
+
+        document.body.appendChild(overlay);
+
+        function close() {
+            overlay.remove();
+        }
+
+        overlay.querySelectorAll('.el-bw-cancel').forEach(el => {
+            el.addEventListener('click', () => { close(); resolve(false); });
+        });
+        overlay.querySelector('.el-bw-apply').addEventListener('click', () => { close(); resolve(true); });
+        overlay.addEventListener('click', (e) => {
+            if (e.target === overlay) { close(); resolve(false); }
+        });
+    });
+}
+
+async function restoreBackupWatch(backupId, closeViewModal) {
+    const book = currentLorebookName;
+    if (!book || !backupId) return;
+
+    let backupData;
+    let backupFolders = null;
+    let backupTs = 0;
+    try {
+        const result = await EL_apiFetch('POST', '/backup-watch/restore', { lorebookName: book, backupId });
+        if (!result?.lorebookData) {
+            if (typeof showToast === 'function') showToast('Backup not found');
+            return;
+        }
+        backupData = result.lorebookData;
+        backupFolders = Array.isArray(result.folders) ? result.folders : (Array.isArray(result.backup?.folders) ? result.backup.folders : null);
+        backupTs = result.timestamp || result.backup?.timestamp || 0;
+    } catch (e) {
+        if (typeof showToast === 'function') showToast('Failed to load backup: ' + e.message);
+        return;
+    }
+
+    // Authoritative current state straight from the server.
+    let currentData;
+    try {
+        currentData = await ELG_fetchServerState(book) || await stContext.loadWorldInfo(book);
+    } catch (e) {
+        currentData = null;
+    }
+    if (!currentData || !currentData.entries) {
+        if (typeof showToast === 'function') showToast('Could not load the current lorebook state from the server.');
+        return;
+    }
+
+    // Per-entry diff between the live book and the backup.
+    const currentEntries = currentData.entries || {};
+    const backupEntries = backupData.entries || {};
+    const currUids = new Set(Object.keys(currentEntries));
+    const backUids = new Set(Object.keys(backupEntries));
+
+    const removed = [];
+    const added = [];
+    const overwritten = [];
+    for (const uid of [...currUids]) {
+        if (!backUids.has(uid)) removed.push([uid, currentEntries[uid]]);
+    }
+    for (const uid of [...backUids]) {
+        if (!currUids.has(uid)) added.push([uid, backupEntries[uid]]);
+        else if (JSON.stringify(currentEntries[uid]) !== JSON.stringify(backupEntries[uid])) overwritten.push([uid, backupEntries[uid]]);
+    }
+
+    if (removed.length === 0 && added.length === 0 && overwritten.length === 0) {
+        if (typeof showToast === 'function') showToast('This backup matches the current lorebook exactly — nothing to restore.');
+        if (closeViewModal) closeModalById('backup-view-modal');
+        return;
+    }
+
+    // Confirm exactly what will happen before SillyTavern touches the lorebook.
+    const confirmed = await showBackupRestoreConfirm(book, backupTs, { removed, added, overwritten });
+    if (!confirmed) return;
+
+    try {
+        // Apply entries first so folder prune sees correct UID set, then restore folders (extension-only, URL-respected)
+        currentLorebookData = backupData;
+        const hasFolders = Array.isArray(backupFolders) && backupFolders.length > 0;
+        if (hasFolders && window.ELFolderUrl) {
+            try { window.ELFolderUrl.restoreFoldersWithRemap(book, backupFolders, null); } catch {}
+            try { saveSettings(); } catch {}
+        } else if (Array.isArray(backupFolders) && backupFolders.length === 0 && backupFolders !== null) {
+            // Backup explicitly had no folders — clear current mapping to respect empty URL state
+            if (window.ELFolderUrl) { try { window.ELFolderUrl.setFoldersSnapshot(book, []); saveSettings(); } catch {} }
+        }
+        await ELG_guardSave(book, backupData, { explicitDelete: true, source: 'user', note: 'Restore backup-watch ' + backupId });
+        if (typeof showToast === 'function') showToast(hasFolders ? 'Backup restored (folders URL-respected)' : 'Backup restored');
+        if (closeViewModal) closeModalById('backup-view-modal');
+        if (currentViewMode === 'recovery') {
+            renderRecoveryTab();
+        } else if (currentViewMode === 'lorebook') {
+            renderEntries();
+        }
+    } catch (e) {
+        if (typeof showToast === 'function') showToast('Restore failed: ' + e.message);
+    }
 }
 
 // Start app

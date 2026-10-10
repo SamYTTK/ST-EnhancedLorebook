@@ -1,9 +1,11 @@
+import os
 import re
 
-with open('d:/Games/OTHERS/SillyTavern-Launcher/SillyTavern/public/scripts/extensions/third-party/ST-EnhancedLorebook/app/index.html', encoding='utf8') as f:
+_base = os.path.dirname(__file__)
+with open(os.path.join(_base, 'index.html'), encoding='utf8') as f:
     html = f.read()
 
-with open('d:/Games/OTHERS/SillyTavern-Launcher/SillyTavern/public/scripts/extensions/third-party/ST-EnhancedLorebook/app/app.js', encoding='utf8') as f:
+with open(os.path.join(_base, 'app.js'), encoding='utf8') as f:
     js = f.read()
 
 html_ids = set(re.findall(r'id="([^"]+)"', html))

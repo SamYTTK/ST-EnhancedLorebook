@@ -1,10 +1,10 @@
-{
+﻿{
     "display_name": "Enhanced Lorebook UI",
-    "loading_order": 1,
+    "loading_order": 20,
     "js": "index.js",
     "author": "SamYTTK",
-    "version": "1.1.0",
+    "version": "1.3.0",
     "auto_update": false,
     "minimum_client_version": "1.12.0",
-    "description": "A fully revamped, highly responsive user interface for managing World Info/Lorebooks in SillyTavern — with an AI Lorebook Agent for automated entry creation, editing, and deletion."
+    "description": "A fully revamped, highly responsive user interface for managing World Info/Lorebooks in SillyTavern — with Hub v2 lorebook agents (ST-RequestHub backend) for assisted entry creation, editing, and deletion."
 }

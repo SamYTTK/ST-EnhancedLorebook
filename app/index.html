@@ -16,51 +16,107 @@
                 <div class="header-actions">
                     <button id="btn-refresh-lorebooks" title="Refresh"><i class="fa-solid fa-sync"></i></button>
                     <button id="btn-settings" title="Settings"><i class="fa-solid fa-cog"></i></button>
+                    <button id="btn-terminal" title="Terminal (extension logs)" style="position:relative;"><i class="fa-solid fa-terminal"></i><span id="terminal-error-badge" style="display:none; position:absolute; top:-5px; right:-5px; background:#ef4444; color:#fff; border-radius:999px; padding:0 5px; font-size:0.65rem; font-weight:700; line-height:1.35;">0</span></button>
                     <button id="btn-close-app" title="Close"><i class="fa-solid fa-xmark"></i></button>
                 </div>
             </div>
             
-            <div class="sidebar-content">
-                <div class="section-header">
-                    <h3>Active Global</h3>
-                    <button id="btn-save-template" title="Save as Template"><i class="fa-solid fa-save"></i></button>
-                </div>
-                <div id="active-lorebooks-list" class="list-container">
-                    <!-- Active lorebooks go here -->
-                </div>
-
-                <div class="section-header mt-4">
-                    <h3>Templates</h3>
-                </div>
-                <div id="templates-list" class="list-container">
-                    <!-- Saved presets go here -->
-                </div>
-
-                <div class="section-header mt-4">
-                    <h3>All Lorebooks</h3>
-                </div>
-                <div class="search-bar">
-                    <i class="fa-solid fa-search"></i>
-                    <input type="text" id="search-lorebooks" placeholder="Search lorebooks...">
-                </div>
-                <div id="all-lorebooks-list" class="list-container flex-grow">
-                    <!-- All lorebooks go here -->
-                </div>
-
-                <div class="section-header mt-4">
-                    <h3>Agent</h3>
-                </div>
-                <div class="list-container">
-                    <div id="nav-agent-dashboard" class="list-item agent-sidebar-item" style="cursor:pointer;">
-                        <i class="fa-solid fa-robot"></i><span>Dashboard</span>
+            <div class="sidebar-panels" id="sidebar-panels">
+                <!-- Panel 1: Active (Character / Global / Templates) -->
+                <section class="panel panel-character" id="panel-character">
+                    <div class="panel-header" data-panel="character" title="Click to collapse / expand">
+                        <i class="fa-solid fa-chevron-right panel-chevron"></i>
+                        <h3>Active</h3>
                     </div>
-                    <div id="nav-agent-feed" class="list-item agent-sidebar-item" style="cursor:pointer;">
-                        <i class="fa-solid fa-clipboard-list"></i><span>Feed</span>
-                        <span class="badge-count" id="agent-pending-badge" style="display:none;">0</span>
+                    <div class="panel-body">
+                        <div class="section-header">
+                            <h3>Active Character</h3>
+                            <span id="active-character-name" class="sidebar-subtitle"></span>
+                        </div>
+                        <div class="section-header sub">
+                            <h4>Chat Lore</h4>
+                        </div>
+                        <div id="chat-lore-list" class="list-container">
+                            <!-- Chat-attached lorebook goes here -->
+                        </div>
+                        <div class="section-header sub">
+                            <h4>Character Lore</h4>
+                        </div>
+                        <div id="character-lore-list" class="list-container">
+                            <!-- Character-attached lorebooks go here -->
+                        </div>
+
+                        <div class="section-header mt-4">
+                            <h3>Active Global</h3>
+                            <button id="btn-save-template" title="Save as Template"><i class="fa-solid fa-save"></i></button>
+                        </div>
+                        <div id="active-lorebooks-list" class="list-container">
+                            <!-- Active lorebooks go here -->
+                        </div>
+
+                        <div class="section-header mt-4">
+                            <h3>Templates</h3>
+                        </div>
+                        <div id="templates-list" class="list-container">
+                            <!-- Saved presets go here -->
+                        </div>
                     </div>
-                    <div class="sidebar-section-label" style="font-size:0.75rem; color:var(--text-muted); padding:8px 12px 2px; letter-spacing:0.5px; text-transform:uppercase;">My Agents</div>
-                    <div id="agent-sidebar-list" style="display:flex; flex-direction:column;"></div>
-                </div>
+                </section>
+                <div class="panel-resizer" data-panel="character" title="Drag to resize"></div>
+
+                <!-- Panel 2: All Lorebooks -->
+                <section class="panel panel-lorebooks" id="panel-lorebooks">
+                    <div class="panel-header" data-panel="lorebooks" title="Click to collapse / expand">
+                        <i class="fa-solid fa-chevron-right panel-chevron"></i>
+                        <h3>All Lorebooks</h3>
+                    </div>
+                    <div class="panel-body">
+                        <div class="search-bar">
+                            <i class="fa-solid fa-search"></i>
+                            <input type="text" id="search-lorebooks" placeholder="Search lorebooks...">
+                        </div>
+                        <div id="all-lorebooks-list" class="list-container flex-grow">
+                            <!-- All lorebooks go here -->
+                        </div>
+                    </div>
+                </section>
+                <div class="panel-resizer" data-panel="lorebooks" title="Drag to resize"></div>
+
+                <!-- Panel 3: Agents & Recovery -->
+                <section class="panel panel-agent" id="panel-agent">
+                    <div class="panel-header" data-panel="agent" title="Click to collapse / expand">
+                        <i class="fa-solid fa-chevron-right panel-chevron"></i>
+                        <h3>Agents &amp; Recovery</h3>
+                    </div>
+                    <div class="panel-body">
+                        <div class="section-header">
+                            <h3>Agent</h3>
+                        </div>
+                        <div class="list-container">
+                            <div id="nav-agent-dashboard" class="list-item agent-sidebar-item" style="cursor:pointer;">
+                                <i class="fa-solid fa-robot"></i><span>Dashboard</span>
+                            </div>
+                            <div id="nav-agent-feed" class="list-item agent-sidebar-item" style="cursor:pointer;">
+                                <i class="fa-solid fa-clipboard-list"></i><span>Feed</span>
+                                <span class="badge-count" id="agent-pending-badge" style="display:none;">0</span>
+                            </div>
+                            <div id="nav-agent-chat" class="list-item agent-sidebar-item" style="cursor:pointer;">
+                                <i class="fa-solid fa-comments"></i><span>Agent Chat</span>
+                            </div>
+                            <div class="sidebar-section-label" style="font-size:0.75rem; color:var(--text-muted); padding:8px 12px 2px; letter-spacing:0.5px; text-transform:uppercase;">My Agents</div>
+                            <div id="agent-sidebar-list" style="display:flex; flex-direction:column;"></div>
+                        </div>
+
+                        <div class="section-header mt-4">
+                            <h3>Recovery</h3>
+                        </div>
+                        <div class="list-container">
+                            <div id="nav-recovery" class="list-item agent-sidebar-item" style="cursor:pointer;">
+                                <i class="fa-solid fa-clock-rotate-left"></i><span>Deleted Entries / Backups</span>
+                            </div>
+                        </div>
+                    </div>
+                </section>
             </div>
         </aside>
         <div id="sidebar-resizer" class="resizer"></div>
@@ -87,6 +143,7 @@
                     <button id="btn-deselect-all" title="Deselect All" style="display:none;"><i class="fa-solid fa-minus-square"></i></button>
                     <button id="btn-batch-options" title="Batch Options" disabled><i class="fa-solid fa-layer-group"></i> Batch</button>
                     <button id="btn-download-selected" title="Download Selected Entries" disabled style="display:none;"><i class="fa-solid fa-download"></i> Download</button>
+                    <button id="btn-backup-watch" title="Backup Watch"><i class="fa-solid fa-shield-halved"></i> Backup Watch</button>
                 </div>
             </div>
 
@@ -139,17 +196,59 @@
                         </div>
                         <div class="form-group">
                             <label>Custom Instructions</label>
-                            <textarea id="agent-custom-instructions" placeholder="Additional instructions for the agent's system prompt" style="width:100%; min-height:60px; background:rgba(0,0,0,0.3); border:1px solid var(--panel-border); color:var(--text-color); padding:8px 12px; border-radius:6px; font-family:inherit; font-size:0.9rem; outline:none; resize:vertical;"></textarea>
+                            <textarea id="agent-custom-instructions" placeholder="Legacy fallback — used only when System Prompt → Custom text below is empty" style="width:100%; min-height:60px; background:rgba(0,0,0,0.3); border:1px solid var(--panel-border); color:var(--text-color); padding:8px 12px; border-radius:6px; font-family:inherit; font-size:0.9rem; outline:none; resize:vertical;"></textarea>
                         </div>
                     </div>
                 </details>
 
-                <!-- Tool Permissions -->
+                <!-- System Prompt -->
+                <details open style="margin-bottom:16px; background:rgba(0,0,0,0.1); padding:12px; border-radius:6px;">
+                    <summary style="cursor:pointer; font-weight:bold; margin-bottom:8px;">System Prompt</summary>
+                    <div style="display:flex; flex-direction:column; gap:10px;">
+                        <small style="opacity:0.7;">Every run sends one prompt message = <b>auto environment briefing</b> (who the model is, turn budget, tools, approval waitlist) + <b>your custom text</b> + task brief. You control how that message is delivered:</small>
+                        <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+                            <div class="form-group" style="margin:0;">
+                                <label>Role</label>
+                                <select id="agent-prompt-role" style="width:100%; background:rgba(0,0,0,0.3); border:1px solid var(--panel-border); color:var(--text-color); padding:6px 8px; border-radius:6px;">
+                                    <option value="system">system — strongest, always first</option>
+                                    <option value="user">user — lorebook-style instruction</option>
+                                    <option value="assistant">assistant — few-shot / persona voice</option>
+                                </select>
+                            </div>
+                            <div class="form-group" style="margin:0;">
+                                <label>Position</label>
+                                <select id="agent-prompt-position" style="width:100%; background:rgba(0,0,0,0.3); border:1px solid var(--panel-border); color:var(--text-color); padding:6px 8px; border-radius:6px;">
+                                    <option value="before">Before history — briefing first</option>
+                                    <option value="after">After history — at depth 0, right before generation</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="form-group" style="margin:0;">
+                            <label>Custom text (appended after the auto briefing; empty = use Custom Instructions above)</label>
+                            <textarea id="agent-prompt-custom" placeholder="e.g. Be terse. Prefer editing existing entries over creating new ones. Never propose deletions without quoting the stale text." style="width:100%; min-height:80px; background:rgba(0,0,0,0.3); border:1px solid var(--panel-border); color:var(--text-color); padding:8px 12px; border-radius:6px; font-family:inherit; font-size:0.9rem; outline:none; resize:vertical; font-family:monospace;"></textarea>
+                        </div>
+                        <details style="background:rgba(0,0,0,0.2); padding:8px 10px; border-radius:6px;">
+                            <summary style="cursor:pointer; font-size:0.85rem; opacity:0.85;">Preview — what the model actually receives</summary>
+                            <div style="display:flex; gap:8px; margin:8px 0;">
+                                <button id="btn-preview-prompt" class="btn btn-secondary btn-sm" type="button">Render preview</button>
+                            </div>
+                            <pre id="agent-prompt-preview" style="max-height:320px; overflow:auto; white-space:pre-wrap; font-size:0.78rem; margin:0; opacity:0.9;">Press "Render preview" to see the exact first message (briefing + custom + task) with current settings.</pre>
+                        </details>
+                    </div>
+                </details>
+
+                <!-- Hub status -->
+                <div id="agent-hub-status" style="margin-bottom:16px; padding:10px 12px; border-radius:6px; background:rgba(0,0,0,0.15); font-size:0.85rem;"></div>
+
+                <!-- Tool Permissions (hub inline tools) -->
                 <details open style="margin-bottom:16px; background:rgba(0,0,0,0.1); padding:12px; border-radius:6px;">
                     <summary style="cursor:pointer; font-weight:bold; margin-bottom:8px;">Tool Permissions</summary>
-                    <div id="agent-tool-permissions-container" class="tool-permission-grid">
-                        <!-- Populated dynamically from EL_TOOL_DEFINITIONS -->
+                    <div style="display:flex; flex-direction:column; gap:6px;">
+                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer;"><input type="checkbox" id="agent-scope-create" checked> Can Create Entries</label>
+                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer;"><input type="checkbox" id="agent-scope-edit" checked> Can Edit Entries</label>
+                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer;"><input type="checkbox" id="agent-scope-delete"> Can Delete Entries</label>
                     </div>
+                    <small style="opacity:0.7;">Read-only lorebook inspection (list / search / get) is always on in agent mode. These toggles control which proposal actions the model may stage for your review. Nothing is ever written without you accepting it in the Feed.</small>
                 </details>
 
                 <!-- Injected Context -->
@@ -164,6 +263,41 @@
                             <button id="btn-clear-injected-context" class="btn btn-secondary btn-sm">Clear All</button>
                         </div>
                         <small style="opacity:0.7;">Entries injected directly into the prompt each run — no tools needed. Works for non-active lorebooks (e.g. a status tracking lorebook).</small>
+                        <div style="margin-top:10px; border-top:1px solid rgba(255,255,255,0.1); padding-top:10px; display:flex; flex-direction:column; gap:8px;">
+                            <div style="font-weight:bold;">Linked Lorebooks (dynamic) <span id="agent-dynamic-count" style="font-weight:normal; opacity:0.7;"></span></div>
+                            <div id="agent-dynamic-list" style="display:flex; flex-direction:column; gap:6px;">
+                                <!-- populated dynamically -->
+                            </div>
+                            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                                <button id="btn-link-lorebook" class="btn btn-secondary btn-sm">Link Lorebook</button>
+                                <button id="btn-sync-chat-books" class="btn btn-secondary btn-sm" title="Add the current chat's active lorebooks (global + chat + character) as dynamic links">Sync with Chat</button>
+                                <button id="btn-preview-dynamic" class="btn btn-secondary btn-sm" title="Dry-run the keyword scan and show which entries would activate">Preview Matches</button>
+                                <button id="btn-clear-dynamic-links" class="btn btn-secondary btn-sm">Clear Links</button>
+                            </div>
+                            <div id="dynamic-preview" style="display:none; background:rgba(0,0,0,0.25); padding:8px 10px; border-radius:4px; font-size:12px; max-height:220px; overflow:auto; white-space:pre-wrap;"></div>
+                            <small style="opacity:0.7;">Whole lorebooks scanned at run time with SillyTavern's own keyword activation (keys, selective logic, probability, budget). Pinned entries are always injected. Uses ST's live World Info settings — no separate config.</small>
+                        </div>
+                    </div>
+                </details>
+
+                <details style="margin-bottom:16px; background:rgba(0,0,0,0.1); padding:12px; border-radius:6px;">
+                    <summary style="cursor:pointer; font-weight:bold; margin-bottom:8px;">Per-Character Rules <span id="agent-rules-count" style="font-weight:normal; opacity:0.7;"></span></summary>
+                    <small style="opacity:0.7; display:block; margin-bottom:8px;">Different injected context + task per character. When the current chat's character matches a rule, the agent uses that rule's picks and overrides; otherwise the fallback below applies.</small>
+                    <div id="agent-rules-list" style="display:flex; flex-direction:column; gap:8px;">
+                        <!-- populated dynamically -->
+                    </div>
+                    <div style="display:flex; gap:8px; margin-top:8px; align-items:center; flex-wrap:wrap;">
+                        <select id="agent-rule-char" title="Character" style="flex:1; min-width:160px; background:rgba(0,0,0,0.3); border:1px solid var(--panel-border); color:var(--text-color); padding:6px 8px; border-radius:6px;"></select>
+                        <button id="btn-add-rule" class="btn btn-secondary btn-sm">Add Rule</button>
+                    </div>
+                    <div style="margin-top:10px; border-top:1px solid rgba(255,255,255,0.1); padding-top:10px; display:flex; flex-direction:column; gap:8px;">
+                        <div style="font-weight:bold;">Fallback (other characters)</div>
+                        <div class="form-group" style="margin:0;"><label>Task override</label><textarea id="agent-default-task" placeholder="Empty = use agent task" style="width:100%; min-height:44px; background:rgba(0,0,0,0.3); border:1px solid var(--panel-border); color:var(--text-color); padding:6px 8px; border-radius:6px; font-size:0.85rem;"></textarea></div>
+                        <div class="form-group" style="margin:0;"><label>Instructions override</label><textarea id="agent-default-instructions" placeholder="Empty = use agent instructions" style="width:100%; min-height:44px; background:rgba(0,0,0,0.3); border:1px solid var(--panel-border); color:var(--text-color); padding:6px 8px; border-radius:6px; font-size:0.85rem;"></textarea></div>
+                        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                            <button id="btn-default-picks" class="btn btn-secondary btn-sm">Fallback injected picks (<span id="agent-default-picks-count">0</span>)</button>
+                            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:0.85rem;"><input type="checkbox" id="agent-notify-no-match"> Warn when no rule matches</label>
+                        </div>
                     </div>
                 </details>
 
@@ -178,76 +312,95 @@
                     </div>
                 </details>
 
-                <!-- Multi-Turn (Agentic) -->
+                <!-- Hub Request -->
                 <details open style="margin-bottom:16px; background:rgba(0,0,0,0.1); padding:12px; border-radius:6px;">
-                    <summary style="cursor:pointer; font-weight:bold; margin-bottom:8px;">Multi-Turn (Agentic)</summary>
-                    <div style="display:flex; flex-direction:column; gap:8px;">
-                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer;"><input type="checkbox" id="agent-multiturn-enabled"> Enable multi-turn behavior (agent can call tools across multiple rounds)</label>
-                        <div id="agent-multiturn-config" style="display:none; flex-direction:column; gap:8px;">
-                            <div style="display:flex; gap:20px;">
-                                <label style="display:flex; align-items:center; gap:6px; cursor:pointer;"><input type="radio" name="agent-multiturn-mode" value="count" checked> Total calls per run</label>
-                                <label style="display:flex; align-items:center; gap:6px; cursor:pointer;"><input type="radio" name="agent-multiturn-mode" value="rate"> Calls per minute</label>
-                            </div>
-                            <div class="form-group" id="agent-multiturn-count-field">
-                                <label>Max total LLM calls per run</label>
-                                <input type="number" id="agent-multiturn-maxcalls" value="10" min="1" max="50">
-                            </div>
-                            <div class="form-group" id="agent-multiturn-rate-field" style="display:none;">
-                                <label>Calls per minute</label>
-                                <input type="number" id="agent-multiturn-cpm" value="5" min="1" max="60">
+                    <summary style="cursor:pointer; font-weight:bold; margin-bottom:8px;">Hub Request (ST-RequestHub)</summary>
+                    <small style="opacity:0.7; display:block; margin-bottom:8px;">This agent is a JSON config for the shared ST-RequestHub backend. The hub runs the model (once or agentic); proposals come back here for your review. Nothing is written without you accepting it.</small>
+                    <div style="display:flex; gap:20px; margin-bottom:8px;">
+                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer;" title="One model call, no tools. Linked lorebooks are pasted in as a static snapshot."><input type="radio" name="agent-hubmode" value="single"> Single (one-shot)</label>
+                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer;" title="Model inspects lorebooks with tools over multiple rounds, then answers."><input type="radio" name="agent-hubmode" value="agent" checked> Agentic (tool loop)</label>
+                    </div>
+                    <div id="agent-hub-agent-config" style="display:flex; flex-direction:column; gap:8px;">
+                        <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+                            <div class="form-group">
+                                <label>Max steps (tool rounds)</label>
+                                <input type="number" id="agent-hub-maxsteps" value="10" min="1" max="100">
                             </div>
                             <div class="form-group">
-                                <label>Hard safety cap (max calls, any mode)</label>
-                                <input type="number" id="agent-multiturn-safety" value="30" min="1" max="100">
+                                <label>Total timeout ms (0 = off)</label>
+                                <input type="number" id="agent-hub-total-timeout" value="600000" min="0" step="1000">
                             </div>
-                            <small style="opacity:0.7;">Rate mode spaces calls 60/N apart. The safety cap always applies to prevent runaway loops.</small>
                         </div>
                     </div>
                 </details>
 
                 <details open style="margin-bottom:16px; background:rgba(0,0,0,0.1); padding:12px; border-radius:6px;">
-                    <summary style="cursor:pointer; font-weight:bold; margin-bottom:8px;">Connection</summary>
-                    <div style="display:flex; gap:20px; margin-bottom:8px;">
-                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer;"><input type="radio" name="agent-connection" value="st-pipeline" checked> Use SillyTavern Pipeline</label>
-                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer;"><input type="radio" name="agent-connection" value="separate-api"> Use Separate API</label>
-                    </div>
-                    <div id="agent-separate-api-config" style="display:none; display:flex; flex-direction:column; gap:8px;">
+                    <summary style="cursor:pointer; font-weight:bold; margin-bottom:8px;">Model &amp; Sampling</summary>
+                    <div style="display:flex; flex-direction:column; gap:8px;">
                         <div class="form-group">
-                            <label>API Endpoint URL</label>
-                            <input type="text" id="agent-api-endpoint" placeholder="https://api.openai.com/v1">
+                            <label>Hub API profile (connection + default model)</label>
+                            <select id="agent-hub-profile" style="width:100%; background:rgba(0,0,0,0.3); border:1px solid var(--panel-border); color:var(--text-color); padding:6px 8px; border-radius:6px;">
+                                <option value="">-- Hub default / ST backend --</option>
+                            </select>
+                            <small style="opacity:0.7;">Profiles are managed in ST-RequestHub settings (Extensions panel). Empty = hub default profile, or the ST backend when none is set.</small>
                         </div>
                         <div class="form-group">
-                            <label>Model Name</label>
-                            <input type="text" id="agent-api-model" placeholder="gpt-4o">
+                            <label>Chat preset (samplers + prompts, ST backend route)</label>
+                            <select id="agent-hub-preset" style="width:100%; background:rgba(0,0,0,0.3); border:1px solid var(--panel-border); color:var(--text-color); padding:6px 8px; border-radius:6px;">
+                                <option value="">-- None --</option>
+                            </select>
                         </div>
                         <div class="form-group">
-                            <label>Temperature: <span id="agent-api-temp-value">0.7</span></label>
-                            <input type="range" id="agent-api-temperature" min="0" max="1" step="0.05" value="0.7" style="width:100%;">
+                            <label>Model override (exact name, optional)</label>
+                            <input type="text" id="agent-hub-model" placeholder="e.g. gpt-4o-mini (empty = profile/backend default)">
+                        </div>
+                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer;"><input type="checkbox" id="agent-hub-own-config"> Ignore preset samplers (use values below only)</label>
+                        <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+                            <div class="form-group">
+                                <label>Temperature: <span id="agent-hub-temp-value">0.7</span></label>
+                                <input type="range" id="agent-hub-temperature" min="0" max="2" step="0.05" value="0.7" style="width:100%;">
+                            </div>
+                            <div class="form-group">
+                                <label>Top P (blank = unset)</label>
+                                <input type="text" id="agent-hub-top-p" placeholder="e.g. 0.9">
+                            </div>
+                            <div class="form-group">
+                                <label>Max output tokens</label>
+                                <input type="number" id="agent-hub-max-tokens" value="1024" min="1" max="128000">
+                            </div>
+                            <div class="form-group">
+                                <label>Seed (blank = unset)</label>
+                                <input type="text" id="agent-hub-seed" placeholder="e.g. 42">
+                            </div>
+                            <div class="form-group">
+                                <label>Timeout ms per round (0 = hub default)</label>
+                                <input type="number" id="agent-hub-timeout" value="90000" min="0" step="1000">
+                            </div>
+                            <div class="form-group">
+                                <label>Retries (network / 429 / 5xx)</label>
+                                <input type="number" id="agent-hub-retries" value="1" min="0" max="5">
+                            </div>
                         </div>
                         <div style="display:flex; gap:8px;">
-                            <button id="btn-save-api-config" class="btn btn-primary btn-sm">Save API Config</button>
                             <button id="btn-test-connection" class="btn btn-secondary btn-sm">Test Connection</button>
                         </div>
                     </div>
                 </details>
 
                 <details open style="margin-bottom:16px; background:rgba(0,0,0,0.1); padding:12px; border-radius:6px;">
-                    <summary style="cursor:pointer; font-weight:bold; margin-bottom:8px;">Permissions</summary>
+                    <summary style="cursor:pointer; font-weight:bold; margin-bottom:8px;">Auto-Accept (extension policy)</summary>
                     <div style="display:flex; flex-direction:column; gap:6px;">
-                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer;"><input type="checkbox" id="agent-perm-create" checked> Can Create Entries</label>
-                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer;"><input type="checkbox" id="agent-perm-edit" checked> Can Edit Entries</label>
-                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer;"><input type="checkbox" id="agent-perm-delete"> Can Delete Entries</label>
-                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer;"><input type="checkbox" id="agent-perm-research"> Can Research</label>
-                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer; margin-top:4px;"><input type="checkbox" id="agent-perm-auto-accept"> Auto-Accept</label>
+                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer; margin-top:4px;"><input type="checkbox" id="agent-perm-auto-accept"> Auto-Accept high-confidence proposals</label>
                         <div id="agent-auto-accept-config" style="display:none; margin-left:24px;">
                             <label>Confidence Threshold: <span id="agent-confidence-value">0.8</span></label>
                             <input type="range" id="agent-confidence-threshold" min="0" max="1" step="0.05" value="0.8" style="width:200px;">
                         </div>
+                        <small style="opacity:0.7;">The hub enforces no policy — this is applied here, after the reply arrives and before anything is written.</small>
                     </div>
                 </details>
 
                 <details open style="margin-bottom:16px; background:rgba(0,0,0,0.1); padding:12px; border-radius:6px;">
-                    <summary style="cursor:pointer; font-weight:bold; margin-bottom:8px;">Guardrails</summary>
+                    <summary style="cursor:pointer; font-weight:bold; margin-bottom:8px;">Guardrails & Limits</summary>
                     <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
                         <div class="form-group">
                             <label>Max entries per run</label>
@@ -269,28 +422,119 @@
                             <input type="checkbox" id="agent-guard-require-confirmation">
                             <label for="agent-guard-require-confirmation">Require confirmation before applying</label>
                         </div>
+                        <div class="form-group">
+                            <label>Snapshot chars per entry (static context)</label>
+                            <input type="number" id="agent-limit-chars" value="8000" min="100" max="50000">
+                        </div>
                     </div>
                 </details>
 
                 <details open style="margin-bottom:16px; background:rgba(0,0,0,0.1); padding:12px; border-radius:6px;">
-                    <summary style="cursor:pointer; font-weight:bold; margin-bottom:8px;">Research</summary>
+                    <summary style="cursor:pointer; font-weight:bold; margin-bottom:8px;">Context — messages, sources & token budget (all runs)</summary>
+                    <small style="opacity:0.7; display:block; margin-bottom:8px;">This section drives EVERY run type (dashboard, periodic, wand popup, /el-run). The popup only overrides the profile below for one run.</small>
+                    <div id="agent-ctx-tokens" style="font-weight:bold; margin-bottom:4px;">Context tokens: —</div>
+                    <div id="agent-ctx-tokens-breakdown" style="opacity:0.75; font-size:0.82rem; margin-bottom:8px;"></div>
                     <div class="form-group">
-                        <label>Source</label>
-                        <select id="agent-research-source">
-                            <option value="disabled">Disabled</option>
-                            <option value="searxng">SearXNG</option>
-                        </select>
+                        <label>Hub API profile override for one-shot runs (name, empty = agent default)</label>
+                        <input type="text" id="agent-quick-profile" placeholder="e.g. My Hub Profile" style="width:100%;">
                     </div>
-                    <div id="agent-searxng-config" style="display:none; flex-direction:column; gap:8px; margin-top:8px;">
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:8px;">
                         <div class="form-group">
-                            <label>SearXNG URL</label>
-                            <input type="text" id="agent-searxng-url" placeholder="http://localhost:8888">
+                            <label>RP messages to include</label>
+                            <select id="agent-quick-msg-type">
+                                <option value="none">None</option>
+                                <option value="all">All messages</option>
+                                <option value="last" selected>Last X messages</option>
+                                <option value="range">Range (IDs)</option>
+                            </select>
+                        </div>
+                        <div class="form-group" id="agent-quick-first-row" style="display:none;">
+                            <label>First N messages</label>
+                            <input type="number" id="agent-quick-first" value="10" min="1" max="500">
+                        </div>
+                        <div class="form-group" id="agent-quick-last-row">
+                            <label>Last N messages</label>
+                            <input type="number" id="agent-quick-last" value="10" min="1" max="500">
+                        </div>
+                        <div class="form-group" id="agent-quick-range-row" style="display:none;">
+                            <label>Range start – end (chat message IDs)</label>
+                            <div style="display:flex; gap:6px;">
+                                <input type="number" id="agent-quick-range-start" value="0" min="0" max="100000" style="width:100%;">
+                                <input type="number" id="agent-quick-range-end" value="10" min="0" max="100000" style="width:100%;">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="form-group" style="margin-top:8px;">
+                        <label>Exclude message IDs (granular, e.g. 12, 15-18)</label>
+                        <input type="text" id="agent-ctx-exclude" placeholder="12, 15-18" style="width:100%;">
+                    </div>
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px 12px; margin-top:8px;">
+                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer;"><input type="checkbox" id="agent-quick-inc-char" checked> Character card</label>
+                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer;"><input type="checkbox" id="agent-quick-inc-author" checked> Author note</label>
+                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer;"><input type="checkbox" id="agent-quick-inc-wi" checked> Lorebook snapshot</label>
+                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer;"><input type="checkbox" id="agent-quick-inc-inj" checked> Static injected context</label>
+                    </div>
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:8px;">
+                        <div class="form-group">
+                            <label>Lorebook snapshot mode</label>
+                            <select id="agent-ctx-wi-mode">
+                                <option value="names" selected>Names + counts (cheap)</option>
+                                <option value="full">Full entries (expensive)</option>
+                            </select>
                         </div>
                         <div class="form-group">
-                            <label>API Token (optional)</label>
-                            <input type="text" id="agent-searxng-token" placeholder="leave blank if none">
+                            <label>Max chars per lorebook entry</label>
+                            <input type="number" id="agent-ctx-wi-maxchars" value="2000" min="100" max="20000">
+                        </div>
+                        <div class="form-group">
+                            <label>Max chars: character card</label>
+                            <input type="number" id="agent-ctx-cc-maxchars" value="2000" min="100" max="20000">
+                        </div>
+                        <div class="form-group">
+                            <label>Max chars: author note</label>
+                            <input type="number" id="agent-ctx-an-maxchars" value="1500" min="100" max="10000">
                         </div>
                     </div>
+                    <div style="display:grid; grid-template-columns:1fr 1fr 2fr; gap:12px; margin-top:8px;">
+                        <div class="form-group" style="display:flex; align-items:center; gap:6px;">
+                            <input type="checkbox" id="agent-ctx-prevmem-enabled" checked>
+                            <label for="agent-ctx-prevmem-enabled">Previous memories</label>
+                        </div>
+                        <div class="form-group">
+                            <label>Count (0–7)</label>
+                            <input type="number" id="agent-ctx-prevmem-count" value="3" min="0" max="7">
+                        </div>
+                        <div class="form-group">
+                            <label>Memories lorebook (empty = first linked)</label>
+                            <input type="text" id="agent-ctx-prevmem-book" placeholder="First linked book" style="width:100%;">
+                        </div>
+                    </div>
+                    <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; margin-top:8px;">
+                        <div class="form-group">
+                            <label>Instruction preset</label>
+                            <select id="agent-ctx-preset">
+                                <option value="lorekeeper" selected>Lorekeeper (balanced)</option>
+                                <option value="minimal">Minimal (low token)</option>
+                                <option value="strict">Strict (explicit facts only)</option>
+                                <option value="comprehensive">Comprehensive (full audit)</option>
+                                <option value="none">None (legacy behavior)</option>
+                            </select>
+                        </div>
+                        <div class="form-group" style="display:flex; align-items:center; gap:6px;">
+                            <input type="checkbox" id="agent-ctx-useregex">
+                            <label for="agent-ctx-useregex">Apply regex scripts</label>
+                        </div>
+                        <div class="form-group">
+                            <label>Token warning threshold (0 = off)</label>
+                            <input type="number" id="agent-ctx-tokens-warn" value="50000" min="0" max="1000000">
+                        </div>
+                    </div>
+                </details>
+
+                <details open style="margin-bottom:16px; background:rgba(0,0,0,0.1); padding:12px; border-radius:6px;">
+                    <summary style="cursor:pointer; font-weight:bold; margin-bottom:8px;">Reply Format (hub contract)</summary>
+                    <small style="opacity:0.7;">The hub returns the model's final answer as text. This agent requires a single JSON object: <code>{"proposals":[{action, lorebookName, uid?, entryData?, changes?, reasoning?, confidence?}]}</code>. Replies that are not JSON are reported with a warning and nothing is committed. Backups go to <code>agent-backups/&lt;book&gt;/</code> on accept.</small>
+                    <div id="agent-token-docs" style="max-height:160px; overflow:auto; margin-top:8px; background:rgba(0,0,0,0.2); padding:8px; border-radius:6px; font-family:monospace; font-size:0.78rem; white-space:pre-wrap;"></div>
                 </details>
 
                 <!-- Actions Bar -->
@@ -329,6 +573,11 @@
                     <select id="agent-feed-agent-filter" style="flex:1; background:rgba(0,0,0,0.3); border:1px solid var(--panel-border); color:var(--text-color); padding:4px 8px; border-radius:6px; font-size:0.85rem;">
                         <option value="all">All Agents</option>
                     </select>
+                    <label style="font-size:0.82rem; font-weight:600; white-space:nowrap;" title="All chats shows proposals saved under any chat (e.g. runs from another chat)">Scope:</label>
+                    <select id="agent-feed-scope" style="background:rgba(0,0,0,0.3); border:1px solid var(--panel-border); color:var(--text-color); padding:4px 8px; border-radius:6px; font-size:0.85rem;">
+                        <option value="chat">This chat</option>
+                        <option value="all">All chats</option>
+                    </select>
                 </div>
 
                 <div class="agent-feed-action-bar">
@@ -350,7 +599,43 @@
                     <div id="feed-backup-list" style="max-height:200px; overflow-y:auto; margin-top:8px;"></div>
                 </details>
             </div>
+
+            <!-- Agent Chat Panel — per-agent ST-chat clone (Q1) -->
+            <div id="agent-chat-panel" class="agent-chat-panel hidden" style="padding:0; display:flex; flex-direction:column; height:100%; overflow:hidden;">
+                <div style="padding:16px 24px 12px; border-bottom:1px solid var(--panel-border); display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                    <h2 style="margin:0; display:flex; align-items:center; gap:10px; flex:1;"><i class="fa-solid fa-comments"></i> Agent Chat</h2>
+                    <select id="agent-chat-agent-select" style="min-width:180px; background:rgba(0,0,0,0.3); border:1px solid var(--panel-border); color:var(--text-color); padding:6px 8px; border-radius:6px; font-size:0.9rem;"></select>
+                    <span id="agent-chat-thread-label" style="font-size:0.78rem; color:var(--text-muted);"></span>
+                    <button id="btn-agent-chat-clear" class="btn btn-secondary btn-sm" title="Clear this thread"><i class="fa-solid fa-trash"></i> Clear</button>
+                </div>
+                <div id="agent-chat-history" class="el-chat" style="flex:1; overflow-y:auto; padding:16px 24px; display:flex; flex-direction:column; gap:12px;"></div>
+                <div id="agent-chat-status" style="padding:0 24px; min-height:18px; font-size:0.82rem; color:var(--text-muted);"></div>
+                <div id="agent-chat-input-bar" style="padding:12px 24px 16px; border-top:1px solid var(--panel-border); display:flex; gap:8px; align-items:flex-end; background:rgba(0,0,0,0.12);">
+                    <textarea id="agent-chat-input" placeholder="Message this agent…" rows="2" style="flex:1; background:rgba(0,0,0,0.3); border:1px solid var(--panel-border); color:var(--text-color); padding:10px 12px; border-radius:10px; resize:vertical; min-height:42px; max-height:140px; font-family:inherit; font-size:0.92rem; line-height:1.45;"></textarea>
+                    <button id="btn-agent-chat-send" class="btn btn-primary" style="height:42px; padding:0 14px; border-radius:10px;" title="Send (Enter)"><i class="fa-solid fa-paper-plane"></i></button>
+                    <button id="btn-agent-chat-stop" class="btn btn-secondary" style="height:42px; display:none; padding:0 12px;" title="Stop"><i class="fa-solid fa-stop"></i></button>
+                </div>
+                <div style="padding:6px 24px 10px; font-size:0.72rem; color:var(--text-muted); border-top:1px solid rgba(255,255,255,0.04);">Enter to send · Shift+Enter newline · ←/→ arrows on last assistant message to reroll (ST-style swipes) · reasoning from &lt;think&gt;/&lt;thinking&gt;/&lt;reasoning&gt;/&lt;thought&gt; auto-collapsed</div>
+            </div>
         </main>
+    </div>
+
+    <!-- Recovery Panel -->
+    <div id="recovery-panel" class="recovery-panel hidden" style="padding:24px; overflow-y:auto; height:100%;">
+        <h2 style="margin:0 0 8px 0; display:flex; align-items:center; gap:10px;">
+            <i class="fa-solid fa-clock-rotate-left"></i> Recovery
+        </h2>
+        <div id="recovery-book" style="font-size:0.8rem; color:var(--text-muted); margin-bottom:16px;">
+            <i class="fa-solid fa-book"></i> <span id="recovery-book-name">No lorebook open</span>
+        </div>
+        <div class="agent-feed-filter-bar">
+            <button class="pill-btn active" data-recovery-tab="trash"><i class="fa-solid fa-trash-can"></i> Deleted Entries</button>
+            <button class="pill-btn" data-recovery-tab="snapshots"><i class="fa-solid fa-clock-rotate-left"></i> Snapshots</button>
+            <button class="pill-btn" data-recovery-tab="backups"><i class="fa-solid fa-shield-halved"></i> Backups</button>
+            <button class="pill-btn" data-recovery-tab="audit"><i class="fa-solid fa-list"></i> Audit Log</button>
+        </div>
+        <div id="recovery-toolbar" style="display:flex; gap:8px; margin:12px 0; flex-wrap:wrap; align-items:center;"></div>
+        <div id="recovery-content"></div>
     </div>
 
     <!-- Modals -->
@@ -379,6 +664,108 @@
                     <input type="color" id="color-primary" value="#6366f1">
                 </div>
                 <button id="btn-reset-colors" class="btn btn-secondary mt-4">Reset to Defaults</button>
+                <hr style="border:none;border-top:1px solid var(--panel-border);margin:16px 0;">
+                <div class="form-group">
+                    <label><i class="fa-solid fa-rotate" style="margin-right:6px;"></i>Auto-Refresh</label>
+                    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+                        <label style="display:flex;align-items:center;gap:6px;font-size:0.85rem;cursor:pointer;">
+                            <input type="checkbox" id="sync-enabled"> Enabled
+                        </label>
+                        <label style="display:flex;align-items:center;gap:6px;font-size:0.85rem;">
+                            Interval (s)
+                            <input type="number" id="sync-interval" min="1" max="300" style="width:70px;background:rgba(0,0,0,0.3);border:1px solid var(--panel-border);color:var(--text-color);padding:4px 8px;border-radius:6px;">
+                        </label>
+                        <button id="sync-refresh-now" class="btn btn-secondary btn-sm"><i class="fa-solid fa-rotate"></i> Refresh Now</button>
+                    </div>
+                    <p style="font-size:0.75rem;color:var(--text-muted);margin-top:6px;">
+                        Updates the sidebar and open lorebook automatically when something changes elsewhere. Events make ST-internal edits instant; the lightweight poll catches external edits (other extensions, direct saves).
+                    </p>
+                </div>
+                <hr style="border:none;border-top:1px solid var(--panel-border);margin:16px 0;">
+                <div class="form-group">
+                    <label><i class="fa-solid fa-bug" style="margin-right:6px;"></i>Logging (batched, relevance-filtered)</label>
+                    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:8px;">
+                        <label style="display:flex;align-items:center;gap:6px;font-size:0.85rem;">
+                            Level
+                            <select id="sync-loglevel" style="background:rgba(0,0,0,0.3);border:1px solid var(--panel-border);color:var(--text-color);padding:4px 8px;border-radius:6px;">
+                                <option value="OFF">OFF</option>
+                                <option value="ERROR">ERROR</option>
+                                <option value="WARN">WARN</option>
+                                <option value="INFO">INFO</option>
+                                <option value="DEBUG">DEBUG</option>
+                            </select>
+                        </label>
+                        <label style="display:flex;align-items:center;gap:6px;font-size:0.85rem;cursor:pointer;">
+                            <input type="checkbox" id="sync-verbose"> Verbose (folder/prompt/poll spam)
+                        </label>
+                    </div>
+                    <p style="font-size:0.75rem;color:var(--text-muted);margin-top:6px;">
+                        <code>INFO</code> = lorebook moves/creates/deletes + generation summary (one per reply, no per-token). <code>DEBUG+Verbose</code> also logs folder URLs, prompt previews &amp; poll details. File is batched every 2s to avoid lag.
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Backup Watch Modal -->
+    <div id="backup-watch-modal" class="modal">
+        <div class="modal-content glass-panel" style="width: 640px; max-width: 92vw; max-height: 85vh; display: flex; flex-direction: column;">
+            <div class="modal-header">
+                <h3><i class="fa-solid fa-shield-halved" style="margin-right: 8px; color: var(--primary-color);"></i>Backup Watch</h3>
+                <button class="close-modal"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="modal-body" style="overflow-y: auto; flex: 1; padding: 20px; display: flex; flex-direction: column; gap: 14px;">
+                <div style="font-size:0.85rem; color:var(--text-muted);">
+                    <i class="fa-solid fa-book"></i> <span id="backup-watch-book-name" style="color:var(--text-color); font-weight:600;"></span>
+                </div>
+                <div id="backup-watch-status" style="font-size:0.82rem; padding:10px 12px; background:rgba(0,0,0,0.15); border:1px solid var(--panel-border); border-radius:8px;"></div>
+
+                <div style="display:flex; flex-direction:column; gap:10px;">
+                    <label style="display:flex; align-items:flex-start; gap:10px; cursor:pointer; padding:10px 12px; border:1px solid var(--panel-border); border-radius:8px;">
+                        <input type="radio" name="backup-watch-mode" value="simple" checked style="margin-top:3px;">
+                        <span>
+                            <span style="font-weight:600;">Simple backup</span>
+                            <span style="display:block; font-size:0.8rem; color:var(--text-muted);">Saves one snapshot of this lorebook's current state. No automatic copies.</span>
+                        </span>
+                    </label>
+                    <label style="display:flex; align-items:flex-start; gap:10px; cursor:pointer; padding:10px 12px; border:1px solid var(--panel-border); border-radius:8px;">
+                        <input type="radio" name="backup-watch-mode" value="auto" style="margin-top:3px;">
+                        <span>
+                            <span style="font-weight:600;">Automatic backup</span>
+                            <span style="display:block; font-size:0.8rem; color:var(--text-muted);">Saves now, then a new copy every 5 hours. Copies stay whole for a week; after that only one per day is kept, and daily copies are kept indefinitely.</span>
+                        </span>
+                    </label>
+                </div>
+
+                <div id="backup-watch-auto-detail" style="display:none; font-size:0.8rem; color:var(--text-muted); padding:8px 12px; background:rgba(0,0,0,0.1); border-radius:6px;"></div>
+            </div>
+            <div class="modal-footer" style="padding: 12px 16px; border-top: 1px solid var(--panel-border); display: flex; justify-content: space-between; gap: 12px; background: rgba(255,255,255,0.02);">
+                <button id="btn-backup-watch-remove" class="btn btn-danger btn-sm" style="background:rgba(239,68,68,0.2); color:#ef4444; display:none;"><i class="fa-solid fa-ban"></i> Remove from Watch</button>
+                <span style="flex:1;"></span>
+                <button id="btn-backup-watch-cancel" class="btn btn-secondary">Cancel</button>
+                <button id="btn-backup-watch-confirm" class="btn btn-primary"><i class="fa-solid fa-shield-halved"></i> Save Backup</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Backup View Modal -->
+    <div id="backup-view-modal" class="modal">
+        <div class="modal-content glass-panel" style="width: 92vw; max-width: 1200px; height: 90vh; display: flex; flex-direction: column; overflow: hidden;">
+            <div class="modal-header">
+                <h3><i class="fa-solid fa-box-open" style="margin-right: 8px;"></i>Backup <span id="backup-view-title"></span></h3>
+                <button class="close-modal"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="modal-body" style="overflow-y: auto; flex: 1; padding: 16px; display: flex; flex-direction: column; gap: 12px;">
+                <div id="backup-view-meta" style="font-size:0.8rem; color:var(--text-muted);"></div>
+                <div id="backup-view-entries"></div>
+                <details style="background:rgba(0,0,0,0.1); padding:8px; border-radius:6px;">
+                    <summary style="cursor:pointer; font-weight:bold; font-size:0.9rem;">Raw JSON</summary>
+                    <textarea id="backup-view-json" readonly style="width:100%; min-height:260px; margin-top:8px; background:rgba(0,0,0,0.3); border:1px solid var(--panel-border); color:var(--text-color); padding:10px; border-radius:6px; font-family:'Consolas','Courier New',monospace; font-size:0.8rem;"></textarea>
+                </details>
+            </div>
+            <div class="modal-footer" style="padding: 12px 16px; border-top: 1px solid var(--panel-border); display: flex; justify-content: flex-end; gap: 12px; background: rgba(255,255,255,0.02);">
+                <button id="btn-backup-view-restore" class="btn btn-primary" style="background:var(--success-color,#10b981); color:#fff;"><i class="fa-solid fa-arrow-rotate-left"></i> Restore from this Backup</button>
+                <button class="close-modal btn btn-secondary">Close</button>
             </div>
         </div>
     </div>
@@ -413,6 +800,44 @@
         </div>
     </div>
 
+    <!-- Secrets Vault Modal -->
+    <div id="secrets-manager-modal" class="modal">
+        <div class="modal-content glass-panel" style="width: 760px; max-height: 85vh; display: flex; flex-direction: column;">
+            <div class="modal-header">
+                <h3><i class="fa-solid fa-key" style="margin-right: 8px; color: var(--primary-color);"></i>Secrets Vault (encrypted)</h3>
+                <button class="close-modal"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="modal-body" style="overflow-y: auto; flex: 1; padding: 16px; display: flex; flex-direction: column; gap: 16px;">
+                <div style="background:rgba(99,102,241,0.12); border:1px solid rgba(99,102,241,0.3); padding:10px 12px; border-radius:8px; font-size:0.85rem; color:var(--text-color);">
+                    Keys are encrypted at rest with AES-256-GCM (key file <code>.secrets.key</code>). They are never sent to the client except as masked <code>sk-****</code>. Each secret bundles endpoint + key + model — assign per agent or <em>Apply to all</em>.
+                </div>
+                <div id="secrets-list" style="display:flex; flex-direction:column; gap:8px;">
+                    <!-- populated -->
+                </div>
+                <details open style="background:rgba(0,0,0,0.12); padding:12px; border-radius:8px;">
+                    <summary style="cursor:pointer; font-weight:700;">Create / Update Secret</summary>
+                    <div style="display:flex; flex-direction:column; gap:8px; margin-top:10px;">
+                        <input type="hidden" id="secret-edit-id" value="">
+                        <div class="form-group"><label>Label (unique)</label><input type="text" id="secret-label" placeholder="e.g. OpenAI Main" style="width:100%;"></div>
+                        <div class="form-group"><label>API Endpoint URL</label><input type="text" id="secret-endpoint" placeholder="https://api.openai.com/v1" style="width:100%;"></div>
+                        <div class="form-group"><label>API Key (write-only)</label><input type="password" id="secret-key" placeholder="sk-..." style="width:100%;"></div>
+                        <small style="opacity:0.7; display:block;">Secrets store endpoint + key only. The model is typed per agent (Connection → Model).</small>
+                        <div style="display:flex; gap:8px; margin-top:8px;">
+                            <button id="btn-secret-save" class="btn btn-primary btn-sm"><i class="fa-solid fa-floppy-disk"></i> Save Secret</button>
+                            <button id="btn-secret-clear" class="btn btn-secondary btn-sm">Clear</button>
+                            <button id="btn-secret-test" class="btn btn-secondary btn-sm"><i class="fa-solid fa-plug"></i> Test</button>
+                        </div>
+                        <div id="secret-test-result" style="font-size:0.82rem; min-height:1.2em; opacity:0.9;"></div>
+                    </div>
+                </details>
+            </div>
+            <div class="modal-actions" style="padding:12px 16px;">
+                <span style="flex:1;"></span>
+                <button class="btn btn-secondary close-modal">Close</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Injected Context Picker Modal -->
     <div id="injected-picker-modal" class="modal">
         <div class="modal-content glass-panel" style="width: 720px; max-height: 85vh; display: flex; flex-direction: column;">
@@ -429,6 +854,40 @@
                 <span style="flex:1;"></span>
                 <button class="btn btn-secondary" id="btn-injected-cancel">Cancel</button>
                 <button class="btn btn-primary" id="btn-injected-confirm"><i class="fa-solid fa-check"></i> Add Selected</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Terminal Modal -->
+    <div id="terminal-modal" class="modal">
+        <div class="modal-content glass-panel" style="width: 920px; max-height: 88vh; display: flex; flex-direction: column;">
+            <div class="modal-header">
+                <h3><i class="fa-solid fa-terminal" style="margin-right: 8px; color: var(--primary-color);"></i>Terminal <span id="terminal-count" style="font-weight:normal; opacity:0.6; font-size:0.8rem;"></span></h3>
+                <button class="close-modal"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="modal-body" style="overflow:hidden; flex: 1; padding: 12px 16px; display: flex; flex-direction: column; gap: 8px; min-height:0;">
+                <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                    <select id="terminal-level" title="Level filter" style="background:rgba(0,0,0,0.3); border:1px solid var(--panel-border); color:var(--text-color); padding:4px 8px; border-radius:6px; font-size:0.8rem;">
+                        <option value="ALL">ALL</option>
+                        <option value="DEBUG">DEBUG</option>
+                        <option value="INFO">INFO</option>
+                        <option value="WARN">WARN</option>
+                        <option value="ERROR">ERROR</option>
+                    </select>
+                    <input type="text" id="terminal-filter" placeholder="Filter text..." style="flex:1; min-width:120px; background:rgba(0,0,0,0.3); border:1px solid var(--panel-border); color:var(--text-color); padding:4px 8px; border-radius:6px; font-size:0.8rem;">
+                    <label style="display:flex; align-items:center; gap:4px; font-size:0.8rem; opacity:0.85; cursor:pointer;"><input type="checkbox" id="terminal-autoscroll" checked> Follow</label>
+                    <span style="flex:1;"></span>
+                    <button id="btn-terminal-refresh" class="btn btn-secondary btn-sm" title="Reload history from server log"><i class="fa-solid fa-sync"></i></button>
+                    <button id="btn-terminal-copy" class="btn btn-secondary btn-sm" title="Copy visible lines"><i class="fa-solid fa-copy"></i></button>
+                    <button id="btn-terminal-download" class="btn btn-secondary btn-sm" title="Download .log"><i class="fa-solid fa-download"></i></button>
+                    <button id="btn-terminal-clear" class="btn btn-secondary btn-sm" title="Clear panel (server log file kept)"><i class="fa-solid fa-trash"></i></button>
+                </div>
+                <div id="terminal-output" class="terminal-output"></div>
+                <div style="font-size:0.72rem; opacity:0.55;">Request/response bodies truncated at 4KB inline — click ▸ detail to expand. API keys are never logged (credential shown as kind/source only).</div>
+            </div>
+            <div class="modal-actions" style="padding:12px 16px;">
+                <span style="flex:1;"></span>
+                <button class="btn btn-secondary close-modal">Close</button>
             </div>
         </div>
     </div>
@@ -1281,12 +1740,17 @@
 
     <div id="xml-copy-toast" class="toast-notification">Template copied to clipboard!</div>
 
-    <script src="agent-prompts.js?v=2"></script>
-    <script src="agent-tools.js?v=2"></script>
-    <script src="agent-manager.js?v=2"></script>
-    <script src="agent-core.js?v=2"></script>
-    <script src="agent-backup.js?v=2"></script>
-    <script src="app.js?v=2"></script>
-    <script src="agent-ui.js?v=2"></script>
+    <script src="logger.js?v=6"></script>
+    <script src="agent-config-schema.js?v=8"></script>
+    <script src="context-builder.js?v=1"></script>
+    <script src="hub-client.js?v=1"></script>
+    <script src="hub-tools.js?v=1"></script>
+    <script src="agent-chat.js?v=7"></script>
+    <script src="agent-manager.js?v=8"></script>
+    <script src="agent-backup.js?v=6"></script>
+    <script src="worldinfo-guard.js?v=6"></script>
+    <script src="folder-url.js?v=6"></script>
+    <script src="app.js?v=7"></script>
+    <script src="agent-ui.js?v=8"></script>
 </body>
 </html>

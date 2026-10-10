@@ -52,22 +52,28 @@ SillyTavern's built-in lorebook panel works, but navigating entries, searching, 
 4. Use the toolbar to search, sort, add items, or toggle batch mode
 5. Right-click any entry or folder for the context menu (duplicate, move, delete, etc.)
 
-## AI Lorebook Agent (Experimental)
+## Lorebook Agents (Hub v2 — ST-RequestHub backend)
 
-> **Note:** The AI agent is an experimental feature. It is not required to use the lorebook interface.
+> **Note:** Agents are an experimental feature. They are not required to use the lorebook interface.
 
-The agent can analyse your chat history and propose changes to your active lorebooks — creating new entries, editing existing ones, or suggesting deletions. It runs in Manual or Periodic mode and presents each proposal as a card in the Review Changes panel where you can Accept, Deny, or send Feedback before anything is applied.
+Each agent is a JSON request config for the shared **ST-RequestHub** extension, which owns all model execution. The agent sends the request (one-shot or agentic tool loop), the hub runs it, and the reply comes back as proposals in the Review Changes panel where you can Accept, Deny, or send Feedback before anything is applied. Nothing is ever written without your approval.
 
 ### Agent Features
 - Per-chat proposals stored server-side, keyed by character and chat file
+- Single (one-shot) or Agentic (autonomous tool loop) request modes
+- Model & sampling config per agent: hub API profile, chat preset, model override, temperature/top-p/seed, timeouts, retries
+- Inline lorebook tools in agent mode: list / search / get entries, stage proposals (linked lorebooks only — everything else is hard-blocked)
 - Configurable permissions: independently allow/disallow create, edit, and delete
-- Auto-accept mode with a confidence threshold
-- Feasibility reports before an analysis run
+- Auto-accept mode with a confidence threshold (extension-side policy — the hub enforces none)
+- Manual, Periodic, and one-shot runs (toolbar wand + `/el-run` slash command)
+- Per-agent Agent Chat threads with proposal handoff to the Feed
 - Server-side backup system with 24-hour auto-expiry
-- Supports SillyTavern's built-in LLM pipeline or a separate API key
-- Optional research tool (disabled, SearXNG self-hosted, or ST's OpenAI web search)
 
-To enable the agent, open the app, click **Agent Config** in the sidebar, toggle Enable, and configure the model connection and permissions. Proposals appear under **Review Changes**.
+### Requirements
+- **ST-RequestHub** installed and enabled (it provides `globalThis.STRequestHub`). Configure connections (API profiles) in its settings panel.
+- The server plugin in `plugins/enhanced-lorebook-agent/` (storage for proposals, chats, backups — no LLM code).
+
+To enable an agent, open the app, click **Dashboard** in the sidebar, create an agent, link lorebooks, pick a hub profile/preset/model, and press Run. Proposals appear under **Feed (Review Changes)**.
 
 ## Status
 
@@ -85,7 +91,7 @@ This extension was coded primarily using AI (via [OpenCode](https://opencode.ai)
 3. Enable the extension in the Extensions panel
 
 ### 2. Install the server plugin
-The server plugin (required for the AI agent only) lives in `plugins/enhanced-lorebook-agent/` and must be copied to your SillyTavern root:
+The server plugin (required for agent proposal/chat/backup storage) lives in `plugins/enhanced-lorebook-agent/` and must be copied to your SillyTavern root:
 
 ```bash
 cp -r plugins/enhanced-lorebook-agent /path/to/your/SillyTavern/plugins/
@@ -93,7 +99,7 @@ cp -r plugins/enhanced-lorebook-agent /path/to/your/SillyTavern/plugins/
 
 Or manually copy the `plugins/enhanced-lorebook-agent/` folder into your SillyTavern `plugins/` directory.
 
-### 3. Enable server plugins (agent only)
+### 3. Enable server plugins (agent storage only)
 In `config.yaml`:
 
 ```yaml
@@ -106,23 +112,25 @@ enableServerPlugins: true
 
 ```
 public/scripts/extensions/third-party/ST-EnhancedLorebook/
-├── manifest.json          # Extension manifest
-├── index.js               # Extension entry (launcher dropdown, periodic events, postMessage bridge)
+├── manifest.json          # Extension manifest (loads after ST-RequestHub)
+├── index.js               # Extension entry (launcher dropdown, periodic events, quick-task, postMessage bridge)
 ├── .gitignore
 ├── README.md
 ├── app/
 │   ├── index.html         # Standalone app HTML
 │   ├── app.js             # App core (routing, CRUD, sidebar, entry rendering)
 │   ├── style.css          # App styles
-│   ├── agent-core.js      # Agent engine (analyze, revise, applyProposal, periodic runner)
+│   ├── hub-client.js      # Hub connection: probe, request builder, runner, proposal parse/commit/apply
+│   ├── hub-tools.js       # Inline hub tools (list/search/get/propose — linked-only, never write)
+│   ├── agent-config-schema.js # Agent config v2 schema + v1 migration
+│   ├── agent-manager.js   # Agent CRUD + scope resolution (no execution)
 │   ├── agent-ui.js        # Agent UI controllers (config panel, feed panel, backup UI)
-│   ├── agent-tools.js     # Agent tool implementations (view, propose, research, feasibility)
-│   ├── agent-backup.js    # Agent backup client (server-side CRUD)
-│   └── agent-prompts.js   # System prompts, tool definitions, guardrail validator
+│   ├── agent-chat.js      # Agent Chat panel (threads run through the hub)
+│   └── agent-backup.js    # Backup client (server-side CRUD)
 └── plugins/
     └── enhanced-lorebook-agent/
         ├── package.json   # Plugin metadata
-        └── index.js       # Server plugin (API config, proposals, backups, LLM proxy, research)
+        └── index.js       # Server plugin (STORAGE ONLY: proposals, chats, backups, snapshots, trash, audit)
 ```
 
 ## License

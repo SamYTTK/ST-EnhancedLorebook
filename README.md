@@ -83,10 +83,16 @@ so many messages, or give it a one-off task from the wand button in chat (or
 with `/el-run`). You can also just chat with an agent to talk things through
 before anything gets suggested.
 
-Agents need two things to work: the **ST-RequestHub** extension (which handles
+Agents need two things to work: the **[ST-RequestHub](https://github.com/SamYTTK/ST-RequestHub)** extension (which handles
 all the model talking) and a small server plugin that ships with this
 extension (which stores suggestions, chats, and backups — no model code in
 it). Backups from accepted suggestions clean themselves up after a day.
+
+## Dependencies
+
+- Nothing extra, for managing lorebooks.
+- **[ST-RequestHub](https://github.com/SamYTTK/ST-RequestHub)** — only needed
+  if you want to use agents. It handles all the model talking.
 
 ## Getting it set up
 

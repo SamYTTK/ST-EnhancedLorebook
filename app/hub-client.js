@@ -357,7 +357,7 @@ async function EL_buildStaticContextBlock(st, agent, opts) {
                 if (content.length > maxCharsPerBook) content = content.slice(0, maxCharsPerBook) + ' ...[truncated]';
                 lines.push(`- UID ${uid} | keys=[${keys}] | comment="${e.comment || ''}" | order=${e.order ?? 100}\n  content="${content}"`);
             }
-            if (uids.length > 60) lines.push(`  ... and ${uids.length - 60} more entries (use LorebookSearch / LorebookGet tools to inspect).`);
+            if (uids.length > 60) lines.push(`  ... and ${uids.length - 60} more entries (use ls / grep / read tools to inspect).`);
             parts.push(lines.join('\n'));
         }
     }
@@ -454,15 +454,16 @@ function EL_buildMetaBlock(agent, runCtx) {
     lines.push('## How this run works');
     if (hubMode === 'single') {
         lines.push('- Mode: SINGLE one-shot. You get exactly ONE reply. There are no tools and no follow-ups. Do all of your reasoning in this reply and end it with the JSON object.');
+        lines.push('- Pinned entries (if any) are already pasted in the task brief below as lorebook://<Book>/<uid> files. Treat them as the ONLY full entries you have — do not invent other UIDs.');
     } else {
         lines.push(`- Mode: AGENTIC tool loop. You have up to ${maxSteps} model↔tool round(s); this is round 1.`);
-        lines.push('- Strategy: inspect first (batch independent tool calls in ONE block), then stage each change with LorebookProposeChange, then write your final answer. Do not dribble one call per round.');
+        lines.push('- Strategy: browse like a folder — ls lorebook:// first, then grep to find candidates, then read full files, then stage each change with propose. Batch independent tool calls in ONE block. Do not dribble one call per round.');
         lines.push('- Intermediate rounds are TOOL CALLS ONLY — do NOT write the JSON object until you are done calling tools.');
-        lines.push('- Final round: call NO tools and reply with ONLY the JSON object defined in the output contract below (one JSON object, no prose before/after). The LorebookProposeChange results are already in final shape — paste each returned proposal object VERBATIM into the "proposals" array.');
+        lines.push('- Final round: call NO tools and reply with ONLY the JSON object defined in the output contract below (one JSON object, no prose before/after). The propose tool results are already in final shape — paste each returned proposal object VERBATIM into the "proposals" array.');
         lines.push('- If you hit the round cap, your last tool results are recovered automatically — but a clean final JSON round is still preferred.');
         if (tools.length) {
             lines.push(`- Tools available: ${tools.map(t => `${t.name} — ${String(t.description || '').split('.')[0]}`).join('; ')}.`);
-            lines.push('- Never guess entry UIDs or book contents — fetch them with LorebookSearch/LorebookGet first.');
+            lines.push('- Never guess entry UIDs or book contents — ls/grep/read them first. Extra context lives at charcard://<name|active> and author-note:// — read them when an entry references a character or the author note.');
         }
     }
     lines.push(`- Proposals this run: at most ${maxEntries}. ${allowed.length ? `You may stage: ${allowed.join(', ')}.` : 'READ-ONLY analysis: stage nothing, explain findings in the note field.'}`);
@@ -491,8 +492,7 @@ function EL_buildHubTaskText(agent, opts) {
     const lines = [];
     if (task) lines.push(`## Task\n${task}`);
     else lines.push('## Task\nGeneral lorebook maintenance: review the linked books against the conversation and propose needed changes.');
-    if (names.length) lines.push(`Linked lorebooks (ONLY these are visible/editable): ${names.join(', ')}.`);
-    else lines.push('No lorebooks are linked. Ask the user to link lorebooks before proposing changes.');
+    lines.push(names.length ? `Linked lorebooks (ONLY these are visible/editable — address as lorebook://<Book>): ${names.map(n => 'lorebook://' + n).join(', ')}.` : 'No lorebooks are linked. Ask the user to link lorebooks before proposing changes.');
     if (opts.contextBlock) lines.push(opts.contextBlock);
     if (opts.extraContext) lines.push(String(opts.extraContext));
     lines.push([
@@ -516,11 +516,11 @@ function EL_buildHubTaskText(agent, opts) {
         '  "note": "optional human-readable note (string, ignored by the parser)"',
         '}',
         'Rules: create → lorebookName + entryData{comment,key[],content} (uid omitted; key/keys as string array; title alias accepted for comment).',
-        'edit → lorebookName + uid (integer, from LorebookSearch/LorebookGet — never guess) + changes{field:new value}.',
+        'edit → lorebookName + uid (integer, from ls/grep/read — never guess) + changes{field:new value}.',
         'delete → lorebookName + uid + reasoning.',
         'reasoning (string) and confidence (0..1 number) are required on every proposal for the human reviewer.',
         'lorebookName must EXACTLY match a linked book. Empty result = {"proposals":[]} (you may add "note").',
-        'In agent mode the LorebookProposeChange tool returns objects already in this shape — paste them VERBATIM into "proposals", do not retype or translate them.',
+        'In agent mode the propose tool returns objects already in this shape — paste them VERBATIM into "proposals", do not retype or translate them.',
     ].join('\n'));
     return lines.join('\n\n');
 }
@@ -977,7 +977,7 @@ function EL_parseHubProposals(content, agent) {
     return out;
 }
 
-// Mine successfully staged LorebookProposeChange tool results from hub steps.
+// Mine successfully staged propose tool results from hub steps.
 // Used when the final JSON is missing/invalid (or the run hit maxSteps) so a
 // productive tool trace still lands in the Feed instead of vanishing.
 function EL_recoverStagedHubProposals(steps, agent) {
@@ -990,7 +990,7 @@ function EL_recoverStagedHubProposals(steps, agent) {
                 try {
                     if (!r || r.ok === false) continue;
                     const name = String(r.name || '');
-                    if (name !== 'LorebookProposeChange') continue;
+                    if (name !== 'propose' && name !== 'LorebookProposeChange') continue;
                     const payload = EL_tryParseCandidate(String(r.result ?? ''));
                     if (!payload || typeof payload !== 'object') continue;
                     const raw = payload.proposal && typeof payload.proposal === 'object' ? payload.proposal : payload;

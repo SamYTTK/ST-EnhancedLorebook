@@ -170,7 +170,7 @@ async function getActiveCharacterLorebooks() {
 }
 
 // ── Legacy ST-native dynamic scan — REMOVED (Hub v2). ──
-// Hub inline tools (hub-tools.js: LorebookSearch/LorebookGet) inspect linked
+// Hub inline tools (hub-tools.js: ls/grep/read) inspect linked
 // lorebooks at run time instead.
 
 function handleNewMessage() {

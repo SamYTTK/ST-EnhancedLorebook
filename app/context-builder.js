@@ -258,6 +258,43 @@ async function EL_buildWorldInfoBlock(st, agent, cfg) {
         try { for (const l of (agent?.dynamicLinks || [])) push(l?.name); } catch {}
         for (const n of EL_linkedContextNames(agent)) push(n);
         if (!names.length) return '';
+        if (cfg.mode === 'pins') {
+            const perEntry = EL_clampCtx(cfg.maxCharsPerEntry, 100, 20000, 2000);
+            const pinMap = new Map();
+            try {
+                for (const l of (agent?.dynamicLinks || [])) {
+                    if (!l || typeof l.name !== 'string' || !l.name.trim()) continue;
+                    if (Array.isArray(l.pinUids) && l.pinUids.length) pinMap.set(l.name.trim(), [...new Set(l.pinUids.map(Number).filter(n => Number.isInteger(n)))]);
+                }
+            } catch {}
+            const parts = ['Pinned lorebook entries (single-mode one-shot injection — these are the ONLY full entries in this prompt):'];
+            for (const n of names.slice(0, 10)) {
+                const pins = pinMap.get(n);
+                if (!pins || !pins.length) continue;
+                let data = null;
+                try { data = await st.loadWorldInfo(n); } catch { continue; }
+                const all = data && data.entries ? data.entries : {};
+                parts.push(`--- Book "${n}" (lorebook://${n}) ---`);
+                for (const uid of pins.slice(0, 30)) {
+                    const e = all[String(uid)];
+                    if (!e) continue;
+                    const keys = Array.isArray(e?.key) ? e.key.join(', ') : '';
+                    const content = EL_stripContextHtml(e?.content || '').slice(0, perEntry);
+                    parts.push(`[lorebook://${n}/${uid}] keys=[${keys}] comment="${String(e?.comment || '').slice(0, 200)}"\n${content}`);
+                }
+            }
+            const lines = [];
+            for (const n of names.slice(0, 20)) {
+                let count = null;
+                try {
+                    const data = await st.loadWorldInfo(n);
+                    if (data && data.entries) count = Object.keys(data.entries).length;
+                } catch {}
+                lines.push('- lorebook://' + n + (count === null ? '' : ' (' + count + ' entries)'));
+            }
+            parts.push('Other linked books (names only — not injected in single mode):\n' + lines.join('\n'));
+            return parts.join('\n');
+        }
         if (cfg.mode === 'full') {
             const perEntry = EL_clampCtx(cfg.maxCharsPerEntry, 100, 20000, 2000);
             const parts = ['Lorebook entries in scope:'];
@@ -272,7 +309,7 @@ async function EL_buildWorldInfoBlock(st, agent, cfg) {
                     const content = EL_stripContextHtml(e?.content || '').slice(0, perEntry);
                     parts.push(`[UID ${uid}] keys=[${keys}] comment="${String(e?.comment || '').slice(0, 200)}"\n${content}`);
                 }
-                if (entries.length > 30) parts.push(`... and ${entries.length - 30} more entries (use LorebookSearch / LorebookGet tools).`);
+                if (entries.length > 30) parts.push(`... and ${entries.length - 30} more entries (use ls / grep / read tools).`);
             }
             return parts.join('\n');
         }
@@ -283,9 +320,9 @@ async function EL_buildWorldInfoBlock(st, agent, cfg) {
                 const data = await st.loadWorldInfo(n);
                 if (data && data.entries) count = Object.keys(data.entries).length;
             } catch {}
-            lines.push('- ' + n + (count === null ? '' : ' (' + count + ' entries)'));
+            lines.push('- lorebook://' + n + (count === null ? '' : ' (' + count + ' entries)'));
         }
-        return 'Lorebooks in scope (use LorebookSearch / LorebookGet tools for content):\n' + lines.join('\n');
+        return 'Lorebooks in scope (browse like folders — ls lorebook:// then read lorebook://<Book>/<uid>; charcard://<name> and author-note:// are also readable):\n' + lines.join('\n');
     } catch { return ''; }
 }
 

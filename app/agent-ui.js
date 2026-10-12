@@ -1091,7 +1091,7 @@ function loadContextToConfig(agent) {
     setChecked('agent-quick-inc-author', !s.authorNote || s.authorNote.enabled !== false);
     setChecked('agent-quick-inc-wi', !s.worldInfo || s.worldInfo.enabled !== false);
     setChecked('agent-quick-inc-inj', !s.injected || s.injected.enabled !== false);
-    setVal('agent-ctx-wi-mode', (s.worldInfo && s.worldInfo.mode === 'full') ? 'full' : 'names');
+    setVal('agent-ctx-wi-mode', ['names', 'full', 'pins'].includes(s.worldInfo && s.worldInfo.mode) ? s.worldInfo.mode : 'names');
     setVal('agent-ctx-wi-maxchars', (s.worldInfo && s.worldInfo.maxCharsPerEntry) ?? 2000);
     setVal('agent-ctx-cc-maxchars', (s.charCard && s.charCard.maxChars) ?? 2000);
     setVal('agent-ctx-an-maxchars', (s.authorNote && s.authorNote.maxChars) ?? 1500);
@@ -1129,7 +1129,7 @@ function readContextSettings() {
             authorNote: { enabled: document.getElementById('agent-quick-inc-author')?.checked !== false, maxChars: intVal('agent-ctx-an-maxchars', 1500) },
             worldInfo: {
                 enabled: document.getElementById('agent-quick-inc-wi')?.checked !== false,
-                mode: strVal('agent-ctx-wi-mode', 'names') === 'full' ? 'full' : 'names',
+                mode: ['names', 'full', 'pins'].includes(strVal('agent-ctx-wi-mode', 'names')) ? strVal('agent-ctx-wi-mode', 'names') : 'names',
                 maxCharsPerEntry: intVal('agent-ctx-wi-maxchars', 2000),
             },
             injected: { enabled: document.getElementById('agent-quick-inc-inj')?.checked !== false },

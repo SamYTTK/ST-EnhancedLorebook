@@ -270,7 +270,7 @@ function sanitizeContextConfig(ctx, qd) {
             },
             worldInfo: {
                 enabled: src ? srcWI.enabled !== false : q.includeWorldInfo !== false,
-                mode: srcWI.mode === 'full' ? 'full' : 'names',
+                mode: ['names', 'full', 'pins'].includes(srcWI.mode) ? srcWI.mode : 'names',
                 maxCharsPerEntry: num(srcWI.maxCharsPerEntry, 100, 20000, 2000),
             },
             injected: {

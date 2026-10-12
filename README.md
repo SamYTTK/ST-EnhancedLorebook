@@ -1,137 +1,109 @@
-# ST-EnhancedLorebook
+# Enhanced Lorebook
 
-A fully revamped World Info / Lorebook interface for SillyTavern, designed to replace the built-in panel with a faster, more capable standalone app.
+## What is this?
 
-## Why?
+SillyTavern's built-in lorebook panel gets the job done, but actually working
+with your lorebooks in it — finding entries, editing several at once, keeping
+things organised — is slow and cramped.
 
-SillyTavern's built-in lorebook panel works, but navigating entries, searching, bulk-editing, and organising lorebooks is slow and limited. This extension provides a dedicated standalone app (opens as a new browser tab) with a proper desktop-app-style interface.
+Enhanced Lorebook gives you a proper full-screen workspace for all of that.
+It opens in its own browser tab, so you get room to breathe, and everything
+you do there applies to your real lorebooks.
 
-## Features
+## How do I open it?
 
-### Lorebook Management
-- **Standalone app** — opens as a new tab, not an in-page overlay, giving you full screen real estate and a dedicated workspace
-- **Sidebar navigation** — browse all lorebooks, active globals, and saved templates from one sidebar
-- **Live search** — filter lorebooks by name in the sidebar; search entries by keys, content, or comment with auto-sort by relevance
-- **Entry CRUD** — create, edit, duplicate, and delete entries with a rich form UI
-- **Batch operations** — multi-select entries with checkboxes, then batch-edit order/depth/position/probability, or download/delete in bulk
-- **Entry fields** — full access to every field SillyTavern supports: primary keys, secondary keys, content, comment, order, depth, position, probability, selective logic, delay, role, constant/vectorized toggles, recursion flags, disable toggle, and more
-- **Inline editing** — edit order, depth, position, and probability directly on each entry card without opening a modal
-- **Download & export** — download selected entries as JSON with a choice of format (individual files, single merged file, or ST-compatible character book format)
-- **Drag-and-drop reordering** — reorder entries within a lorebook by drag-and-drop on a dedicated handle
-- **Duplicate entries** — clone an entry within the same lorebook or copy it to a different lorebook via the context menu
-- **Move entries** — move entries between lorebooks with target lorebook selection
+1. Press the **World Info** button in the SillyTavern toolbar.
+2. A small menu appears. Choose **Enhanced Lorebook**.
+3. A new browser tab opens with your lorebooks in a sidebar.
 
-### Folder Organisation
-- **Folder-based grouping** — organise entries into named folders inside a lorebook
-- **Nested folders** — folders can contain sub-folders to any depth
-- **Drag-and-drop** — drag entries into folders, drag folders into other folders to nest them
-- **Expand/collapse** — fold and unfold folder trees; collapse all or expand all with one click
-- **Folder counts** — each folder shows the total number of entries inside it (including sub-folders)
-- **Context menu** — right-click a folder to rename, delete, or create a sub-folder
+That same menu can also take you straight to the agent dashboard or to your
+pending reviews (more on those below).
 
-### Templates & Quick Actions
-- **Save active set as template** — save your currently active global lorebooks as a named template, then apply it later to activate the same set
-- **Quick-add entry** — quickly create a new entry with just a key and content from a compact form
-- **One-click toggle** — toggle a lorebook's global active state directly from the sidebar
-- **Remove from active** — remove a lorebook from the active list without leaving the app
+## Looking through your lorebooks
 
-### Colours & Visual Customisation
-- **Colour-coded categories** — assign background/text/border colours to lorebooks for quick visual identification
-- **Settings modal** — customise background colour, panel colour, text colour, and accent colour; reset to defaults at any time
-- **Entry card badges** — visual badges for Disabled, Exclude Recursion, Prevent Recursion states
-- **Position labels** — human-readable labels for each insertion position (e.g. ↑Char, ↓Char, ↑AN, @D, ➡️ Outlet)
+The sidebar shows you, in one place:
 
-### Resizable Sidebar
-- Drag the sidebar edge to resize; width is saved per session
+- Which lorebooks are attached to your current chat and character.
+- Which global lorebooks are switched on.
+- Every lorebook you have, with a search box to find one fast.
 
-## Quick Start
+Click any lorebook to see its entries. You can search inside by keys, content,
+or comments, and sort them however you like.
 
-1. Click the **World Info** button in the SillyTavern toolbar
-2. In the dropdown that appears, choose **Enhanced Lorebook**
-3. Browse lorebooks in the sidebar, click one to view its entries
-4. Use the toolbar to search, sort, add items, or toggle batch mode
-5. Right-click any entry or folder for the context menu (duplicate, move, delete, etc.)
+## Editing entries
 
-## Lorebook Agents (Hub v2 — ST-RequestHub backend)
+Open any entry to get every option SillyTavern supports: keys, content,
+comments, order, how deep into history it reaches, where it gets inserted,
+how likely it is to trigger, and the rest.
 
-> **Note:** Agents are an experimental feature. They are not required to use the lorebook interface.
+For quick tweaks you don't even need to open anything — order, depth,
+position, and probability can be changed right on the entry card. Entries can
+be duplicated (into the same book or a different one), moved between books,
+downloaded as files, and deleted.
 
-Each agent is a JSON request config for the shared **ST-RequestHub** extension, which owns all model execution. The agent sends the request (one-shot or agentic tool loop), the hub runs it, and the reply comes back as proposals in the Review Changes panel where you can Accept, Deny, or send Feedback before anything is applied. Nothing is ever written without your approval.
+If you select several entries at once, you can change settings on all of them
+together, or delete and download them in bulk.
 
-### Agent Features
-- Per-chat proposals stored server-side, keyed by character and chat file
-- Single (one-shot) or Agentic (autonomous tool loop) request modes
-- Model & sampling config per agent: hub API profile, chat preset, model override, temperature/top-p/seed, timeouts, retries
-- Inline lorebook tools in agent mode: list / search / get entries, stage proposals (linked lorebooks only — everything else is hard-blocked)
-- Configurable permissions: independently allow/disallow create, edit, and delete
-- Auto-accept mode with a confidence threshold (extension-side policy — the hub enforces none)
-- Manual, Periodic, and one-shot runs (toolbar wand + `/el-run` slash command)
-- Per-agent Agent Chat threads with proposal handoff to the Feed
-- Server-side backup system with 24-hour auto-expiry
+## Tidying up with folders
 
-### Requirements
-- **ST-RequestHub** installed and enabled (it provides `globalThis.STRequestHub`). Configure connections (API profiles) in its settings panel.
-- The server plugin in `plugins/enhanced-lorebook-agent/` (storage for proposals, chats, backups — no LLM code).
+You can group entries into named folders, and folders can hold sub-folders,
+as deep as you like. Drag entries and folders around to arrange them, fold
+whole branches away with one click, and right-click a folder to rename it or
+make a new one inside it.
 
-To enable an agent, open the app, click **Dashboard** in the sidebar, create an agent, link lorebooks, pick a hub profile/preset/model, and press Run. Proposals appear under **Feed (Review Changes)**.
+These folders are just your own way of keeping the overview — a grouping
+inside this app. They don't change your actual lorebook files.
 
-## Status
+## Remembering sets with templates
 
-Early development. The core lorebook management interface has seen real-world use, but bugs are expected. The AI agent is newer and less tested. Feedback and issues are welcome.
+If you have a combination of global lorebooks you like to switch on together,
+save it as a template with one click. Later, applying that template switches
+the same set back on. Handy when different stories want different setups.
 
-## Disclaimer
+## If something goes wrong
 
-This extension was coded primarily using AI (via [OpenCode](https://opencode.ai)).
+Deleted something you shouldn't have? There's a recovery spot that keeps
+deleted entries and backups, so you can usually get things back.
 
-## Installation
+## Lorebook agents (optional)
 
-### 1. Install via SillyTavern's extension panel
-1. Open SillyTavern and go to **Extensions** → **Install from URL**
-2. Paste `https://github.com/SamYTTK/ST-EnhancedLorebook` and click **Install**
-3. Enable the extension in the Extensions panel
+> You don't need any of this to manage your lorebooks. It's an extra for
+> people who want help maintaining big worlds. Still early and experimental.
 
-### 2. Install the server plugin
-The server plugin (required for agent proposal/chat/backup storage) lives in `plugins/enhanced-lorebook-agent/` and must be copied to your SillyTavern root:
+Agents are little helpers you set up per story. You give one a job — like
+"keep track of the places and people we meet" — link it to some lorebooks,
+and it reads along and suggests new or updated entries.
 
-```bash
-cp -r plugins/enhanced-lorebook-agent /path/to/your/SillyTavern/plugins/
-```
+The important part: an agent never writes anything itself. Every suggestion
+lands in **Review Changes**, where you accept, reject, or send it back with
+feedback. Nothing reaches your lorebooks without you saying so.
 
-Or manually copy the `plugins/enhanced-lorebook-agent/` folder into your SillyTavern `plugins/` directory.
+You can run an agent whenever you like, have it check in automatically every
+so many messages, or give it a one-off task from the wand button in chat (or
+with `/el-run`). You can also just chat with an agent to talk things through
+before anything gets suggested.
 
-### 3. Enable server plugins (agent storage only)
-In `config.yaml`:
+Agents need two things to work: the **ST-RequestHub** extension (which handles
+all the model talking) and a small server plugin that ships with this
+extension (which stores suggestions, chats, and backups — no model code in
+it). Backups from accepted suggestions clean themselves up after a day.
 
-```yaml
-enableServerPlugins: true
-```
+## Getting it set up
 
-### 4. Restart SillyTavern
+1. In SillyTavern, go to **Extensions** → **Install from URL** and paste
+   `https://github.com/SamYTTK/ST-EnhancedLorebook`, then enable it.
+2. Copy the `plugins/enhanced-lorebook-agent/` folder from this extension
+   into your SillyTavern `plugins/` folder (only needed for agents).
+3. In `config.yaml`, set `enableServerPlugins: true` (only needed for
+   agents).
+4. Restart SillyTavern.
 
-## Files
+## Good to know
 
-```
-public/scripts/extensions/third-party/ST-EnhancedLorebook/
-├── manifest.json          # Extension manifest (loads after ST-RequestHub)
-├── index.js               # Extension entry (launcher dropdown, periodic events, quick-task, postMessage bridge)
-├── .gitignore
-├── README.md
-├── app/
-│   ├── index.html         # Standalone app HTML
-│   ├── app.js             # App core (routing, CRUD, sidebar, entry rendering)
-│   ├── style.css          # App styles
-│   ├── hub-client.js      # Hub connection: probe, request builder, runner, proposal parse/commit/apply
-│   ├── hub-tools.js       # Inline hub tools (list/search/get/propose — linked-only, never write)
-│   ├── agent-config-schema.js # Agent config v2 schema + v1 migration
-│   ├── agent-manager.js   # Agent CRUD + scope resolution (no execution)
-│   ├── agent-ui.js        # Agent UI controllers (config panel, feed panel, backup UI)
-│   ├── agent-chat.js      # Agent Chat panel (threads run through the hub)
-│   └── agent-backup.js    # Backup client (server-side CRUD)
-└── plugins/
-    └── enhanced-lorebook-agent/
-        ├── package.json   # Plugin metadata
-        └── index.js       # Server plugin (STORAGE ONLY: proposals, chats, backups, snapshots, trash, audit)
-```
+- This is still early work. The lorebook workspace itself has seen a lot of
+  real use, but expect the occasional bug — the agents especially are new.
+- This extension was built largely with AI assistance (via
+  [OpenCode](https://opencode.ai)).
 
 ## License
 

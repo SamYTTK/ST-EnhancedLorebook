@@ -60,11 +60,11 @@ class BackupClient {
             const st = this._st();
             if (st) {
                 const data = result.lorebooks[lorebookName];
-                if (typeof window.ELG_guardSave === 'function') {
-                    await window.ELG_guardSave(lorebookName, data, { explicitDelete: true, source: 'user', note: 'Restore backup ' + backupId });
-                } else {
-                    await st.saveWorldInfo(lorebookName, data);
+                if (typeof window.ELG_guardSave !== 'function') {
+                    throw new Error('Refusing to restore: the lorebook guard (worldinfo-guard.js) is not loaded. Nothing was written.');
                 }
+                const ok = await window.ELG_guardSave(lorebookName, data, { explicitDelete: true, source: 'user', note: 'Restore backup ' + backupId });
+                if (!ok) throw new Error('Restore blocked or failed — nothing was written.');
                 if (typeof renderEntries === 'function') {
                     renderEntries();
                 }
@@ -80,13 +80,25 @@ class BackupClient {
             if (st) {
                 const data = result.lorebookData;
                 const folders = result.folders || [];
+                // Capture the current folder mapping so a blocked save can be rolled back.
+                let foldersBefore = null;
+                try {
+                    if (typeof window !== 'undefined' && window.ELFolderUrl && typeof window.ELFolderUrl.getFoldersSnapshot === 'function') {
+                        foldersBefore = window.ELFolderUrl.getFoldersSnapshot(lorebookName);
+                    }
+                } catch {}
                 if (Array.isArray(folders) && folders.length && typeof window !== 'undefined' && window.ELFolderUrl) {
                     try { window.ELFolderUrl.setFoldersSnapshot(lorebookName, folders); } catch {}
                 }
-                if (typeof window.ELG_guardSave === 'function') {
-                    await window.ELG_guardSave(lorebookName, data, { explicitDelete: true, source: 'user', note: 'Restore agent backup ' + backupId });
-                } else {
-                    await st.saveWorldInfo(lorebookName, data);
+                if (typeof window.ELG_guardSave !== 'function') {
+                    throw new Error('Refusing to restore: the lorebook guard (worldinfo-guard.js) is not loaded. Nothing was written.');
+                }
+                const ok = await window.ELG_guardSave(lorebookName, data, { explicitDelete: true, source: 'user', note: 'Restore agent backup ' + backupId });
+                if (!ok) {
+                    if (foldersBefore !== null && typeof window !== 'undefined' && window.ELFolderUrl) {
+                        try { window.ELFolderUrl.setFoldersSnapshot(lorebookName, foldersBefore); } catch {}
+                    }
+                    throw new Error('Restore blocked or failed — nothing was written.');
                 }
                 if (typeof renderEntries === 'function') renderEntries();
             }

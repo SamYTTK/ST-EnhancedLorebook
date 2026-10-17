@@ -3758,14 +3758,24 @@ function showContextMenu(x, y, targetType = 'entry', targetId = null) {
         deleteItem.addEventListener('click', async () => {
             els.contextMenu.classList.remove('visible');
             if (confirm(`Delete ${selectedEntries.size} entries?`)) {
-                selectedEntries.forEach(uid => {
+                const deletedUids = Array.from(selectedEntries);
+                deletedUids.forEach(uid => {
                     delete currentLorebookData.entries[uid];
-                    const folders = extensionSettings.folders[currentLorebookName] || [];
-                    folders.forEach(f => f.entries = f.entries.filter(e => String(e) !== String(uid)));
                 });
-                saveSettings();
-                EL_info(`Delete selected: ${selectedEntries.size} entries book="${currentLorebookName}"`, Array.from(selectedEntries).slice(0,10));
-                { const _delOk = await ELG_guardSave(currentLorebookName, currentLorebookData, { explicitDelete: true, source: 'user', note: 'Delete selected entries' }); EL_logGuardResult(_delOk,'Delete selected',currentLorebookName); if(!_delOk){ EL_error('Delete blocked/failed — entries still on disk, reloading'); try{ const fresh=await ELG_loadFresh(currentLorebookName); if(fresh) currentLorebookData=fresh; }catch(e){} } else EL_info('Delete ok, entries moved to Trash', { book: currentLorebookName }); }
+                EL_info(`Delete selected: ${deletedUids.length} entries book="${currentLorebookName}"`, deletedUids.slice(0, 10));
+                const ok = await ELG_guardSave(currentLorebookName, currentLorebookData, { explicitDelete: true, source: 'user', note: 'Delete selected entries' });
+                EL_logGuardResult(ok, 'Delete selected', currentLorebookName);
+                if (ok) {
+                    const folders = extensionSettings.folders[currentLorebookName] || [];
+                    deletedUids.forEach(uid => {
+                        folders.forEach(f => f.entries = f.entries.filter(e => String(e) !== String(uid)));
+                    });
+                    saveSettings();
+                    EL_info('Delete ok, entries moved to Trash', { book: currentLorebookName });
+                } else {
+                    EL_error('Delete blocked/failed — entries still on disk, reloading');
+                    try { const fresh = await ELG_loadFresh(currentLorebookName); if (fresh) currentLorebookData = fresh; } catch (e) {}
+                }
                 selectedEntries.clear();
                 updateBatchButton();
                 renderEntries();
@@ -4711,19 +4721,19 @@ async function renderRecoveryTrash(container, toolbar) {
                 <div style="font-size:0.78rem; color:var(--text-muted); margin-top:4px; max-height:60px; overflow:hidden; white-space:pre-wrap; word-break:break-word;">${escapeHtml((t.entry?.content || '').slice(0, 300))}</div>
             </div>
             <div style="display:flex; flex-direction:column; gap:6px;">
-                <button class="btn btn-secondary btn-sm recovery-trash-restore" data-uid="${escapeHtml(t.uid)}"><i class="fa-solid fa-arrow-rotate-left"></i> Restore</button>
-                <button class="btn btn-danger btn-sm recovery-trash-delete" data-uid="${escapeHtml(t.uid)}" style="background:rgba(239,68,68,0.15);color:#ef4444;"><i class="fa-solid fa-xmark"></i> Delete</button>
+                <button class="btn btn-secondary btn-sm recovery-trash-restore" data-id="${escapeHtml(t.id)}"><i class="fa-solid fa-arrow-rotate-left"></i> Restore</button>
+                <button class="btn btn-danger btn-sm recovery-trash-delete" data-id="${escapeHtml(t.id)}" style="background:rgba(239,68,68,0.15);color:#ef4444;"><i class="fa-solid fa-xmark"></i> Delete</button>
             </div>
         </div>
     `).join('');
 
     container.querySelectorAll('.recovery-trash-restore').forEach(btn => {
-        btn.addEventListener('click', () => restoreTrashEntries([btn.dataset.uid], container));
+        btn.addEventListener('click', () => restoreTrashEntries([btn.dataset.id], container));
     });
     container.querySelectorAll('.recovery-trash-delete').forEach(btn => {
         btn.addEventListener('click', async () => {
             if (confirm('Permanently delete this entry from Trash? This cannot be undone.')) {
-                await ELG_deleteTrash(book, [btn.dataset.uid]);
+                await ELG_deleteTrashByIds(book, [btn.dataset.id]);
                 renderRecoveryTab();
             }
         });
@@ -4732,59 +4742,93 @@ async function renderRecoveryTrash(container, toolbar) {
     const restoreAllBtn = toolbar.querySelector('#recovery-trash-restore-all');
     if (restoreAllBtn) {
         restoreAllBtn.addEventListener('click', () => {
-            const allUids = trash.map(t => String(t.uid));
-            restoreTrashEntries(allUids, container);
+            const allIds = trash.map(t => String(t.id));
+            restoreTrashEntries(allIds, container);
         });
     }
     const emptyBtn = toolbar.querySelector('#recovery-trash-empty');
     if (emptyBtn) {
         emptyBtn.addEventListener('click', async () => {
             if (confirm(`Permanently delete all ${trash.length} entries from Trash? This cannot be undone.`)) {
-                await ELG_deleteTrash(book, trash.map(t => String(t.uid)));
+                await ELG_deleteTrashByIds(book, trash.map(t => String(t.id)));
                 renderRecoveryTab();
             }
         });
     }
 }
 
-async function restoreTrashEntries(uids, container) {
+async function restoreTrashEntries(ids, container) {
     const book = currentLorebookName;
-    if (!book || !uids.length) return;
-    const restoring = await ELG_restoreTrash(book, uids);
+    if (!book || !ids || !ids.length) return;
+
+    // 1. PEEK — read the records WITHOUT consuming them.
+    let restoring = [];
+    try { restoring = await ELG_restoreTrash(book, ids); } catch (e) { restoring = []; }
     if (!restoring.length) {
         if (typeof showToast === 'function') showToast('Nothing restored');
         return;
     }
 
-    // Re-load authoritative data, then re-insert restored entries with fresh UIDs.
+    // 2. Load authoritative data, re-insert with fresh uids (keep the existing
+    //    getFreeWorldEntryUid / structuredClone logic and the folder re-link).
     const fresh = await ELG_loadFresh(book);
     if (!fresh || !fresh.entries) {
         if (typeof showToast === 'function') showToast('Could not load lorebook to restore into');
         return;
     }
 
-    let restoredCount = 0;
+    const insertedIds = [];   // trash record ids we actually inserted
+    const folderChanges = []; // { folderId, uid } applied, for rollback
     for (const t of restoring) {
         const newUid = getFreeWorldEntryUid(fresh);
         if (newUid === null) continue;
         const entry = structuredClone(t.entry || {});
         entry.uid = newUid;
         fresh.entries[newUid] = entry;
-
+        insertedIds.push(String(t.id));
         if (t.folderId) {
             const folders = extensionSettings.folders[book] || [];
             const folder = folders.find(f => f.id === t.folderId);
             if (folder && !folder.entries.map(String).includes(String(newUid))) {
                 folder.entries.push(String(newUid));
-                saveSettings();
+                folderChanges.push({ folderId: t.folderId, uid: String(newUid) });
             }
         }
-        restoredCount++;
+    }
+    if (!insertedIds.length) {
+        if (typeof showToast === 'function') showToast('Nothing restored');
+        return;
     }
 
-    await ELG_guardSave(book, fresh, { explicitDelete: false, source: 'user', note: 'Restore ' + restoredCount + ' entr' + (restoredCount === 1 ? 'y' : 'ies') + ' from Trash' });
+    // 3. Save. Only consume the trash records AFTER the save is confirmed.
+    const ok = await ELG_guardSave(book, fresh, { explicitDelete: false, source: 'user', note: 'Restore ' + insertedIds.length + ' entr' + (insertedIds.length === 1 ? 'y' : 'ies') + ' from Trash' });
 
-    if (typeof showToast === 'function') showToast(`Restored ${restoredCount} entr${restoredCount === 1 ? 'y' : 'ies'}`);
+    if (!ok) {
+        // Roll back the in-memory folder changes; the entries stay in Trash.
+        const folders = extensionSettings.folders[book] || [];
+        for (const ch of folderChanges) {
+            const folder = folders.find(f => f.id === ch.folderId);
+            if (folder) folder.entries = folder.entries.filter(e => String(e) !== String(ch.uid));
+        }
+        if (typeof showToast === 'function') showToast('Restore failed — the entries are still in Trash.');
+        renderRecoveryTab();
+        return;
+    }
+
+    // 4. Consume exactly the records we restored. If this fails the entries are
+    //    safely on disk AND still in Trash — say so rather than claiming a clean
+    //    restore (they would otherwise reappear in the Trash list).
+    let consumed = true;
+    try { await ELG_deleteTrashByIds(book, insertedIds); } catch (e) { consumed = false; }
+    if (folderChanges.length) saveSettings();
+
+    if (typeof showToast === 'function') {
+        if (consumed) {
+            showToast(`Restored ${insertedIds.length} entr${insertedIds.length === 1 ? 'y' : 'ies'}`);
+        } else {
+            showToast(`Restored ${insertedIds.length} entr${insertedIds.length === 1 ? 'y' : 'ies'} — but they could not be removed from Trash, so they still appear there.`);
+        }
+    }
     currentLorebookData = fresh;
     renderRecoveryTab();
     if (currentViewMode === 'lorebook') renderEntries();
@@ -4825,18 +4869,21 @@ async function renderRecoverySnapshots(container, toolbar) {
                 // Extension-only URL-respecting restore: folders sidecar first (if snapshot has them)
                 const foldersSnapshot = Array.isArray(result.folders) ? result.folders : null;
                 const hasFolders = Array.isArray(foldersSnapshot) && foldersSnapshot.length > 0;
+                let folderSnapshotBefore = null;
+                try { folderSnapshotBefore = window.ELFolderUrl ? window.ELFolderUrl.getFoldersSnapshot(book) : null; } catch {}
                 // Set entries in memory so folder prune can see them
                 currentLorebookData = result.lorebookData;
                 if (hasFolders && window.ELFolderUrl) {
                     try { window.ELFolderUrl.restoreFoldersWithRemap(book, foldersSnapshot, null); } catch {}
                     try { saveSettings(); } catch {}
-                } else if (hasFolders === false && result.folders !== undefined && Array.isArray(result.folders) && result.folders.length === 0) {
-                    // Snapshot explicitly had empty folders — clear current mapping to respect URL (no folders)
-                    if (window.ELFolderUrl) {
-                        try { window.ELFolderUrl.setFoldersSnapshot(book, []); saveSettings(); } catch {}
-                    }
                 }
-                await ELG_guardSave(book, result.lorebookData, { explicitDelete: true, source: 'user', note: 'Restore snapshot ' + btn.dataset.id });
+                const ok = await ELG_guardSave(book, result.lorebookData, { explicitDelete: true, source: 'user', note: 'Restore snapshot ' + btn.dataset.id });
+                if (!ok) {
+                    try { if (folderSnapshotBefore !== null && window.ELFolderUrl) window.ELFolderUrl.setFoldersSnapshot(book, folderSnapshotBefore); } catch {}
+                    try { saveSettings(); } catch {}
+                    if (typeof showToast === 'function') showToast('Restore blocked or failed — nothing was written.');
+                    return;
+                }
                 if (typeof showToast === 'function') showToast(hasFolders ? 'Snapshot restored (folders URL-respected)' : 'Snapshot restored');
                 renderRecoveryTab();
                 if (currentViewMode === 'lorebook') renderEntries();
@@ -5308,16 +5355,21 @@ async function restoreBackupWatch(backupId, closeViewModal) {
 
     try {
         // Apply entries first so folder prune sees correct UID set, then restore folders (extension-only, URL-respected)
+        let folderSnapshotBefore = null;
+        try { folderSnapshotBefore = window.ELFolderUrl ? window.ELFolderUrl.getFoldersSnapshot(book) : null; } catch {}
         currentLorebookData = backupData;
         const hasFolders = Array.isArray(backupFolders) && backupFolders.length > 0;
         if (hasFolders && window.ELFolderUrl) {
             try { window.ELFolderUrl.restoreFoldersWithRemap(book, backupFolders, null); } catch {}
             try { saveSettings(); } catch {}
-        } else if (Array.isArray(backupFolders) && backupFolders.length === 0 && backupFolders !== null) {
-            // Backup explicitly had no folders — clear current mapping to respect empty URL state
-            if (window.ELFolderUrl) { try { window.ELFolderUrl.setFoldersSnapshot(book, []); saveSettings(); } catch {} }
         }
-        await ELG_guardSave(book, backupData, { explicitDelete: true, source: 'user', note: 'Restore backup-watch ' + backupId });
+        const ok = await ELG_guardSave(book, backupData, { explicitDelete: true, source: 'user', note: 'Restore backup-watch ' + backupId });
+        if (!ok) {
+            try { if (folderSnapshotBefore !== null && window.ELFolderUrl) window.ELFolderUrl.setFoldersSnapshot(book, folderSnapshotBefore); } catch {}
+            try { saveSettings(); } catch {}
+            if (typeof showToast === 'function') showToast('Restore blocked or failed — nothing was written.');
+            return;
+        }
         if (typeof showToast === 'function') showToast(hasFolders ? 'Backup restored (folders URL-respected)' : 'Backup restored');
         if (closeViewModal) closeModalById('backup-view-modal');
         if (currentViewMode === 'recovery') {

@@ -1055,7 +1055,8 @@ async function EL_commitHubProposals(proposals, chatId, agent) {
     try {
         if (agent && agent.autoAccept === true) {
             const threshold = Number(agent.autoAcceptConfidence ?? 0.8);
-            const eligible = proposals.filter(p => Number(p.confidence) >= threshold);
+            // Deletes are deliberately excluded from auto-accept because they are destructive and must stay in the review feed.
+            const eligible = proposals.filter(p => p.action !== 'delete' && Number(p.confidence) >= threshold);
             if (eligible.length && typeof EL_applyProposal === 'function') {
                 for (const p of eligible) {
                     try { await EL_applyProposal(p, { agentName: agent?.name || 'hub' }); autoApplied.push(p.id); } catch {}
@@ -1328,26 +1329,33 @@ async function EL_applyProposal(proposal, opts) {
         const uid = proposal.uid;
         if (!data.entries[uid]) throw new Error('Entry UID ' + uid + ' not found');
         delete data.entries[uid];
-        try {
-            const folders = (typeof extensionSettings !== 'undefined' ? extensionSettings?.folders?.[proposal.lorebookName] : null);
-            if (folders) {
-                for (const folder of folders) {
-                    folder.entries = folder.entries.filter(e => String(e) !== String(uid));
-                }
-            }
-        } catch (_) {}
     } else {
         throw new Error('Unknown proposal action: ' + proposal.action);
     }
 
-    if (typeof window !== 'undefined' && typeof window.ELG_guardSave === 'function') {
-        await window.ELG_guardSave(proposal.lorebookName, data, {
-            explicitDelete: proposal.action === 'delete',
-            source: 'agent',
-            note: (proposal.action === 'delete' ? 'Hub delete' : 'Hub apply') + ' - ' + (opts.agentName || 'hub'),
-        });
-    } else {
-        await st.saveWorldInfo(proposal.lorebookName, data);
+    if (typeof window === 'undefined' || typeof window.ELG_guardSave !== 'function') {
+        throw new Error('Refusing to write "' + proposal.lorebookName + '": the lorebook guard (worldinfo-guard.js) is not loaded. Nothing was written.');
+    }
+    const saved = await window.ELG_guardSave(proposal.lorebookName, data, {
+        explicitDelete: proposal.action === 'delete',
+        source: 'agent',
+        note: (proposal.action === 'delete' ? 'Hub delete' : 'Hub apply') + ' - ' + (opts.agentName || 'hub'),
+    });
+    if (!saved) {
+        throw new Error('Apply blocked or failed — nothing was written to "' + proposal.lorebookName + '".');
+    }
+    if (proposal.action === 'delete') {
+        try {
+            const folders = (typeof extensionSettings !== 'undefined' ? extensionSettings?.folders?.[proposal.lorebookName] : null);
+            if (folders) {
+                for (const folder of folders) {
+                    folder.entries = folder.entries.filter(e => String(e) !== String(proposal.uid));
+                }
+            }
+        } catch (_) {}
+        try {
+            if (typeof saveSettings === 'function') saveSettings();
+        } catch {}
     }
 
     try {

@@ -78,6 +78,37 @@ async function initAgentUI(context) {
     if (chatIdEl) chatIdEl.textContent = 'Chat: ' + currentChatId;
 }
 
+function EL_quickOptsToContextOverride(opts) {
+    const o = (opts && typeof opts === 'object') ? opts : {};
+    const m = (o.messages && typeof o.messages === 'object') ? o.messages : {};
+    const clampInt = (v, min, max, fb) => {
+        const n = Number(v);
+        if (!Number.isFinite(n)) return fb;
+        return Math.min(max, Math.max(min, Math.floor(n)));
+    };
+    const type = ['none', 'all', 'first', 'last', 'range'].includes(m.type) ? m.type : 'last';
+    const r = (m.range && typeof m.range === 'object') ? m.range : {};
+    const start = clampInt(r.start, 0, 100000, 0);
+    let end = clampInt(r.end, 0, 100000, 10);
+    if (end < start) end = start;
+    const first = clampInt(m.first, 1, 500, 10);
+    const last = clampInt(m.last, 1, 500, 10);
+    const messages = (type === 'first')
+        ? { mode: 'range', start: 0, end: Math.max(1, first) }
+        : { mode: type, last, start, end };
+    const excl = Array.isArray(o.excludeIds) ? o.excludeIds.map(Number).filter(n => Number.isInteger(n) && n >= 0).slice(0, 200) : [];
+    if (excl.length) messages.excludeIds = excl;
+    return {
+        messages,
+        sources: {
+            charCard: { enabled: o.includeCharCard !== false },
+            authorNote: { enabled: o.includeAuthorNote !== false },
+            worldInfo: { enabled: o.includeWorldInfo !== false },
+            injected: { enabled: o.includeInjected !== false },
+        },
+    };
+}
+
 function onAppMessage(e) {
     if (e.origin !== window.location.origin) return;
     const msg = e.data;
@@ -89,6 +120,100 @@ function onAppMessage(e) {
             loadProposalsForCurrentChat();
             handleChatScopeChange();
         }
+    }
+    if (msg.type === 'el-agent-quick-task') {
+        try { handleQuickTaskFromHost(msg); } catch (e) { console.error('Enhanced Lorebook: quick task handler failed', e); }
+    }
+}
+
+// Quick tasks dispatched by the host window. The host re-sends the task until
+// this window acknowledges receipt (it may have been opened moments ago and its
+// listener not yet registered), so deliveries can arrive more than once — the
+// seen-set makes handling idempotent.
+const _elHandledQuickTaskIds = new Set();
+
+async function handleQuickTaskFromHost(msg) {
+    // Not ready yet: `agentManager` is created during app init(). Return WITHOUT
+    // acknowledging so the host's retry loop delivers the task again once we are
+    // ready, instead of the task being acked and then dropped.
+    if (typeof agentManager === 'undefined' || !agentManager) return;
+    const requestId = msg?.requestId || null;
+    const task = String(msg?.task || '').trim();
+    const postToHost = (payload) => {
+        try {
+            const target = window.opener || window.parent;
+            if (target && typeof target.postMessage === 'function') {
+                target.postMessage(Object.assign({ source: 'enhanced-lorebook', requestId }, payload), window.location.origin);
+            }
+        } catch (e) {}
+    };
+    const reply = (payload) => postToHost(Object.assign({ type: 'el-agent-quick-task-result' }, payload));
+    // Acknowledge receipt first so the host stops re-sending, then ignore any
+    // duplicate delivery of the same request.
+    postToHost({ type: 'el-agent-quick-task-ack' });
+    if (requestId) {
+        if (_elHandledQuickTaskIds.has(requestId)) return;
+        _elHandledQuickTaskIds.add(requestId);
+        if (_elHandledQuickTaskIds.size > 100) {
+            try { _elHandledQuickTaskIds.delete(_elHandledQuickTaskIds.values().next().value); } catch (e) {}
+        }
+    }
+    if (!task) {
+        reply({ ok: false, error: 'Task is empty.' });
+        return;
+    }
+    if (typeof EL_runHubAgent !== 'function') {
+        reply({ ok: false, error: 'Hub client not loaded.' });
+        return;
+    }
+    const agent = (typeof agentManager !== 'undefined' && agentManager) ? agentManager.getAgent(msg.agentId) : null;
+    if (!agent) {
+        reply({ ok: false, error: 'Agent not found.' });
+        return;
+    }
+    if (agent.enabled === false) {
+        reply({ ok: false, error: 'Agent is disabled.' });
+        return;
+    }
+    try {
+        if (agentManager.isActiveForChat && !agentManager.isActiveForChat(agent, (typeof stContext !== 'undefined' && stContext) ? stContext : null)) {
+            reply({ ok: false, error: 'Agent is bound to another chat.' });
+            return;
+        }
+    } catch {}
+    const agentId = msg.agentId;
+    if (typeof _elHubRunningAgents !== 'undefined' && _elHubRunningAgents.has(agentId)) {
+        reply({ ok: false, error: 'Agent is already running.' });
+        return;
+    }
+    try {
+        if (typeof _elHubRunningAgents !== 'undefined') _elHubRunningAgents.add(agentId);
+    } catch {}
+    try {
+        const profileOverride = typeof msg?.opts?.profileId === 'string' ? msg.opts.profileId.trim() : '';
+        const contextOverride = EL_quickOptsToContextOverride(msg.opts);
+        const liveAgent = agent;
+        const runAgentObj = profileOverride ? Object.assign({}, liveAgent, { apiProfile: profileOverride }) : liveAgent;
+        const st = (typeof stContext !== 'undefined' && stContext) ? stContext : null;
+        const result = await EL_runHubAgent(runAgentObj, {
+            st,
+            taskOverride: task,
+            contextOverride,
+            label: 'lorebook-quick:' + (agent.name || 'agent'),
+            onStep: ({ step, toolCalls }) => {
+                try { console.debug('Enhanced Lorebook quick-task step ' + step, (toolCalls || []).map(t => t?.function?.name || t?.name)); } catch {}
+            },
+            confirmTokenWarning: async (gate) => {
+                try { return confirm('Agent context is ~' + Number(gate.total).toLocaleString() + ' tokens (threshold ' + Number(gate.threshold).toLocaleString() + '). Run anyway?'); } catch { return true; }
+            },
+        });
+        reply({ ok: true, proposalsCreated: Number(result?.proposalsCreated || 0), warnings: Array.isArray(result?.warnings) ? result.warnings : [] });
+        try { await loadProposalsForCurrentChat(); } catch {}
+        try { renderDashboard(); } catch {}
+    } catch (e) {
+        reply({ ok: false, error: (e && e.message) ? e.message : String(e) });
+    } finally {
+        try { if (typeof _elHubRunningAgents !== 'undefined') _elHubRunningAgents.delete(agentId); } catch {}
     }
 }
 

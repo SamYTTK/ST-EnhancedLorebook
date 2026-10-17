@@ -331,6 +331,38 @@ function setupPostMessageBridge() {
                 }
                 break;
             }
+            case 'el-agent-quick-task-ack': {
+                // The app window confirms it received the task; stop re-sending.
+                const entry = pendingQuickTasks.get(msg.requestId);
+                if (entry) {
+                    entry.acked = true;
+                    try { if (entry.retryId) clearInterval(entry.retryId); } catch (_) {}
+                    entry.retryId = null;
+                }
+                break;
+            }
+            case 'el-agent-quick-task-result': {
+                const entry = pendingQuickTasks.get(msg.requestId);
+                if (!entry) break;
+                pendingQuickTasks.delete(msg.requestId);
+                try { if (entry.timerId) clearTimeout(entry.timerId); } catch (_) {}
+                try { if (entry.retryId) clearInterval(entry.retryId); } catch (_) {}
+                const name = entry?.agentName || 'Agent';
+                if (msg.ok) {
+                    const n = Number(msg.proposalsCreated || 0);
+                    if (n > 0) {
+                        try { toastr.success('Agent "' + name + '" finished — ' + n + ' proposal(s). See Review Changes.'); } catch (_) {}
+                    } else if (Array.isArray(msg.warnings) && msg.warnings.length) {
+                        try { toastr.warning('Agent "' + name + '" finished with warnings: ' + msg.warnings[0]); } catch (_) {}
+                    } else {
+                        try { toastr.info('Agent "' + name + '" finished — no proposals needed.'); } catch (_) {}
+                    }
+                } else {
+                    try { toastr.error('Agent "' + name + '" failed: ' + (msg.error || 'unknown error')); } catch (_) {}
+                }
+                try { elRefreshQuickTaskBadge(); } catch (_) {}
+                break;
+            }
         }
     });
 }
@@ -557,26 +589,17 @@ function setupLauncherDropdown() {
     return true;
 }
 
-// ── Quick-task: wand button + popup + slash + headless one-shot runner ──
+// ── Quick-task: wand button + popup + slash, dispatched to the app window ──
 // Lets the user pick an agent and give it a one-shot task from the chat bar,
 // with a configurable RP message window (none/all/first/last/range), an
 // optional hub API profile override, and snapshot toggles (character card,
 // author note, lorebooks, static injects).
-// Runs headlessly in the main window via EL_runHubAgent (ST-RequestHub):
-// the chosen slice is passed fresh every run, so no previous request is ever
-// carried over. Proposals go to Review Changes for review.
+// Quick tasks are dispatched to the Enhanced Lorebook app window (which owns
+// the lorebook guard) via postMessage; the app window runs the agent and
+// posts the result back. Proposals land in Review Changes for review.
 
-const EL_QUICK_TASK_SCRIPTS = [
-    'agent-config-schema.js',
-    'context-builder.js',
-    'hub-client.js',
-    'hub-tools.js',
-    'agent-manager.js',
-];
 const EL_QUICK_SETTINGS_KEY = 'SillyTavernEnhancedLorebook';
-let elQuickTaskScriptsReady = null;
-let elDynamicScanPatched = false;
-const elQuickTaskRunning = {};
+const pendingQuickTasks = new Map();
 
 function elEscapeHtmlQt(s) {
     return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -592,64 +615,17 @@ function elGetQuickTaskAgents() {
     }
 }
 
-function elLoadQuickTaskScript(src) {
-    return new Promise((resolve, reject) => {
-        try {
-            if (document.querySelector('script[data-el-quick-task="' + src + '"]')) { resolve(); return; }
-            const s = document.createElement('script');
-            s.src = src;
-            s.async = false;
-            s.dataset.elQuickTask = src;
-            s.onload = () => resolve();
-            s.onerror = () => reject(new Error('Failed to load ' + src));
-            document.head.appendChild(s);
-        } catch (e) { reject(e); }
-    });
-}
-
-function elEnsureQuickTaskScripts() {
-    if (elQuickTaskScriptsReady) return elQuickTaskScriptsReady;
-    elQuickTaskScriptsReady = (async () => {
-        const base = getExtensionUrl() + '/app';
-        for (const f of EL_QUICK_TASK_SCRIPTS) {
-            await elLoadQuickTaskScript(base + '/' + f);
-        }
-        return true;
-    })().catch((e) => { elQuickTaskScriptsReady = null; throw e; });
-    return elQuickTaskScriptsReady;
-}
-
-function elInstallQuickTaskShims(context) {
-    try {
-        if (!window.ST_Window) window.ST_Window = window;
-        if (!context.extensionSettings[EL_QUICK_SETTINGS_KEY]) context.extensionSettings[EL_QUICK_SETTINGS_KEY] = {};
-        window.extensionSettings = context.extensionSettings[EL_QUICK_SETTINGS_KEY];
-        window.stContext = context;
-        if (typeof window.saveSettings !== 'function') {
-            window.saveSettings = function () { try { context.saveSettingsDebounced(); } catch (_) {} };
-        }
-    } catch (e) {
-        console.error('Enhanced Lorebook: quick-task shim failed', e);
-    }
-}
-
-// Legacy dynamic-scan patch — REMOVED. Hub inline tools (hub-tools.js) inspect
-// lorebooks directly with the passed ST context; no patching needed.
-function elPatchDynamicScanForQuickTask() {
-    elDynamicScanPatched = true;
-}
-
 async function elRefreshQuickTaskBadge() {
     try {
-        try { await elEnsureQuickTaskScripts(); } catch (_) {}
-        if (typeof EL_apiFetch !== 'function') return;
         const context = SillyTavern.getContext();
         const charId = context?.characterId ?? 'no-char';
-        // Same canonical id as EL_canonicalHubChatId / getChatId.
         const chatFile = context?.chat?.chat_id ?? context?.chatId ?? 'default';
         const chatId = charId + '_' + chatFile;
-        const res = await EL_apiFetch('GET', '/proposals/list?chatId=' + encodeURIComponent(chatId));
-        const count = (res?.proposals || []).filter(p => p.status === 'pending').length;
+        const headers = (typeof context?.getRequestHeaders === 'function') ? context.getRequestHeaders() : { 'Content-Type': 'application/json' };
+        const resp = await fetch('/api/plugins/enhanced-lorebook-agent/proposals/list?chatId=' + encodeURIComponent(chatId), { headers });
+        if (!resp.ok) return;
+        const data = await resp.json().catch(() => null);
+        const count = (data?.proposals || []).filter(p => p.status === 'pending').length;
         const badge = document.getElementById('agent-pending-badge');
         if (badge) {
             badge.textContent = count > 99 ? '99+' : String(count);
@@ -763,23 +739,8 @@ function elContextToQuickOpts(ctx, profileId) {
     });
 }
 
-function elQuickOptsToContextOverride(opts) {
-    const o = elSanitizeQuickOpts(opts);
-    const t = o.messages.type;
-    const messages = (t === 'first')
-        ? { mode: 'range', start: 0, end: Math.max(1, o.messages.first) }
-        : { mode: t, last: o.messages.last, start: o.messages.range.start, end: o.messages.range.end };
-    if (Array.isArray(o.excludeIds) && o.excludeIds.length) messages.excludeIds = o.excludeIds;
-    return {
-        messages,
-        sources: {
-            charCard: { enabled: o.includeCharCard },
-            authorNote: { enabled: o.includeAuthorNote },
-            worldInfo: { enabled: o.includeWorldInfo },
-            injected: { enabled: o.includeInjected },
-        },
-    };
-}
+// The quick-opts -> unified-context conversion now lives in the app window
+// (agent-ui.js: EL_quickOptsToContextOverride), which is where the run happens.
 
 // Last-used globals, persisted under the extension settings key.
 function elGetQuickGlobals() {
@@ -839,8 +800,9 @@ function elStripHtmlForQuick(s) {
 
 // NOTE: history + snapshot assembly now lives in app/context-builder.js
 // (EL_buildAgentContextAsync) — the unified builder for all run paths.
-// elBuildQuickHistory / elBuildQuickContextBlock were removed; popup and
-// slash opts act as one-shot context overrides (elQuickOptsToContextOverride).
+// elBuildQuickHistory / elBuildQuickContextBlock were removed; the popup opts
+// travel to the app window, which converts them into a one-shot context
+// override for that run only.
 
 function elCountRpMessages(chat) {
     try {
@@ -853,74 +815,83 @@ function elCountRpMessages(chat) {
 }
 
 async function elRunQuickTask(agentId, taskText, runOpts) {
-    const task = String(taskText || '').trim();
-    if (!task) { try { toastr.warning('Task is empty.'); } catch (_) {} return; }
-    let context = null;
-    try { context = SillyTavern.getContext(); } catch (_) { try { toastr.error('SillyTavern context unavailable'); } catch (_) {} return; }
-    const agent = elGetQuickTaskAgents().find(a => a && a.id === agentId);
-    if (!agent) { try { toastr.warning('Agent not found.'); } catch (_) {} return; }
-    const agentName = agent.name || 'Unnamed';
-    if (agent.enabled === false) { try { toastr.warning('Agent "' + agentName + '" is disabled.'); } catch (_) {} return; }
-    if (!isAgentActiveForChat(agent, context)) { try { toastr.warning('Agent "' + agentName + '" is bound to another chat.'); } catch (_) {} return; }
-    if (elQuickTaskRunning[agentId]) { try { toastr.warning('Agent "' + agentName + '" is already running.'); } catch (_) {} return; }
-    const opts = elSanitizeQuickOpts(runOpts || elGetQuickGlobals());
-    elSaveQuickGlobals(opts);
-    await elEnsureQuickTaskScripts();
-    // Validate the hub profile override against the live hub registry.
-    let profileOverride = (opts.profileId || '').trim();
-    if (profileOverride) {
-        try {
-            const hub = globalThis.STRequestHub;
-            const names = (hub && typeof hub.listApiProfiles === 'function')
-                ? hub.listApiProfiles().map(p => p && p.name).filter(Boolean)
-                : [];
-            if (!names.includes(profileOverride)) {
-                try { toastr.warning('Hub API profile "' + profileOverride + '" not found — using agent default.'); } catch (_) {}
-                profileOverride = '';
-            }
-        } catch (_) {}
-    }
-    // Unified context: the agent's stored context section drives history +
-    // sources for this run; popup/slash opts apply as one-shot overrides.
-    // The one-shot task replaces the agent's stored task for this run only.
-    const contextOverride = elQuickOptsToContextOverride(opts);
-    elQuickTaskRunning[agentId] = true;
-    try { toastr.info('Agent "' + agentName + '" started in the background — keep roleplaying, review later in Review Changes.'); } catch (_) {}
+    let agentName = 'Agent';
     try {
-        elInstallQuickTaskShims(context);
-        elPatchDynamicScanForQuickTask();
-        if (typeof EL_isHubReady !== 'function' || !EL_isHubReady()) {
-            const detail = (typeof EL_hubStatus === 'function') ? EL_hubStatus().detail : 'hub unavailable';
-            throw new Error(detail + ' Install and enable ST-RequestHub first.');
+        const task = String(taskText || '').trim();
+        if (!task) { try { toastr.warning('Task is empty.'); } catch (_) {} return; }
+        let context = null;
+        try { context = SillyTavern.getContext(); } catch (_) { try { toastr.error('SillyTavern context unavailable'); } catch (_) {} return; }
+        const agent = elGetQuickTaskAgents().find(a => a && a.id === agentId);
+        if (!agent) { try { toastr.warning('Agent not found.'); } catch (_) {} return; }
+        agentName = agent.name || 'Unnamed';
+        if (agent.enabled === false) { try { toastr.warning('Agent "' + agentName + '" is disabled.'); } catch (_) {} return; }
+        if (!isAgentActiveForChat(agent, context)) { try { toastr.warning('Agent "' + agentName + '" is bound to another chat.'); } catch (_) {} return; }
+        const opts = elSanitizeQuickOpts(runOpts || elGetQuickGlobals());
+        elSaveQuickGlobals(opts);
+        let profileOverride = (opts.profileId || '').trim();
+        if (profileOverride) {
+            try {
+                const hub = globalThis.STRequestHub;
+                const names = (hub && typeof hub.listApiProfiles === 'function')
+                    ? hub.listApiProfiles().map(p => p && p.name).filter(Boolean)
+                    : [];
+                if (!names.includes(profileOverride)) {
+                    try { toastr.warning('Hub API profile "' + profileOverride + '" not found — using agent default.'); } catch (_) {}
+                    profileOverride = '';
+                }
+            } catch (_) {}
         }
-        const manager = new AgentManager();
-        const liveAgent = manager.getAgent(agentId) || agent;
-        const runAgent = Object.assign({}, liveAgent, profileOverride ? { apiProfile: profileOverride } : null);
-        const result = await EL_runHubAgent(runAgent, {
-            st: context,
-            taskOverride: task,
-            contextOverride,
-            label: `lorebook-quick:${agentName}`,
-            onStep: ({ step, toolCalls }) => {
-                try {
-                    console.debug(`Enhanced Lorebook quick-task step ${step}`, (toolCalls || []).map(t => t?.function?.name || t?.name));
-                } catch {}
+        if (!appWindow || appWindow.closed) {
+            openStandaloneApp('agent-dashboard');
+        }
+        if (!appWindow || appWindow.closed) { try { toastr.error('Could not open the Enhanced Lorebook window — quick tasks now run there.'); } catch (_) {} return; }
+        const requestId = 'qt_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+        const entry = { agentName, startedAt: Date.now(), timerId: null, retryId: null, acked: false, attempts: 0 };
+        const payload = {
+            source: 'enhanced-lorebook',
+            type: 'el-agent-quick-task',
+            requestId,
+            agentId,
+            task,
+            opts: {
+                profileId: profileOverride,
+                messages: { type: opts.messages.type, first: opts.messages.first, last: opts.messages.last, range: { start: opts.messages.range.start, end: opts.messages.range.end } },
+                includeCharCard: opts.includeCharCard,
+                includeAuthorNote: opts.includeAuthorNote,
+                includeWorldInfo: opts.includeWorldInfo,
+                includeInjected: opts.includeInjected,
+                excludeIds: opts.excludeIds || [],
             },
-        });
-        if (!result || !result.success) throw new Error((result && result.error) || 'Agent run failed');
-        const n = Number(result.proposalsCreated || 0);
-        await elRefreshQuickTaskBadge();
-        try { sendAgentsSyncToApp(); } catch (_) {}
-        try {
-            if (n > 0) toastr.success('Agent "' + agentName + '" finished — ' + n + ' proposal(s). See Review Changes.');
-            else if ((result.warnings || []).length) toastr.warning('Agent "' + agentName + '" finished with warnings: ' + result.warnings[0]);
-            else toastr.info('Agent "' + agentName + '" finished — no proposals needed.');
-        } catch (_) {}
+        };
+        const stopRetry = () => { try { if (entry.retryId) clearInterval(entry.retryId); } catch (_) {} entry.retryId = null; };
+        const postTask = () => {
+            try {
+                if (appWindow && !appWindow.closed) appWindow.postMessage(payload, window.location.origin);
+            } catch (_) {}
+        };
+        entry.timerId = setTimeout(() => {
+            try {
+                if (pendingQuickTasks.has(requestId)) {
+                    pendingQuickTasks.delete(requestId);
+                    stopRetry();
+                    try { toastr.warning('Agent "' + agentName + '" did not report back — check the Enhanced Lorebook window.'); } catch (_) {}
+                }
+            } catch (_) {}
+        }, 10 * 60 * 1000);
+        // The app window may have just been opened, so its message listener may
+        // not be registered yet — keep re-sending until it acknowledges receipt.
+        entry.retryId = setInterval(() => {
+            if (entry.acked || !pendingQuickTasks.has(requestId)) { stopRetry(); return; }
+            entry.attempts++;
+            if (entry.attempts > 25) { stopRetry(); return; } // ~20s; the 10-min timeout still warns
+            postTask();
+        }, 800);
+        pendingQuickTasks.set(requestId, entry);
+        postTask();
+        try { toastr.info('Agent "' + agentName + '" started in the Enhanced Lorebook window — review the results in Review Changes.'); } catch (_) {}
     } catch (e) {
         console.error('Enhanced Lorebook: quick-task failed', e);
         try { toastr.error('Agent "' + agentName + '" failed: ' + (e?.message || e)); } catch (_) {}
-    } finally {
-        delete elQuickTaskRunning[agentId];
     }
 }
 

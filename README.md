@@ -80,8 +80,10 @@ feedback. Nothing reaches your lorebooks without you saying so.
 
 You can run an agent whenever you like, have it check in automatically every
 so many messages, or give it a one-off task from the wand button in chat (or
-with `/el-run`). You can also just chat with an agent to talk things through
-before anything gets suggested.
+with `/el-run`). One-off tasks are sent to the Enhanced Lorebook window, which
+is where agents actually run — so that window needs to be open (it opens
+automatically if it isn't). You can also just chat with an agent to talk things
+through before anything gets suggested.
 
 Agents need two things to work: the **[ST-RequestHub](https://github.com/SamYTTK/ST-RequestHub)** extension (which handles
 all the model talking) and a small server plugin that ships with this
@@ -106,6 +108,14 @@ it). Backups from accepted suggestions clean themselves up after a day.
 
 ## Good to know
 
+- Every save is verified: the app re-reads the file after writing it and tells
+  you if the write did not land, instead of pretending it worked. If the file
+  changed underneath you (another window, the native editor, an agent), the
+  save is blocked rather than overwriting it.
+- The server plugin stores its snapshots, trash, backups and agent chats in one
+  shared place and assumes a **single SillyTavern user**. It is not partitioned
+  per user. If you run SillyTavern in multi-user mode, be aware that users can
+  see and restore each other's recovery data.
 - This is still early work. The lorebook workspace itself has seen a lot of
   real use, but expect the occasional bug — the agents especially are new.
 - This extension was built largely with AI assistance (via

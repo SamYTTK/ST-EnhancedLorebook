@@ -6,3 +6,8 @@ Thumbs.db
 *.log
 .env
 node_modules/
+
+# Server-plugin runtime storage (snapshots, trash, audit, proposals,
+# agent chats). These can contain user chat content and must never be
+# committed. Written to <plugin>/../../data/enhanced-lorebook-agent/.
+data/

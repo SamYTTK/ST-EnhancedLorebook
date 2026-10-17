@@ -6,7 +6,7 @@ import sanitize from 'sanitize-filename';
 import { getAllUserHandles, getUserDirectories } from '../../src/users.js';
 
 const PLUGIN_NAME = 'enhanced-lorebook-agent';
-const PLUGIN_VERSION = '1.3.0';
+const PLUGIN_VERSION = '1.4.0';
 
 // Hub v2: LLM execution moved to ST-RequestHub. This plugin keeps STORAGE ONLY
 // (proposals, agent chats, backups, snapshots, trash, audit, logs).
@@ -93,8 +93,38 @@ const MAX_STRING_LENGTH = 2048;
 // ── Paths ──────────────────────────────────────────────────────────────
 
 function getStorageRoot() {
+    // NOTE: the storage root is GLOBAL and shared by all SillyTavern users
+    // (single-user assumption, documented in the README), so per-user
+    // scoping is deliberately out of scope.
     const stRoot = path.resolve(__dirname, '..', '..');
     return path.join(stRoot, 'data', 'enhanced-lorebook-agent');
+}
+
+/**
+ * Write JSON to disk atomically: fully write a temp file, then rename it
+ * over the target so a crash can never leave a half-written JSON file.
+ */
+function writeJsonAtomic(filePath, data) {
+    const dir = path.dirname(filePath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    try {
+        fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf-8');
+        fs.renameSync(tmp, filePath);
+    } catch (e) {
+        try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch {}
+        throw e;
+    }
+}
+
+// ── Per-file serialization: concurrent read-modify-write cycles on the same
+// file are chained so they cannot interleave and lose updates. ─────────────
+const _fileLocks = new Map();
+function withFileLock(filePath, fn) {
+    const prev = _fileLocks.get(filePath) || Promise.resolve();
+    const run = prev.then(fn, fn);
+    _fileLocks.set(filePath, run.then(() => {}, () => {}));
+    return run;
 }
 
 function backupsDir(lorebookName) {
@@ -152,13 +182,18 @@ function ensureStorageDirectories() {
 
 /**
  * Read a JSON array file, tolerating missing/corrupt files.
+ * A missing file returns [] silently. A corrupt file is quarantined by
+ * renaming it to `<filePath>.corrupt-<Date.now()>` (best-effort) and
+ * returning [] so history is never silently erased. Never throws.
  */
 function readJsonArray(filePath) {
     if (!fs.existsSync(filePath)) return [];
     try {
         const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
         return Array.isArray(parsed) ? parsed : [];
-    } catch {
+    } catch (e) {
+        try { fs.renameSync(filePath, `${filePath}.corrupt-${Date.now()}`); } catch {}
+        elLog('WARN', `readJsonArray: quarantined corrupt file ${filePath}`, e?.message);
         return [];
     }
 }
@@ -184,9 +219,25 @@ function requireValidPathParams(req, res, { name, id } = {}) {
     return { name: cleanName, id: cleanId };
 }
 
+/**
+ * Rejects: path separators and "..", control characters, the Windows-illegal
+ * characters < > : " | ? *, reserved Windows device names (CON, PRN, AUX,
+ * NUL, COM1-COM9, LPT1-LPT9, case-insensitive, with or without an extension),
+ * and names with a trailing dot or trailing space (which Windows strips).
+ * Allows spaces, dots elsewhere, and normal unicode (e.g. "My Lorebook",
+ * "chat_123-abc" still pass). Guards lorebook names, ids and chatIds used
+ * in path.join.
+ */
 function isValidPathComponent(value) {
     if (typeof value !== 'string' || value.length === 0) return false;
     if (value.includes('..') || value.includes('/') || value.includes('\\')) return false;
+    // eslint-disable-next-line no-control-regex
+    if (/[\x00-\x1f\x7f]/.test(value)) return false;
+    if (/[<>:"|?*]/.test(value)) return false;
+    if (value.endsWith('.') || value.endsWith(' ')) return false;
+    const base = value.split('.')[0].toUpperCase();
+    if (['CON', 'PRN', 'AUX', 'NUL'].includes(base)) return false;
+    if (/^(COM[1-9]|LPT[1-9])$/.test(base)) return false;
     return true;
 }
 
@@ -237,7 +288,7 @@ async function createAgentBackup(req, res) {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     const foldersSnapshot = Array.isArray(folders) ? folders : [];
     const record = { id: backupId, timestamp: Date.now(), lorebookName: name, data: lorebookData, folders: foldersSnapshot, source: 'agent' };
-    fs.writeFileSync(path.join(dir, `${backupId}.json`), JSON.stringify(record, null, 2), 'utf-8');
+    writeJsonAtomic(path.join(dir, `${backupId}.json`), record);
     res.json({ backupId, timestamp: record.timestamp });
 }
 
@@ -326,7 +377,7 @@ async function createBackup(req, res) {
         data: lorebookData,
     };
 
-    fs.writeFileSync(path.join(dir, `${backupId}.json`), JSON.stringify(record, null, 2), 'utf-8');
+    writeJsonAtomic(path.join(dir, `${backupId}.json`), record);
 
     res.json({ backupId, timestamp: record.timestamp });
 }
@@ -464,17 +515,15 @@ function readWatchlist() {
     try {
         const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
         return (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : {};
-    } catch {
+    } catch (e) {
+        try { fs.renameSync(filePath, `${filePath}.corrupt-${Date.now()}`); } catch {}
+        elLog('WARN', `readWatchlist: quarantined corrupt file ${filePath}`, e?.message);
         return {};
     }
 }
 
 function writeWatchlist(watchlist) {
-    const dir = path.join(getStorageRoot(), 'backup-watch');
-    if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-    }
-    fs.writeFileSync(watchlistFile(), JSON.stringify(watchlist, null, 2), 'utf-8');
+    writeJsonAtomic(watchlistFile(), watchlist);
 }
 
 function readBackupWatchRecord(book, id) {
@@ -503,7 +552,7 @@ function writeBackupWatchRecord(lorebookName, lorebookData, kind, folders) {
         data: lorebookData,
         folders: foldersSnapshot,
     };
-    fs.writeFileSync(path.join(dir, `${backupId}.json`), JSON.stringify(record, null, 2), 'utf-8');
+    writeJsonAtomic(path.join(dir, `${backupId}.json`), record);
     return { backupId, timestamp, kind };
 }
 
@@ -541,14 +590,16 @@ async function createBackupWatch(req, res) {
     const foldersSnapshot = Array.isArray(folders) ? folders : [];
     const { backupId, timestamp, kind } = writeBackupWatchRecord(params.name, lorebookData, mode, foldersSnapshot);
 
-    const watchlist = readWatchlist();
-    if (mode === 'auto') {
-        watchlist[params.name] = { mode: 'auto', enabled: true, enabledAt: Date.now(), lastBackupAt: timestamp, cachedFolders: foldersSnapshot };
-    } else {
-        // A simple backup is a one-off snapshot: it must not leave the book on the auto schedule.
-        delete watchlist[params.name];
-    }
-    writeWatchlist(watchlist);
+    await withFileLock(watchlistFile(), async () => {
+        const watchlist = readWatchlist();
+        if (mode === 'auto') {
+            watchlist[params.name] = { mode: 'auto', enabled: true, enabledAt: Date.now(), lastBackupAt: timestamp, cachedFolders: foldersSnapshot };
+        } else {
+            // A simple backup is a one-off snapshot: it must not leave the book on the auto schedule.
+            delete watchlist[params.name];
+        }
+        writeWatchlist(watchlist);
+    });
 
     res.json({ backupId, timestamp, kind, watched: mode === 'auto' });
 }
@@ -588,9 +639,11 @@ async function disableBackupWatch(req, res) {
     const params = requireValidPathParams(req, res, { name: (req.body || {}).lorebookName });
     if (!params) return;
 
-    const watchlist = readWatchlist();
-    delete watchlist[params.name];
-    writeWatchlist(watchlist);
+    await withFileLock(watchlistFile(), async () => {
+        const watchlist = readWatchlist();
+        delete watchlist[params.name];
+        writeWatchlist(watchlist);
+    });
 
     res.json({ success: true, watched: false });
 }
@@ -730,7 +783,7 @@ async function writeDiskBackupWatchRecord(lorebookName, kind) {
 async function runAutoBackupWatches() {
     const watchlist = readWatchlist();
     const now = Date.now();
-    let created = 0;
+    const updated = [];
 
     for (const [book, watch] of Object.entries(watchlist)) {
         if (!watch || watch.mode !== 'auto' || watch.enabled === false) continue;
@@ -739,17 +792,25 @@ async function runAutoBackupWatches() {
 
         const rec = await writeDiskBackupWatchRecord(book, 'auto');
         if (rec) {
-            watch.lastBackupAt = now;
-            watch.enabledAt = watch.enabledAt || now;
-            created++;
+            updated.push(book);
         } else {
             console.warn(`[${PLUGIN_NAME}] Backup watch: could not locate lorebook "${book}" for scheduled backup`);
         }
     }
 
-    if (created) {
-        writeWatchlist(watchlist);
-        console.log(`[${PLUGIN_NAME}] Backup watch: created ${created} scheduled backup(s)`);
+    if (updated.length) {
+        // Re-read inside the lock so a concurrent create/disable is not clobbered.
+        await withFileLock(watchlistFile(), async () => {
+            const wl = readWatchlist();
+            for (const book of updated) {
+                if (wl[book]) {
+                    wl[book].lastBackupAt = now;
+                    wl[book].enabledAt = wl[book].enabledAt || now;
+                }
+            }
+            writeWatchlist(wl);
+        });
+        console.log(`[${PLUGIN_NAME}] Backup watch: created ${updated.length} scheduled backup(s)`);
     }
 }
 
@@ -876,7 +937,7 @@ async function createSnapshot(req, res) {
         folders: foldersSnapshot,
     };
 
-    fs.writeFileSync(path.join(dir, `${snapshotId}.json`), JSON.stringify(record, null, 2), 'utf-8');
+    writeJsonAtomic(path.join(dir, `${snapshotId}.json`), record);
 
     res.json({ snapshotId, timestamp });
 }
@@ -989,24 +1050,28 @@ async function addToTrash(req, res) {
     }
 
     const filePath = trashFile(params.name);
-    const trash = readJsonArray(filePath);
-    const now = Date.now();
+    return withFileLock(filePath, async () => {
+        const trash = readJsonArray(filePath);
+        const now = Date.now();
 
-    for (const e of entries) {
-        if (!e || typeof e !== 'object' || e.uid === undefined || e.uid === null) continue;
-        if (!e.entry || typeof e.entry !== 'object') continue;
-        trash.push({
-            id: `trash_${now}_${Math.random().toString(36).slice(2, 8)}`,
-            uid: String(e.uid),
-            entry: e.entry,
-            deletedAt: e.deletedAt || now,
-            source: sanitizeString(source) || 'unknown',
-            note: sanitizeString(note) || '',
-        });
-    }
+        for (const e of entries) {
+            if (!e || typeof e !== 'object' || e.uid === undefined || e.uid === null) continue;
+            if (!e.entry || typeof e.entry !== 'object') continue;
+            trash.push({
+                id: `trash_${now}_${Math.random().toString(36).slice(2, 8)}`,
+                uid: String(e.uid),
+                entry: e.entry,
+                folderId: sanitizeString(e.folderId) || '',
+                folderPath: sanitizeString(e.folderPath) || '',
+                deletedAt: e.deletedAt || now,
+                source: sanitizeString(source) || 'unknown',
+                note: sanitizeString(note) || '',
+            });
+        }
 
-    fs.writeFileSync(filePath, JSON.stringify(trash, null, 2), 'utf-8');
-    res.json({ success: true, count: trash.length });
+        writeJsonAtomic(filePath, trash);
+        res.json({ success: true, count: trash.length });
+    });
 }
 
 /**
@@ -1026,41 +1091,29 @@ async function listTrash(req, res) {
 /**
  * POST /api/plugins/enhanced-lorebook-agent/trash/restore
  *
- * Removes matching entries from the trash and returns their full data so
- * the client can re-insert them with fresh UIDs.
+ * Read-only PEEK: returns the matching records WITHOUT removing them from
+ * the trash file. The client consumes the records afterwards via
+ * /trash/delete. Matches when a record's `id` is in `ids` OR its `uid` is
+ * in `uids` (prefer `ids`; accept either; 400 when both are absent).
  */
 async function restoreFromTrash(req, res) {
-    const { lorebookName, uids } = req.body || {};
+    const { lorebookName, ids, uids } = req.body || {};
     const params = requireValidPathParams(req, res, { name: lorebookName });
     if (!params) return;
 
-    if (!Array.isArray(uids) || uids.length === 0) {
-        return res.status(400).json({ error: 'uids must be a non-empty array' });
+    const hasIds = Array.isArray(ids) && ids.length > 0;
+    const hasUids = Array.isArray(uids) && uids.length > 0;
+    if (!hasIds && !hasUids) {
+        return res.status(400).json({ error: 'ids or uids must be a non-empty array' });
     }
 
     const filePath = trashFile(params.name);
     const trash = readJsonArray(filePath);
-    const uidSet = new Set(uids.map(String));
-    const restored = [];
-    const kept = [];
+    const idSet = hasIds ? new Set(ids.map(String)) : null;
+    const uidSet = hasUids ? new Set(uids.map(String)) : null;
+    const matched = trash.filter(t => (idSet && idSet.has(String(t.id))) || (uidSet && uidSet.has(String(t.uid))));
 
-    for (const t of trash) {
-        if (uidSet.has(String(t.uid))) {
-            restored.push(t);
-        } else {
-            kept.push(t);
-        }
-    }
-
-    if (restored.length > 0) {
-        if (kept.length > 0) {
-            fs.writeFileSync(filePath, JSON.stringify(kept, null, 2), 'utf-8');
-        } else if (fs.existsSync(filePath)) {
-            fs.unlinkSync(filePath);
-        }
-    }
-
-    res.json({ success: true, entries: restored });
+    res.json({ success: true, entries: matched });
 }
 
 /**
@@ -1069,27 +1122,32 @@ async function restoreFromTrash(req, res) {
  * Permanently deletes matching entries from the trash.
  */
 async function deleteFromTrash(req, res) {
-    const { lorebookName, uids } = req.body || {};
+    const { lorebookName, ids, uids } = req.body || {};
     const params = requireValidPathParams(req, res, { name: lorebookName });
     if (!params) return;
 
-    if (!Array.isArray(uids) || uids.length === 0) {
-        return res.status(400).json({ error: 'uids must be a non-empty array' });
+    const hasIds = Array.isArray(ids) && ids.length > 0;
+    const hasUids = Array.isArray(uids) && uids.length > 0;
+    if (!hasIds && !hasUids) {
+        return res.status(400).json({ error: 'ids or uids must be a non-empty array' });
     }
 
     const filePath = trashFile(params.name);
-    const trash = readJsonArray(filePath);
-    const uidSet = new Set(uids.map(String));
-    const kept = trash.filter(t => !uidSet.has(String(t.uid)));
-    const removed = trash.length - kept.length;
+    return withFileLock(filePath, async () => {
+        const trash = readJsonArray(filePath);
+        const idSet = hasIds ? new Set(ids.map(String)) : null;
+        const uidSet = hasUids ? new Set(uids.map(String)) : null;
+        const kept = trash.filter(t => !((idSet && idSet.has(String(t.id))) || (uidSet && uidSet.has(String(t.uid)))));
+        const removed = trash.length - kept.length;
 
-    if (kept.length > 0) {
-        fs.writeFileSync(filePath, JSON.stringify(kept, null, 2), 'utf-8');
-    } else if (fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
-    }
+        if (kept.length > 0) {
+            writeJsonAtomic(filePath, kept);
+        } else if (fs.existsSync(filePath)) {
+            fs.unlinkSync(filePath);
+        }
 
-    res.json({ success: true, removedCount: removed });
+        res.json({ success: true, removedCount: removed });
+    });
 }
 
 // ── Audit log ─────────────────────────────────────────────────────────
@@ -1111,14 +1169,16 @@ async function appendAudit(req, res) {
     }
 
     const filePath = auditFile(params.name);
-    const audit = readJsonArray(filePath);
-    audit.push({ ts: Date.now(), ...entry });
-    if (audit.length > MAX_AUDIT_ENTRIES) {
-        audit.splice(0, audit.length - MAX_AUDIT_ENTRIES);
-    }
-    fs.writeFileSync(filePath, JSON.stringify(audit, null, 2), 'utf-8');
+    return withFileLock(filePath, async () => {
+        const audit = readJsonArray(filePath);
+        audit.push({ ts: Date.now(), ...entry });
+        if (audit.length > MAX_AUDIT_ENTRIES) {
+            audit.splice(0, audit.length - MAX_AUDIT_ENTRIES);
+        }
+        writeJsonAtomic(filePath, audit);
 
-    res.json({ success: true, count: audit.length });
+        res.json({ success: true, count: audit.length });
+    });
 }
 
 /**
@@ -1140,13 +1200,15 @@ async function listAudit(req, res) {
 function readAgentChatFile(agentId, chatId) {
     const fp = agentChatFile(agentId, chatId);
     if (!fs.existsSync(fp)) return null;
-    try { return JSON.parse(fs.readFileSync(fp, 'utf-8')); } catch (e) { elLog('WARN', `agent-chats read failed ${agentId}/${chatId}`, e?.message); return null; }
+    try { return JSON.parse(fs.readFileSync(fp, 'utf-8')); } catch (e) {
+        try { fs.renameSync(fp, `${fp}.corrupt-${Date.now()}`); } catch {}
+        elLog('WARN', `agent-chats read failed ${agentId}/${chatId} — quarantined corrupt file`, e?.message);
+        return null;
+    }
 }
 function writeAgentChatFile(agentId, chatId, data) {
     const fp = agentChatFile(agentId, chatId);
-    const dir = path.dirname(fp);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(fp, JSON.stringify(data, null, 2), 'utf-8');
+    writeJsonAtomic(fp, data);
 }
 async function listAgentChats(req, res) {
     const agentId = sanitizeString(req.query.agentId);
@@ -1179,9 +1241,12 @@ async function saveAgentChat(req, res) {
     // Unbounded but cap at 5000 to avoid abuse (still effectively unbounded per user request)
     if (messages.length > 5000) return res.status(400).json({ error: 'messages exceeds limit 5000' });
     const payload = { agentId: a, chatId: c, messages, updatedAt: Date.now() };
-    writeAgentChatFile(a, c, payload);
-    elLog('INFO', `saveAgentChat agent=${a} chat=${c} msgs=${messages.length}`);
-    res.json({ success: true, messageCount: messages.length });
+    const filePath = agentChatFile(a, c);
+    return withFileLock(filePath, async () => {
+        writeAgentChatFile(a, c, payload);
+        elLog('INFO', `saveAgentChat agent=${a} chat=${c} msgs=${messages.length}`);
+        res.json({ success: true, messageCount: messages.length });
+    });
 }
 async function deleteAgentChat(req, res) {
     const { agentId, chatId } = req.body || {};
@@ -1199,9 +1264,12 @@ async function clearAgentChat(req, res) {
     const a = sanitizeString(agentId); const c = sanitizeString(chatId);
     if (!a || !c) return res.status(400).json({ error: 'agentId and chatId required' });
     const payload = { agentId: a, chatId: c, messages: [], updatedAt: Date.now() };
-    writeAgentChatFile(a, c, payload);
-    elLog('INFO', `clearAgentChat agent=${a} chat=${c}`);
-    res.json({ success: true });
+    const filePath = agentChatFile(a, c);
+    return withFileLock(filePath, async () => {
+        writeAgentChatFile(a, c, payload);
+        elLog('INFO', `clearAgentChat agent=${a} chat=${c}`);
+        res.json({ success: true });
+    });
 }
 
 // ── Proposals ─────────────────────────────────────────────────────────
@@ -1212,13 +1280,17 @@ const MAX_PENDING_PROPOSALS = 100;
 /**
  * Read the proposals file for a given chatId.
  * Returns the parsed object or null if it doesn't exist or is corrupt.
+ * A corrupt file is quarantined to `<filePath>.corrupt-<Date.now()>` and
+ * null is returned so history is never silently erased. Never throws.
  */
 function readProposalsFile(chatId) {
     const filePath = path.join(getStorageRoot(), 'proposals', `${chatId}.json`);
     if (!fs.existsSync(filePath)) return null;
     try {
         return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-    } catch {
+    } catch (e) {
+        try { fs.renameSync(filePath, `${filePath}.corrupt-${Date.now()}`); } catch {}
+        elLog('WARN', `readProposalsFile: quarantined corrupt file ${filePath}`, e?.message);
         return null;
     }
 }
@@ -1228,7 +1300,7 @@ function readProposalsFile(chatId) {
  */
 function writeProposalsFile(chatId, data) {
     const filePath = path.join(getStorageRoot(), 'proposals', `${chatId}.json`);
-    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
+    writeJsonAtomic(filePath, data);
 }
 
 /**
@@ -1271,17 +1343,20 @@ async function saveProposal(req, res) {
         return res.status(400).json({ error: 'chatId contains invalid characters' });
     }
 
-    const existing = readProposalsFile(sanitizedChatId);
-    const proposals = existing ? existing.proposals : [];
+    const filePath = path.join(getStorageRoot(), 'proposals', `${sanitizedChatId}.json`);
+    return withFileLock(filePath, async () => {
+        const existing = readProposalsFile(sanitizedChatId);
+        const proposals = existing ? existing.proposals : [];
 
-    if (proposals.length >= MAX_PENDING_PROPOSALS) {
-        return res.status(400).json({ error: `Proposal limit (${MAX_PENDING_PROPOSALS}) reached for this chat` });
-    }
+        if (proposals.length >= MAX_PENDING_PROPOSALS) {
+            return res.status(400).json({ error: `Proposal limit (${MAX_PENDING_PROPOSALS}) reached for this chat` });
+        }
 
-    proposals.push(proposal);
-    writeProposalsFile(sanitizedChatId, { chatId: sanitizedChatId, proposals });
+        proposals.push(proposal);
+        writeProposalsFile(sanitizedChatId, { chatId: sanitizedChatId, proposals });
 
-    res.json({ success: true, proposalCount: proposals.length });
+        res.json({ success: true, proposalCount: proposals.length });
+    });
 }
 
 /**
@@ -1309,17 +1384,20 @@ async function batchSaveProposals(req, res) {
         }
     }
 
-    const existing = readProposalsFile(sanitizedChatId);
-    const proposals = existing ? existing.proposals : [];
+    const filePath = path.join(getStorageRoot(), 'proposals', `${sanitizedChatId}.json`);
+    return withFileLock(filePath, async () => {
+        const existing = readProposalsFile(sanitizedChatId);
+        const proposals = existing ? existing.proposals : [];
 
-    if (proposals.length + incoming.length > MAX_PENDING_PROPOSALS) {
-        return res.status(400).json({ error: `Adding ${incoming.length} proposals would exceed the limit of ${MAX_PENDING_PROPOSALS}` });
-    }
+        if (proposals.length + incoming.length > MAX_PENDING_PROPOSALS) {
+            return res.status(400).json({ error: `Adding ${incoming.length} proposals would exceed the limit of ${MAX_PENDING_PROPOSALS}` });
+        }
 
-    proposals.push(...incoming);
-    writeProposalsFile(sanitizedChatId, { chatId: sanitizedChatId, proposals });
+        proposals.push(...incoming);
+        writeProposalsFile(sanitizedChatId, { chatId: sanitizedChatId, proposals });
 
-    res.json({ success: true, count: proposals.length });
+        res.json({ success: true, count: proposals.length });
+    });
 }
 
 /**
@@ -1331,6 +1409,9 @@ async function listProposals(req, res) {
     const sanitizedChatId = sanitizeString(req.query.chatId);
     if (!sanitizedChatId) {
         return res.status(400).json({ error: 'chatId query parameter is required' });
+    }
+    if (!isValidPathComponent(sanitizedChatId)) {
+        return res.status(400).json({ error: 'chatId contains invalid characters' });
     }
 
     const existing = readProposalsFile(sanitizedChatId);
@@ -1356,10 +1437,12 @@ async function listAllProposals(req, res) {
                     const parsed = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf-8'));
                     const list = Array.isArray(parsed?.proposals) ? parsed.proposals : [];
                     if (!list.length) continue;
+                    const rawChatId = (parsed && typeof parsed.chatId === 'string' && parsed.chatId)
+                        ? parsed.chatId
+                        : f.replace(/\.json$/, '');
+                    if (!isValidPathComponent(rawChatId)) continue;
                     chats.push({
-                        chatId: (parsed && typeof parsed.chatId === 'string' && parsed.chatId)
-                            ? parsed.chatId
-                            : f.replace(/\.json$/, ''),
+                        chatId: rawChatId,
                         proposals: list,
                     });
                 } catch {}
@@ -1395,24 +1478,27 @@ async function updateProposalStatus(req, res) {
         return res.status(400).json({ error: 'chatId contains invalid characters' });
     }
 
-    const existing = readProposalsFile(sanitizedChatId);
-    if (!existing) {
-        return res.status(404).json({ error: 'No proposals found for this chat' });
-    }
+    const filePath = path.join(getStorageRoot(), 'proposals', `${sanitizedChatId}.json`);
+    return withFileLock(filePath, async () => {
+        const existing = readProposalsFile(sanitizedChatId);
+        if (!existing) {
+            return res.status(404).json({ error: 'No proposals found for this chat' });
+        }
 
-    const proposal = existing.proposals.find(p => p.id === sanitizedProposalId);
-    if (!proposal) {
-        return res.status(404).json({ error: 'Proposal not found' });
-    }
+        const proposal = existing.proposals.find(p => p.id === sanitizedProposalId);
+        if (!proposal) {
+            return res.status(404).json({ error: 'Proposal not found' });
+        }
 
-    proposal.status = sanitizedStatus;
-    if (sanitizedFeedback !== undefined) {
-        proposal.userFeedback = sanitizedFeedback;
-    }
+        proposal.status = sanitizedStatus;
+        if (sanitizedFeedback !== undefined) {
+            proposal.userFeedback = sanitizedFeedback;
+        }
 
-    writeProposalsFile(sanitizedChatId, existing);
+        writeProposalsFile(sanitizedChatId, existing);
 
-    res.json({ success: true });
+        res.json({ success: true });
+    });
 }
 
 /**
@@ -1439,23 +1525,26 @@ async function batchUpdateProposalStatus(req, res) {
         return res.status(400).json({ error: 'chatId contains invalid characters' });
     }
 
-    const existing = readProposalsFile(sanitizedChatId);
-    if (!existing) {
-        return res.status(404).json({ error: 'No proposals found for this chat' });
-    }
-
-    let updatedCount = 0;
-    for (const pid of proposalIds) {
-        const p = existing.proposals.find(prop => prop.id === pid);
-        if (p) {
-            p.status = sanitizedStatus;
-            updatedCount++;
+    const filePath = path.join(getStorageRoot(), 'proposals', `${sanitizedChatId}.json`);
+    return withFileLock(filePath, async () => {
+        const existing = readProposalsFile(sanitizedChatId);
+        if (!existing) {
+            return res.status(404).json({ error: 'No proposals found for this chat' });
         }
-    }
 
-    writeProposalsFile(sanitizedChatId, existing);
+        let updatedCount = 0;
+        for (const pid of proposalIds) {
+            const p = existing.proposals.find(prop => prop.id === pid);
+            if (p) {
+                p.status = sanitizedStatus;
+                updatedCount++;
+            }
+        }
 
-    res.json({ success: true, updatedCount });
+        writeProposalsFile(sanitizedChatId, existing);
+
+        res.json({ success: true, updatedCount });
+    });
 }
 
 /**
@@ -1478,23 +1567,26 @@ async function deleteProposals(req, res) {
         return res.status(400).json({ error: 'chatId contains invalid characters' });
     }
 
-    const existing = readProposalsFile(sanitizedChatId);
-    if (!existing) {
-        return res.status(404).json({ error: 'No proposals found for this chat' });
-    }
+    const filePath = path.join(getStorageRoot(), 'proposals', `${sanitizedChatId}.json`);
+    return withFileLock(filePath, async () => {
+        const existing = readProposalsFile(sanitizedChatId);
+        if (!existing) {
+            return res.status(404).json({ error: 'No proposals found for this chat' });
+        }
 
-    const idSet = new Set(proposalIds);
-    const before = existing.proposals.length;
-    existing.proposals = existing.proposals.filter(p => !idSet.has(p.id));
-    const removed = before - existing.proposals.length;
+        const idSet = new Set(proposalIds);
+        const before = existing.proposals.length;
+        existing.proposals = existing.proposals.filter(p => !idSet.has(p.id));
+        const removed = before - existing.proposals.length;
 
-    if (existing.proposals.length === 0) {
-        deleteProposalsFile(sanitizedChatId);
-    } else {
-        writeProposalsFile(sanitizedChatId, existing);
-    }
+        if (existing.proposals.length === 0) {
+            deleteProposalsFile(sanitizedChatId);
+        } else {
+            writeProposalsFile(sanitizedChatId, existing);
+        }
 
-    res.json({ success: true, removedCount: removed });
+        res.json({ success: true, removedCount: removed });
+    });
 }
 
 // ── LLM execution — REMOVED (Hub v2). ──
@@ -1686,8 +1778,40 @@ export async function init(router) {
 
     router.use(express.json({ limit: '10mb' }));
 
+    // Defence-in-depth cap applied AFTER SillyTavern's global parse: the
+    // global body parser (limit 500mb) has already buffered req.body before
+    // plugin routers run, so this limits what the plugin will persist
+    // rather than what is buffered. Rejects oversized bodies with 413.
     router.use((req, res, next) => {
-        res.header('Access-Control-Allow-Origin', '*');
+        const MAX_BODY = 32 * 1024 * 1024;
+        // Prefer the declared length: cheap and avoids serialising a huge body
+        // just to measure it.
+        const declared = Number(req.headers['content-length']);
+        if (Number.isFinite(declared) && declared > MAX_BODY) {
+            return res.status(413).json({ error: 'Request body too large' });
+        }
+        if (req.body !== undefined && req.body !== null) {
+            try {
+                if (JSON.stringify(req.body).length > MAX_BODY) {
+                    return res.status(413).json({ error: 'Request body too large' });
+                }
+            } catch {}
+        }
+        next();
+    });
+
+    router.use((req, res, next) => {
+        // No wildcard: the plugin's GET routes are not CSRF-protected, so a
+        // permissive Access-Control-Allow-Origin would let any website read
+        // them. Only echo the request's own host back, otherwise send none.
+        const origin = req.headers.origin;
+        const host = req.headers.host;
+        if (origin && host) {
+            try {
+                const originHost = new URL(origin).host;
+                if (originHost === host) res.header('Access-Control-Allow-Origin', origin);
+            } catch {}
+        }
         res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
         res.header('Access-Control-Allow-Methods', 'GET, PUT, POST, DELETE, OPTIONS');
         if (req.method === 'OPTIONS') {

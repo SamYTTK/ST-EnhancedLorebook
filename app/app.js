@@ -13,13 +13,52 @@ let agentEngine = null;
 let agentManager = null;
 let agentUIInitialized = false;
 let currentViewMode = 'lorebook';
+// ── Single lorebook state store ──
+// currentLorebookData is the ONLY copy of the open book's entries, and every write
+// goes through EL_setLorebookData so there is exactly one mutation point and no
+// second copy can drift out of sync. Note that `window.currentLorebookData = ...`
+// was a SILENT NO-OP: a top-level `let` is a script-scoped binding, not a window
+// property, so assigning through `window.` created an unrelated property and left
+// the real state untouched.
+
+/**
+ * Deep copy used when we adopt a book so in-place entry edits can never mutate
+ * SillyTavern's own cached object behind its back.
+ */
+function EL_cloneLorebookData(data) {
+    if (!data || typeof data !== 'object') return data || null;
+    try { return structuredClone(data); } catch (e) {}
+    try { return JSON.parse(JSON.stringify(data)); } catch (e) {}
+    return data;
+}
+
+/**
+ * The single mutation point for the open book's entries.
+ * opts.own = true takes our own deep copy (use when adopting data that came from
+ * SillyTavern, so we never mutate its cache).
+ */
+function EL_setLorebookData(data, opts) {
+    const o = opts || {};
+    currentLorebookData = (o.own === true) ? EL_cloneLorebookData(data) : (data || null);
+    return currentLorebookData;
+}
+
+function EL_getLorebookData() {
+    return currentLorebookData;
+}
+
+/** Same treatment for the open book's name, for symmetry. */
+function EL_setLorebookName(name) {
+    currentLorebookName = (typeof name === 'string' && name) ? name : null;
+    return currentLorebookName;
+}
 let panelHeights = {};
 let panelCollapsed = {};
 // Clipboard for copy/paste that respects folder URL (extension-only)
 let EL_clipboard = null; // { book, items: [{ entry, url }] }
 const PANEL_KEYS = ['character', 'lorebooks', 'agent'];
 
-// ── EL Logger helpers (reuse ST's minLogLevel, Q2 file + console, Q4 toastr for data-loss) ─
+// ── EL Logger helpers (reuse ST's minLogLevel, Q2 file + console, Q4 EL_toast for data-loss) ─
 function EL_log(...args){ try { (window.ELLogger||console).log('[EL]', ...args); } catch {} }
 function EL_info(...args){ try { (window.ELLogger||console).info('[EL]', ...args); } catch {} }
 function EL_warn(...args){ try { (window.ELLogger||console).warn('[EL]', ...args); } catch {} }
@@ -39,7 +78,7 @@ function EL_isGenerating(){
 }
 function EL_logGuardResult(ok, action, book, detail){
     if (ok) EL_info(`guardSave ok action=${action} book="${book}"`, detail||'');
-    else { EL_error(`guardSave FAILED/BLOCKED action=${action} book="${book}"`, detail||''); try { if(typeof toastr!=='undefined') toastr.error(`Save failed/blocked for "${book}" (${action})`); else if(ST_Window?.toastr) ST_Window.toastr.error(`Save failed/blocked for "${book}" (${action})`);} catch {} }
+    else { EL_error(`guardSave FAILED/BLOCKED action=${action} book="${book}"`, detail||''); try { EL_toast(`Save failed/blocked for "${book}" (${action})`, 'error'); } catch {} }
 }
 const PANEL_MIN_H = 60;
 
@@ -166,8 +205,22 @@ async function init() {
     // response (e.g. active lorebooks) can never be missed.
     window.addEventListener('message', (e) => {
         if (e.origin !== window.location.origin) return;
+        // Source binding: only the host window may drive this popup. e.source is the
+        // sender's WindowProxy and cannot be forged.
+        const hostWin = (typeof ST_Window !== 'undefined' && ST_Window) || window.opener || window.parent;
+        if (hostWin && hostWin !== window && e.source !== hostWin) return;
         const msg = e.data;
         if (!msg || typeof msg !== 'object' || msg.source !== 'enhanced-lorebook') return;
+        try {
+            if (typeof _elBridgeNonce !== 'undefined' && _elBridgeNonce !== null) {
+                if (typeof msg.nonce === 'string' && msg.nonce) {
+                    _elBridgeNonce = msg.nonce;
+                } else if (typeof _elBridgeNonceWarned !== 'undefined' && !_elBridgeNonceWarned) {
+                    _elBridgeNonceWarned = true;
+                    try { console.warn('[EL:Bridge] host message without nonce — accepted (older host build?)'); } catch (e) {}
+                }
+            }
+        } catch (e) {}
         if (msg.type === 'el-navigate') {
             if (msg.tab) {
                 switchToView(msg.tab);
@@ -258,8 +311,10 @@ async function init() {
     startSyncPolling();
 
     try {
-        const managerModule = await import('./agent-manager.js');
-        const agentUiModule = await import('./agent-ui.js');
+        // agent-manager.js and agent-ui.js are already loaded as classic scripts
+        // (see index.html). Dynamic-importing them here evaluated BOTH files a
+        // second time, re-running their top-level side effects and re-registering
+        // their listeners. Their globals are used directly below.
         agentManager = new AgentManager();
         // Always init agent UI (even with zero agents) so Dashboard empty-state
         // + Create Agent button are wired. Runs go through the hub (hub-client.js).
@@ -325,7 +380,7 @@ function openSettings() {
     if (syncLogLevel) syncLogLevel.value = (extensionSettings.sync?.logLevel || 'INFO').toUpperCase();
     const syncVerbose = document.getElementById('sync-verbose');
     if (syncVerbose) syncVerbose.checked = !!extensionSettings.sync?.verbose;
-    els.settingsModal.classList.add('active');
+    EL_modalOpen(els.settingsModal);
 }
 
 function updateColor(key, cssVar, value) {
@@ -356,8 +411,8 @@ async function refreshSidebar() {
 
 function requestCharacterLorebooks() {
     try {
-        if (ST_Window && typeof ST_Window.postMessage === 'function') {
-            ST_Window.postMessage({ source: 'enhanced-lorebook', type: 'el-agent-request-character-lorebooks' }, window.location.origin);
+        if (typeof EL_postToHost === 'function') {
+            EL_postToHost({ type: 'el-agent-request-character-lorebooks' });
         }
     } catch (e) {
         console.error('Enhanced Lorebook: failed to request character lorebooks', e);
@@ -519,7 +574,7 @@ function refreshActiveGlobalsFrom(globals) {
 function applyEntriesData(name, data) {
     const loadFailed = !data || !data.entries;
     const newData = loadFailed ? { entries: {} } : data;
-    currentLorebookData = newData;
+    EL_setLorebookData(newData, { own: true });
     const sig = entriesSignature(newData);
     sync.poll.entriesSig = sig;
     sync.poll.entriesBook = name;
@@ -994,7 +1049,7 @@ async function applyTemplate(tName) {
 // Lorebook Display
 // ==========================================
 async function openLorebook(name) {
-    currentLorebookName = name;
+    EL_setLorebookName(name);
     currentViewMode = 'lorebook';
     els.currentTitle.textContent = name;
     els.mainToolbar.style.display = 'flex';
@@ -1010,7 +1065,7 @@ async function openLorebook(name) {
 
     const loaded = await stContext.loadWorldInfo(name);
     const loadFailed = !loaded || !loaded.entries;
-    currentLorebookData = loadFailed ? { entries: {} } : loaded;
+    EL_setLorebookData(loadFailed ? { entries: {} } : loaded, { own: true });
     if (loadFailed) {
         if (typeof showToast === 'function') showToast('Could not load "' + name + '" — showing an empty view. Folder layout left untouched.');
     }
@@ -1583,7 +1638,7 @@ function createEntryCard(uid) {
                 }
             }
             if (e.target.classList.contains('inline-entry-prob')) entry.probability = val;
-            { const _inlineOk = await ELG_guardSave(currentLorebookName, currentLorebookData, { explicitDelete: false, source: 'user', note: 'Inline edit' }); EL_logGuardResult(_inlineOk,'Inline edit',currentLorebookName); if(!_inlineOk){ EL_error('Inline edit blocked/failed'); try{ const f=await ELG_loadFresh(currentLorebookName); if(f) currentLorebookData=f; renderEntries(); }catch(e){ EL_warn('reload after inline fail',e);} } }
+            { const _inlineOk = await ELG_guardSave(currentLorebookName, currentLorebookData, { explicitDelete: false, source: 'user', note: 'Inline edit' }); EL_logGuardResult(_inlineOk,'Inline edit',currentLorebookName); if(!_inlineOk){ EL_error('Inline edit blocked/failed'); try{ const f=await ELG_loadFresh(currentLorebookName); if(f) EL_setLorebookData(f, { own: true }); renderEntries(); }catch(e){ EL_warn('reload after inline fail',e);} } }
             if (e.target.classList.contains('inline-entry-order')) {
                 renderEntries();
             }
@@ -1853,6 +1908,7 @@ function showMoveFolderMenu(sourceFolderId) {
 
     overlay.appendChild(content);
     document.body.appendChild(overlay);
+    EL_modalOpen(overlay);
 
     const searchInput = document.getElementById('move-folder-search');
     const listContainer = document.getElementById('move-folder-list');
@@ -1868,6 +1924,7 @@ function showMoveFolderMenu(sourceFolderId) {
             rootItem.innerHTML = '<i class="fa-solid fa-house"></i> Root (No Parent)';
             rootItem.addEventListener('click', () => {
                 executeFolderMove(sourceFolderId, null);
+                EL_modalClose(overlay);
                 overlay.remove();
             });
             listContainer.appendChild(rootItem);
@@ -1888,6 +1945,7 @@ function showMoveFolderMenu(sourceFolderId) {
             item.innerHTML = `<i class="fa-solid fa-folder"></i> ${escapeHtml(pathName)}`;
             item.addEventListener('click', () => {
                 executeFolderMove(sourceFolderId, f.id);
+                EL_modalClose(overlay);
                 overlay.remove();
             });
             listContainer.appendChild(item);
@@ -1907,9 +1965,9 @@ function showMoveFolderMenu(sourceFolderId) {
     searchInput.addEventListener('keydown', (e) => e.stopPropagation());
 
     // Close handlers
-    content.querySelector('.close-modal').addEventListener('click', () => overlay.remove());
+    content.querySelector('.close-modal').addEventListener('click', () => { EL_modalClose(overlay); overlay.remove(); });
     overlay.addEventListener('click', (e) => {
-        if (e.target === overlay) overlay.remove();
+        if (e.target === overlay) { EL_modalClose(overlay); overlay.remove(); }
     });
 
     setTimeout(() => searchInput.focus(), 50);
@@ -2085,11 +2143,11 @@ function openAddItemModal(parentFolderId = null) {
     document.getElementById('add-item-modal').classList.remove('peek-mode');
 
     // Show modal
-    document.getElementById('add-item-modal').classList.add('active');
+    EL_modalOpen('add-item-modal');
 }
 
 function closeAddItemModal() {
-    document.getElementById('add-item-modal').classList.remove('active');
+    EL_modalClose('add-item-modal');
     document.getElementById('add-item-modal').classList.remove('peek-mode');
 }
 
@@ -2344,16 +2402,11 @@ const XML_TEMPLATE = `<Title>My Entry</Title>
 <Matchcreatornotes>false</Matchcreatornotes>`;
 
 function showToast(message) {
-    const toast = document.getElementById('xml-copy-toast');
-    if (!toast) return;
-    toast.textContent = message;
-    toast.classList.add('visible');
-    clearTimeout(toast._timeout);
-    toast._timeout = setTimeout(() => toast.classList.remove('visible'), 2000);
+    EL_toast(message, 'info');
 }
 
 function showCopyToast() {
-    showToast('Template copied to clipboard!');
+    EL_toast('Template copied to clipboard!', 'success');
 }
 
 function copyXmlTemplate() {
@@ -2929,7 +2982,7 @@ function openBatchModal() {
     searchInput.addEventListener('input', () => renderBatchFolderList(searchInput.value));
     searchInput.addEventListener('keydown', (e) => e.stopPropagation());
 
-    els.batchModal.classList.add('active');
+    EL_modalOpen(els.batchModal);
 }
 
 async function applyBatchOptions() {
@@ -3127,12 +3180,12 @@ async function applyBatchOptions() {
     if (!batchOk) {
         EL_error('Batch edit blocked/failed');
         extensionSettings.folders[currentLorebookName] = foldersBefore;
-        try { const fresh = await ELG_loadFresh(currentLorebookName); if (fresh) currentLorebookData = fresh; } catch (e) { EL_warn('reload after failed save failed', e); }
+        try { const fresh = await ELG_loadFresh(currentLorebookName); if (fresh) EL_setLorebookData(fresh, { own: true }); } catch (e) { EL_warn('reload after failed save failed', e); }
         if (typeof showToast === 'function') showToast('Batch edit was blocked — no changes were saved.');
     } else {
         saveSettings();
     }
-    els.batchModal.classList.remove('active');
+    EL_modalClose(els.batchModal);
     renderEntries();
 }
 
@@ -3263,7 +3316,7 @@ function openEditEntryModal(uid) {
         document.getElementById('edit-delay-recursion').checked = !!entry.delayUntilRecursion;
         document.getElementById('edit-ignore-budget').checked = !!entry.ignoreBudget;
 
-        document.getElementById('edit-entry-modal').classList.add('active');
+        EL_modalOpen('edit-entry-modal');
     } catch (e) {
         alert('Error opening modal: ' + e.stack);
         console.error(e);
@@ -3385,8 +3438,8 @@ async function saveEditedEntry() {
     if (EL_isGenerating()) EL_warn(`saveEditedEntry: generation running (agent=${agentEngine?.state}) — save may race with agent`, { uid: entry.uid, book: currentLorebookName });
     const _guardOk = await ELG_guardSave(currentLorebookName, currentLorebookData, { explicitDelete: false, source: 'user', note: 'Save edited entry' });
     EL_logGuardResult(_guardOk, 'saveEditedEntry', currentLorebookName, { uid: entry.uid });
-    if (!_guardOk) { EL_error('saveEditedEntry blocked/failed — entry not persisted, will reload from server'); extensionSettings.folders[currentLorebookName] = foldersBefore; try { const fresh = await ELG_loadFresh(currentLorebookName); if(fresh){ currentLorebookData=fresh; } } catch(e){ EL_warn('reload after failed save failed', e);} } else { saveSettings(); }
-    document.getElementById('edit-entry-modal').classList.remove('active');
+    if (!_guardOk) { EL_error('saveEditedEntry blocked/failed — entry not persisted, will reload from server'); extensionSettings.folders[currentLorebookName] = foldersBefore; try { const fresh = await ELG_loadFresh(currentLorebookName); if(fresh){ EL_setLorebookData(fresh, { own: true }); } } catch(e){ EL_warn('reload after failed save failed', e);} } else { saveSettings(); }
+    EL_modalClose('edit-entry-modal');
     renderEntries();
 }
 
@@ -3407,7 +3460,7 @@ function getFreeWorldEntryUid(data) {
         return uid;
     }
     EL_error('getFreeWorldEntryUid: UID space exhausted (1M)', { book: currentLorebookName, entries: Object.keys(data.entries).length });
-    try { if(typeof toastr!=='undefined') toastr.error('UID space exhausted — cannot create entry'); } catch {}
+    try { EL_toast('UID space exhausted — cannot create entry', 'error'); } catch {}
     return null;
 }
 
@@ -3420,7 +3473,7 @@ function duplicateWorldInfoEntry(data, uid) {
     const newUid = getFreeWorldEntryUid(data);
     if (newUid === null) {
         EL_error('duplicateWorldInfoEntry: Couldn\'t assign UID', { uid, book: currentLorebookName });
-        try { if(typeof toastr!=='undefined') toastr.error('Duplicate failed: no free UID'); } catch {}
+        try { EL_toast('Duplicate failed: no free UID', 'error'); } catch {}
         return null;
     }
     try { EL_info(`duplicateWorldInfoEntry uid=${uid} → newUid=${newUid} book="${currentLorebookName}"`); } catch {}
@@ -3476,7 +3529,7 @@ async function moveWorldInfoEntry(sourceName, targetName, uid, { deleteOriginal 
     }
 
     EL_info(`Move entry uid=${uid} "${currentLorebookName}" → "${targetName}" deleteOriginal=${deleteOriginal}`);
-    { const _moveTOk = await ELG_guardSave(targetName, targetData, { explicitDelete: false, source: 'user', note: 'Move entry to lorebook (target)' }); EL_logGuardResult(_moveTOk,'Move target',targetName); if(!_moveTOk){ EL_error('Move failed at target — aborting source delete (prevent loss)', { uid, targetName, sourceName }); try{ if(typeof toastr!=='undefined') toastr.error('Move failed at target — entry not lost'); }catch{} throw new Error('Move target save failed'); } }
+    { const _moveTOk = await ELG_guardSave(targetName, targetData, { explicitDelete: false, source: 'user', note: 'Move entry to lorebook (target)' }); EL_logGuardResult(_moveTOk,'Move target',targetName); if(!_moveTOk){ EL_error('Move failed at target — aborting source delete (prevent loss)', { uid, targetName, sourceName }); try{ EL_toast('Move failed at target — entry not lost', 'error'); }catch{} throw new Error('Move target save failed'); } }
     if (deleteOriginal) {
         const _moveSOk = await ELG_guardSave(sourceName, sourceData, { explicitDelete: true, source: 'user', note: 'Move entry out of source lorebook' }); EL_logGuardResult(_moveSOk,'Move source',sourceName); if(!_moveSOk) EL_error('Move source delete failed — entry may be duplicated', { uid, sourceName });
     }
@@ -3544,8 +3597,8 @@ async function EL_pasteEntries(targetFolderId = null, targetBook = null) {
             if (typeof showToast === 'function') showToast('Could not load "' + book + '" — paste cancelled, nothing was written.');
             return;
         }
-        currentLorebookData = fresh;
-        currentLorebookName = book;
+        EL_setLorebookData(fresh, { own: true });
+        EL_setLorebookName(book);
     }
     // Ensure target folder exists; if targetFolderId provided (paste into folder), use its path, else use each item's URL path
     let targetPathForEmpty = null;
@@ -3809,7 +3862,7 @@ function showContextMenu(x, y, targetType = 'entry', targetId = null) {
             }
             saveSettings();
             if (EL_isGenerating()) EL_warn('Duplicate selected: generation running — may race', { book: currentLorebookName, count: selectedEntries.size });
-            { const _dupOk = await ELG_guardSave(currentLorebookName, currentLorebookData, { explicitDelete: false, source: 'user', note: 'Duplicate selected entries' }); EL_logGuardResult(_dupOk,'Duplicate selected',currentLorebookName); if(!_dupOk){ EL_error('Duplicate save blocked/failed — entries not persisted, will vanish on next sync (LOSS RISK)'); try{ const fresh=await ELG_loadFresh(currentLorebookName); if(fresh) currentLorebookData=fresh; }catch(e){} } else EL_info('Duplicate save ok', { book: currentLorebookName }); }
+            { const _dupOk = await ELG_guardSave(currentLorebookName, currentLorebookData, { explicitDelete: false, source: 'user', note: 'Duplicate selected entries' }); EL_logGuardResult(_dupOk,'Duplicate selected',currentLorebookName); if(!_dupOk){ EL_error('Duplicate save blocked/failed — entries not persisted, will vanish on next sync (LOSS RISK)'); try{ const fresh=await ELG_loadFresh(currentLorebookName); if(fresh) EL_setLorebookData(fresh, { own: true }); }catch(e){} } else EL_info('Duplicate save ok', { book: currentLorebookName }); }
             selectedEntries.clear();
             updateBatchButton();
             renderEntries();
@@ -3906,7 +3959,7 @@ function showContextMenu(x, y, targetType = 'entry', targetId = null) {
                     EL_info('Delete ok, entries moved to Trash', { book: currentLorebookName });
                 } else {
                     EL_error('Delete blocked/failed — entries still on disk, reloading');
-                    try { const fresh = await ELG_loadFresh(currentLorebookName); if (fresh) currentLorebookData = fresh; } catch (e) {}
+                    try { const fresh = await ELG_loadFresh(currentLorebookName); if (fresh) EL_setLorebookData(fresh, { own: true }); } catch (e) {}
                 }
                 selectedEntries.clear();
                 updateBatchButton();
@@ -4053,6 +4106,7 @@ function showSendToLorebookMenu(_x, _y, type, targetIds) {
 
     overlay.appendChild(content);
     document.body.appendChild(overlay);
+    EL_modalOpen(overlay);
 
     const searchInput = content.querySelector('#send-lorebook-search');
     const listContainer = content.querySelector('#send-lorebook-list');
@@ -4176,6 +4230,7 @@ function showSendToLorebookMenu(_x, _y, type, targetIds) {
             item.className = 'folder-picker-item';
             item.innerHTML = `<i class="fa-solid fa-book"></i> ${escapeHtml(name)}`;
             item.addEventListener('click', async () => {
+                EL_modalClose(overlay);
                 overlay.remove();
                 await executeSend(name);
             });
@@ -4188,9 +4243,9 @@ function showSendToLorebookMenu(_x, _y, type, targetIds) {
     searchInput.addEventListener('input', () => renderLorebookList(searchInput.value));
     searchInput.addEventListener('keydown', (e) => e.stopPropagation());
 
-    content.querySelector('.close-modal').addEventListener('click', () => overlay.remove());
+    content.querySelector('.close-modal').addEventListener('click', () => { EL_modalClose(overlay); overlay.remove(); });
     overlay.addEventListener('click', (e) => {
-        if (e.target === overlay) overlay.remove();
+        if (e.target === overlay) { EL_modalClose(overlay); overlay.remove(); }
     });
 
     setTimeout(() => searchInput.focus(), 50);
@@ -4509,7 +4564,7 @@ function setupEventListeners() {
         btn.addEventListener('click', (e) => {
             const modal = e.target.closest('.modal');
             if (modal) {
-                modal.classList.remove('active');
+                EL_modalClose(modal);
                 modal.classList.remove('peek-mode');
             }
         });
@@ -4992,7 +5047,7 @@ async function restoreTrashEntries(ids, container) {
             showToast(`Restored ${insertedIds.length} entr${insertedIds.length === 1 ? 'y' : 'ies'} — but they could not be removed from Trash, so they still appear there.`);
         }
     }
-    currentLorebookData = fresh;
+    EL_setLorebookData(fresh, { own: true });
     renderRecoveryTab();
     if (currentViewMode === 'lorebook') renderEntries();
 }
@@ -5035,7 +5090,7 @@ async function renderRecoverySnapshots(container, toolbar) {
                 let folderSnapshotBefore = null;
                 try { folderSnapshotBefore = window.ELFolderUrl ? window.ELFolderUrl.getFoldersSnapshot(book) : null; } catch {}
                 // Set entries in memory so folder prune can see them
-                currentLorebookData = result.lorebookData;
+                EL_setLorebookData(result.lorebookData, { own: true });
                 if (hasFolders && window.ELFolderUrl) {
                     try { window.ELFolderUrl.restoreFoldersWithRemap(book, foldersSnapshot, null); } catch {}
                     try { saveSettings(); } catch {}
@@ -5119,7 +5174,7 @@ function escapeHtml(unsafe) {
 function closeModalById(id) {
     const modal = document.getElementById(id);
     if (modal) {
-        modal.classList.remove('active');
+        EL_modalClose(modal);
         modal.classList.remove('peek-mode');
     }
 }
@@ -5153,7 +5208,7 @@ async function openBackupWatchModal() {
     await refreshBackupWatchStatus();
 
     modal.classList.remove('peek-mode');
-    modal.classList.add('active');
+    EL_modalOpen(modal);
 }
 
 async function refreshBackupWatchStatus() {
@@ -5391,7 +5446,7 @@ async function viewBackupWatch(backupId) {
     }
 
     modal.classList.remove('peek-mode');
-    modal.classList.add('active');
+    EL_modalOpen(modal);
 }
 
 /**
@@ -5441,8 +5496,10 @@ function showBackupRestoreConfirm(book, backupTs, diff) {
         `;
 
         document.body.appendChild(overlay);
+        EL_modalOpen(overlay);
 
         function close() {
+            EL_modalClose(overlay);
             overlay.remove();
         }
 
@@ -5520,7 +5577,7 @@ async function restoreBackupWatch(backupId, closeViewModal) {
         // Apply entries first so folder prune sees correct UID set, then restore folders (extension-only, URL-respected)
         let folderSnapshotBefore = null;
         try { folderSnapshotBefore = window.ELFolderUrl ? window.ELFolderUrl.getFoldersSnapshot(book) : null; } catch {}
-        currentLorebookData = backupData;
+        EL_setLorebookData(backupData, { own: true });
         const hasFolders = Array.isArray(backupFolders) && backupFolders.length > 0;
         if (hasFolders && window.ELFolderUrl) {
             try { window.ELFolderUrl.restoreFoldersWithRemap(book, backupFolders, null); } catch {}

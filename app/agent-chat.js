@@ -15,22 +15,13 @@
 function EL_getChatIdForAgent() {
     try {
         const st = (typeof stContext !== 'undefined' && stContext) ? stContext : null;
-        if (st) {
-            const cid = st.characterId ?? 'no-char';
-            // `st.chat` is the message ARRAY; the chat id lives on `chatId`
-            // (see SillyTavern's st-context.js). Reading chat.chat_id yielded
-            // undefined, so every chat of a character shared one thread.
-            const chatFile = st.chatId ?? st.chat?.chat_id ?? st.chat?.filename ?? st.chatFile ?? 'default';
-            return cid + '_' + chatFile;
-        }
+        if (st) return EL_canonicalHubChatId(st);
     } catch {}
     try {
         const host = (typeof ST_Window !== 'undefined' && ST_Window) || window.opener || window.parent;
         if (host?.SillyTavern?.getContext) {
             const ctx = host.SillyTavern.getContext();
-            const cid = ctx?.characterId ?? 'no-char';
-            const chatFile = ctx?.chatId ?? ctx?.chat?.chat_id ?? 'default';
-            return cid + '_' + chatFile;
+            return EL_canonicalHubChatId(ctx);
         }
     } catch {}
     return 'no-char_default';
@@ -116,11 +107,7 @@ class AgentChatManager {
         try {
             if (!this._serverMissingNotified) {
                 this._serverMissingNotified = true;
-                if (typeof toastr !== 'undefined') toastr.error(msg, 'Enhanced Lorebook Agent', { timeOut: 8000 });
-                else {
-                    const host = (typeof ST_Window !== 'undefined' && ST_Window) || window.opener || window.parent;
-                    if (host && host.toastr) host.toastr.error(msg, 'Enhanced Lorebook Agent', { timeOut: 8000 });
-                }
+                if (typeof EL_toast === 'function') EL_toast(msg, 'error');
             }
         } catch {}
         try {

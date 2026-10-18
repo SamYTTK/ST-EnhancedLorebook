@@ -91,26 +91,7 @@ function EL_autoAcceptThreshold(agent) {
 // ── Plugin-storage transport (moved verbatim from agent-tools.js) ──
 
 function EL_fireToast(message, toastType = 'warning') {
-    const host = (typeof ST_Window !== 'undefined' && ST_Window) || window.opener || window.parent;
-    const text = String(message);
-    try {
-        if (host && typeof host.postMessage === 'function') {
-            host.postMessage({ source: 'enhanced-lorebook', type: 'el-agent-toast', message: text, toastType }, window.location.origin);
-            return;
-        }
-    } catch (_) {}
-    try {
-        if (host && typeof host.toastr === 'object' && host.toastr) {
-            const fn = host.toastr[toastType] || host.toastr.warning;
-            if (typeof fn === 'function') {
-                fn.call(host.toastr, text);
-                return;
-            }
-        }
-    } catch (_) {}
-    if (typeof showToast === 'function') {
-        showToast(text);
-    }
+    EL_toast(message, toastType, { mirrorToHost: true });
 }
 
 function EL_getRequestHeaders() {
@@ -180,6 +161,13 @@ function EL_proposalId() {
 
 // ── Popup → main-window bridge (chat lorebooks lookup for "Sync with Chat") ──
 
+// Bridge nonce: seeded from the popup URL (the host puts it there) and re-adopted
+// from every inbound host message, so a REUSED popup follows a host reload.
+let _elBridgeNonce = (() => {
+    try { return new URLSearchParams(window.location.search).get('nonce') || ''; } catch (e) { return ''; }
+})();
+let _elBridgeNonceWarned = false;
+
 const _elBridgePending = new Map();
 let _elBridgeListenerInstalled = false;
 let _elBridgeSeq = 0;
@@ -188,7 +176,9 @@ function EL_postToHost(msg) {
     try {
         const host = (typeof ST_Window !== 'undefined' && ST_Window) || window.opener || window.parent;
         if (host && typeof host.postMessage === 'function' && host !== window) {
-            host.postMessage({ source: 'enhanced-lorebook', ...(msg || {}) }, window.location.origin);
+            const out = { source: 'enhanced-lorebook', ...(msg || {}) };
+            if (_elBridgeNonce) out.nonce = _elBridgeNonce;
+            host.postMessage(out, window.location.origin);
             return true;
         }
     } catch {}
@@ -202,8 +192,18 @@ function EL_installBridgeListener() {
         window.addEventListener('message', (e) => {
             try {
                 if (e.origin !== window.location.origin) return;
+                // Source binding: only the host window may drive this popup. e.source is the
+                // sender's WindowProxy and cannot be forged.
+                const hostWin = (typeof ST_Window !== 'undefined' && ST_Window) || window.opener || window.parent;
+                if (hostWin && hostWin !== window && e.source !== hostWin) return;
                 const msg = e.data;
                 if (!msg || typeof msg !== 'object' || msg.source !== 'enhanced-lorebook') return;
+                if (typeof msg.nonce === 'string' && msg.nonce) {
+                    _elBridgeNonce = msg.nonce;
+                } else if (!_elBridgeNonceWarned) {
+                    _elBridgeNonceWarned = true;
+                    try { console.warn('[EL:Bridge] host message without nonce — accepted (older host build?)'); } catch (e) {}
+                }
                 if ((msg.type === 'el-agent-dynamic-scan-result' || msg.type === 'el-agent-chat-books') && msg.requestId != null) {
                     const pending = _elBridgePending.get(msg.requestId);
                     if (pending) {
@@ -346,9 +346,20 @@ function EL_resolveHubSt(explicit) {
     return null;
 }
 
+/**
+ * THE chat-scoping key: "<characterId>_<chatFile>". Every place that needs to know
+ * which chat an agent run belongs to must use this and nothing else — it drifted
+ * once already, which made the proposals feed and the agent run disagree about the
+ * chat key and show nothing.
+ *
+ * `st.chat` is the message ARRAY, so `chat.chat_id` is always undefined; `st.chatId`
+ * is the real source (see SillyTavern's public/scripts/st-context.js). The remaining
+ * lookups are defensive only.
+ */
 function EL_canonicalHubChatId(st) {
-    const charId = st?.characterId ?? 'no-char';
-    const chatFile = st?.chat?.chat_id ?? st?.chatId ?? 'default';
+    const s = st || (typeof stContext !== 'undefined' ? stContext : null);
+    const charId = s?.characterId ?? 'no-char';
+    const chatFile = s?.chatId ?? s?.chat?.chat_id ?? s?.chat?.filename ?? s?.chatFile ?? 'default';
     return charId + '_' + chatFile;
 }
 

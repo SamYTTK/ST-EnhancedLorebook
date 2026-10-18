@@ -43,30 +43,11 @@ function ELG_getRequestHeaders() {
 }
 
 /**
- * Popup-safe toast: bare toastr.* calls are no-ops in the popup window because
- * toastr is not loaded there. Tries, in order: window.showToast (app.js),
- * the opener/host window's toastr, the global toastr, then console.
+ * Popup-safe toast via window.EL_toast (app/toast.js): renders in the popup
+ * window and mirrors to the host when the popup is hidden.
  */
 function ELG_toast(message, type) {
-    const t = (type === 'success' || type === 'info' || type === 'warning' || type === 'error') ? type : 'info';
-    const msg = String(message ?? '');
-    try {
-        if (typeof window.showToast === 'function') { window.showToast(msg); return; }
-    } catch (e) { /* fall through to the next sink */ }
-    const sinks = [];
-    try { if (window.ST_Window && window.ST_Window.toastr) sinks.push(window.ST_Window.toastr); } catch (e) {}
-    try { if (window.opener && window.opener.toastr) sinks.push(window.opener.toastr); } catch (e) {}
-    try { if (typeof toastr !== 'undefined' && toastr) sinks.push(toastr); } catch (e) {}
-    for (const sink of sinks) {
-        try {
-            if (sink && typeof sink[t] === 'function') { sink[t](msg); return; }
-        } catch (e) { /* try the next sink */ }
-    }
-    try {
-        if (t === 'error') console.error(msg);
-        else if (t === 'warning') console.warn(msg);
-        else console.log(msg);
-    } catch (e) {}
+    EL_toast(message, type || 'info');
 }
 
 async function ELG_apiFetch(method, path, body) {
@@ -340,8 +321,10 @@ async function ELG_confirmDeletions(bookName, removedEntries, opts) {
         `;
 
         document.body.appendChild(overlay);
+        EL_modalOpen(overlay);
 
         function close() {
+            EL_modalClose(overlay);
             overlay.remove();
         }
 

@@ -25,14 +25,10 @@ if (typeof escapeHtml !== 'function' && typeof window !== 'undefined' && typeof 
 function _escapeHtml(s){ try{ if(typeof escapeHtml==='function') return escapeHtml(s); if(typeof window!=='undefined' && typeof window.escapeHtml==='function') return window.escapeHtml(s);}catch{} return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
 function getChatId() {
-    const st = typeof stContext !== 'undefined' ? stContext : null;
-    const charId = st?.characterId ?? 'no-char';
-    // Must match EL_canonicalHubChatId (hub-client.js): chat.chat_id first,
-    // then the top-level chatId (chat filename). The chatId fallback was
-    // missing here, so runs saved under the filename form while the feed
-    // listed under "<char>_default" and showed nothing.
-    const chatFile = st?.chat?.chat_id ?? st?.chatId ?? 'default';
-    return charId + '_' + chatFile;
+    // Delegates to the single source of truth in hub-client.js. It drifted once
+    // already (chat.chat_id first here vs chatId first there), which made the
+    // feed and the run disagree about the chat key and show nothing.
+    return EL_canonicalHubChatId();
 }
 
 async function initAgentUI(context) {
@@ -111,8 +107,22 @@ function EL_quickOptsToContextOverride(opts) {
 
 function onAppMessage(e) {
     if (e.origin !== window.location.origin) return;
+    // Source binding: only the host window may drive this popup. e.source is the
+    // sender's WindowProxy and cannot be forged.
+    const hostWin = (typeof ST_Window !== 'undefined' && ST_Window) || window.opener || window.parent;
+    if (hostWin && hostWin !== window && e.source !== hostWin) return;
     const msg = e.data;
     if (!msg || typeof msg !== 'object' || msg.source !== 'enhanced-lorebook') return;
+    try {
+        if (typeof _elBridgeNonce !== 'undefined' && _elBridgeNonce !== null) {
+            if (typeof msg.nonce === 'string' && msg.nonce) {
+                _elBridgeNonce = msg.nonce;
+            } else if (typeof _elBridgeNonceWarned !== 'undefined' && !_elBridgeNonceWarned) {
+                _elBridgeNonceWarned = true;
+                try { console.warn('[EL:Bridge] host message without nonce — accepted (older host build?)'); } catch (e) {}
+            }
+        }
+    } catch (e) {}
     if (msg.type === 'el-agent-chat-changed') {
         const newId = getChatId();
         if (newId !== currentChatId) {
@@ -141,9 +151,8 @@ async function handleQuickTaskFromHost(msg) {
     const task = String(msg?.task || '').trim();
     const postToHost = (payload) => {
         try {
-            const target = window.opener || window.parent;
-            if (target && typeof target.postMessage === 'function') {
-                target.postMessage(Object.assign({ source: 'enhanced-lorebook', requestId }, payload), window.location.origin);
+            if (typeof EL_postToHost === 'function') {
+                EL_postToHost(Object.assign({ requestId }, (payload || {})));
             }
         } catch (e) {}
     };
@@ -493,12 +502,14 @@ function setPickerLabels() {
 
 function showModalEl(modal) {
     if (!modal) return;
+    if (typeof EL_modalOpen === 'function') { EL_modalOpen(modal); return; }
     try { modal.style.display = ''; } catch {}
     modal.classList.add('active');
 }
 
 function hideModalEl(modal) {
     if (!modal) return;
+    if (typeof EL_modalClose === 'function') { EL_modalClose(modal); return; }
     modal.classList.remove('active');
     try { modal.style.display = ''; } catch {}
 }
@@ -755,10 +766,7 @@ function renderInjectedPicker() {
 }
 
 function EL_dynToast(msg, type) {
-    try {
-        if (typeof EL_fireToast === 'function') { EL_fireToast(msg, type || 'info'); return; }
-        if (typeof showToast === 'function') { showToast(msg); return; }
-    } catch {}
+    EL_toast(msg, type || 'info');
 }
 
 /**
@@ -2646,7 +2654,10 @@ async function listBackups() {
                     if (typeof showToast === 'function') showToast('Backup restored');
                     if (st && typeof st.loadWorldInfo === 'function' && typeof currentLorebookName !== 'undefined' && currentLorebookName) {
                         if (typeof currentLorebookData !== 'undefined') {
-                            try { window.currentLorebookData = await st.loadWorldInfo(currentLorebookName); } catch (_) {}
+                            try {
+                                const fresh = await st.loadWorldInfo(currentLorebookName);
+                                if (typeof EL_setLorebookData === 'function') EL_setLorebookData(fresh, { own: true });
+                            } catch (_) {}
                         }
                         if (typeof renderEntries === 'function') renderEntries();
                     }
@@ -2662,10 +2673,11 @@ async function listBackups() {
 
 function sendPendingCount() {
     const count = proposals.filter(p => p.status === 'pending').length;
-    const target = window.opener || window.parent;
-    if (target) {
-        target.postMessage({ source: 'enhanced-lorebook', type: 'el-pending-count', count }, window.location.origin);
-    }
+    try {
+        if (typeof EL_postToHost === 'function') {
+            EL_postToHost({ type: 'el-pending-count', count });
+        }
+    } catch (e) {}
 }
 
 /* ==========================================
@@ -3131,6 +3143,10 @@ function openTerminal() {
     const modal = document.getElementById('terminal-modal');
     if (!modal) return;
     try { if (window.EL_terminal) window.EL_terminal.setOpen(true); } catch {}
+    modal._elOnClose = function () {
+        try { if (window.EL_terminal) window.EL_terminal.setOpen(false); } catch (e) {}
+        if (_termRefreshTimer) { clearInterval(_termRefreshTimer); _termRefreshTimer = null; }
+    };
     showModalEl(modal);
     refreshTerminalHistory();
     if (_termRefreshTimer) clearInterval(_termRefreshTimer);
@@ -3142,8 +3158,10 @@ function openTerminal() {
 function closeTerminal() {
     const modal = document.getElementById('terminal-modal');
     if (modal) hideModalEl(modal);
-    try { if (window.EL_terminal) window.EL_terminal.setOpen(false); } catch {}
-    if (_termRefreshTimer) { clearInterval(_termRefreshTimer); _termRefreshTimer = null; }
+    else {
+        try { if (window.EL_terminal) window.EL_terminal.setOpen(false); } catch {}
+        if (_termRefreshTimer) { clearInterval(_termRefreshTimer); _termRefreshTimer = null; }
+    }
 }
 
 function initTerminalPanel() {
@@ -3218,7 +3236,4 @@ function initTerminalPanel() {
             renderTerminal(true);
         });
     }
-    document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape' && document.getElementById('terminal-modal')?.classList.contains('active')) closeTerminal();
-    });
 }

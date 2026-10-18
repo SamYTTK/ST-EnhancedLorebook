@@ -24,6 +24,68 @@ async function getCsrfToken() {
 
 getCsrfToken().then(t => { _csrfToken = t; });
 
+let _bridgeNonce = '';
+try {
+    if (typeof crypto !== 'undefined' && crypto && typeof crypto.getRandomValues === 'function') {
+        const _nonceBytes = crypto.getRandomValues(new Uint8Array(16));
+        _bridgeNonce = Array.from(_nonceBytes, b => b.toString(16).padStart(2, '0')).join('');
+    }
+} catch (e) {
+    console.error('Enhanced Lorebook: nonce mint failed', e);
+}
+if (!_bridgeNonce) {
+    _bridgeNonce = Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
+}
+let _bridgeNonceWarned = false;
+
+const _elHostListeners = [];
+let _elLauncherReady = false;
+let _elBridgeReady = false;
+let _elEventsReady = false;
+let _elTeardownOnUnloadRegistered = false;
+let _elWandRetryId = null;
+
+function _elOn(target, type, fn, opts) {
+    try {
+        if (!target) return;
+        if (typeof target.addEventListener === 'function') {
+            target.addEventListener(type, fn, opts);
+        } else if (typeof target.on === 'function') {
+            target.on(type, fn);
+        } else {
+            return;
+        }
+        _elHostListeners.push({ target, type, fn, opts });
+    } catch (e) {
+        console.error('Enhanced Lorebook: failed to attach listener', e);
+    }
+}
+
+function _elRemoveTrackedListener(entry) {
+    try {
+        const target = entry && entry.target;
+        if (!target) return;
+        if (typeof target.removeEventListener === 'function') {
+            target.removeEventListener(entry.type, entry.fn, entry.opts);
+        } else if (typeof target.removeListener === 'function') {
+            target.removeListener(entry.type, entry.fn);
+        }
+    } catch (e) {
+        console.error('Enhanced Lorebook: listener removal failed', e);
+    }
+}
+
+const _elLauncher = {
+    dropdown: null,
+    scrim: null,
+    chevron: null,
+    drawerToggle: null,
+    drawerIcon: null,
+    worldInfoContent: null,
+    isOpen: false,
+    bypassIntercept: false,
+};
+
 let appWindow = null;
 let messageCounter = 0;
 let lastPeriodicRun = 0;
@@ -38,7 +100,7 @@ function openStandaloneApp(tab = '') {
     if (appWindow && !appWindow.closed) {
         appWindow.focus();
         try {
-            appWindow.postMessage({ source: 'enhanced-lorebook', type: 'el-navigate', tab }, window.location.origin);
+            appWindow.postMessage({ source: 'enhanced-lorebook', type: 'el-navigate', tab, nonce: _bridgeNonce }, window.location.origin);
         } catch (e) {
             console.error('Enhanced Lorebook: failed to navigate existing window', e);
         }
@@ -53,7 +115,7 @@ function openStandaloneApp(tab = '') {
 
     const baseUrl = getExtensionUrl();
     const token = _csrfToken || '';
-    const params = new URLSearchParams({ csrf: token, v: Date.now() });
+    const params = new URLSearchParams({ csrf: token, v: Date.now(), nonce: _bridgeNonce });
     if (tab) params.set('tab', tab);
     const url = `${baseUrl}/app/index.html?${params.toString()}`;
     appWindow = window.open(url, '_blank');
@@ -73,6 +135,7 @@ function sendPeriodicTriggerToApp(agentIds) {
         appWindow.postMessage({
             source: 'enhanced-lorebook',
             type: 'el-agent-periodic-trigger',
+            nonce: _bridgeNonce,
             chatInfo,
             messageCounter: messageCounter,
             agentIds: agentIds || undefined,
@@ -83,13 +146,13 @@ function sendPeriodicTriggerToApp(agentIds) {
 function sendChatChangedToApp() {
     if (appWindow && !appWindow.closed) {
         const context = SillyTavern.getContext();
-        appWindow.postMessage({ source: 'enhanced-lorebook', type: 'el-agent-chat-changed', characterId: context.characterId, chatId: context.chatId ?? context.chat?.chat_id }, window.location.origin);
+        appWindow.postMessage({ source: 'enhanced-lorebook', type: 'el-agent-chat-changed', nonce: _bridgeNonce, characterId: context.characterId, chatId: context.chatId ?? context.chat?.chat_id }, window.location.origin);
     }
 }
 
 function sendSettingsSyncToApp(settings) {
     if (appWindow && !appWindow.closed) {
-        appWindow.postMessage({ source: 'enhanced-lorebook', type: 'el-agent-settings-sync', settings }, window.location.origin);
+        appWindow.postMessage({ source: 'enhanced-lorebook', type: 'el-agent-settings-sync', nonce: _bridgeNonce, settings }, window.location.origin);
     }
 }
 
@@ -97,7 +160,7 @@ function sendAgentsSyncToApp() {
     if (appWindow && !appWindow.closed) {
         const context = SillyTavern.getContext();
         const agents = context.extensionSettings?.SillyTavernEnhancedLorebook?.agents || [];
-        appWindow.postMessage({ source: 'enhanced-lorebook', type: 'el-agent-settings-sync', agents }, window.location.origin);
+        appWindow.postMessage({ source: 'enhanced-lorebook', type: 'el-agent-settings-sync', nonce: _bridgeNonce, agents }, window.location.origin);
     }
 }
 
@@ -207,17 +270,28 @@ function handleNewMessage() {
     }
 }
 
-function setupPostMessageBridge() {
-    window.addEventListener('message', async (e) => {
-        if (e.origin !== window.location.origin) return;
-        const msg = e.data;
-        if (!msg || typeof msg !== 'object' || msg.source !== 'enhanced-lorebook') return;
+// e.source binding is the substantive fix: only the popup window this host
+// opened (appWindow) may drive the bridge. A same-origin script can forge
+// any message *content*, but it cannot forge e.source, which is the
+// sender's WindowProxy. The per-load nonce checked below is defence-in-depth
+// (and lets a reused popup follow a fresh host load); it must never replace
+// the source check. Messages without a nonce are still accepted once with a
+// warning so an older cached app build keeps working instead of silently
+// breaking the bridge.
+async function _elOnBridgeMessage(e) {
+    if (e.origin !== window.location.origin) return;
+    if (!appWindow || e.source !== appWindow) return;
+    const msg = e.data;
+    if (!msg || typeof msg !== 'object' || msg.source !== 'enhanced-lorebook') return;
+    if (typeof msg.nonce === 'string' && msg.nonce) {
+        if (msg.nonce !== _bridgeNonce) return;
+    } else if (!_bridgeNonceWarned) {
+        _bridgeNonceWarned = true;
+        console.warn('Enhanced Lorebook: app message without nonce (older cached app build?) — accepted');
+    }
 
-        switch (msg.type) {
-            case 'el-close': {
-                break;
-            }
-            case 'el-agent-toast': {
+    switch (msg.type) {
+        case 'el-agent-toast': {
                 const toastText = typeof msg.message === 'string' ? msg.message : String(msg.message || '');
                 if (!toastText) break;
                 const type = ['success', 'info', 'warning', 'error'].includes(msg.toastType) ? msg.toastType : 'warning';
@@ -244,7 +318,7 @@ function setupPostMessageBridge() {
             case 'el-pending-count': {
                 const badge = document.getElementById('agent-pending-badge');
                 if (!badge) break;
-                const count = Number(msg.count) || 0;
+                const count = Math.min(999999, Math.max(0, Math.floor(Number(msg.count) || 0)));
                 badge.textContent = count > 99 ? '99+' : String(count);
                 badge.style.display = count > 0 ? 'inline' : 'none';
                 break;
@@ -261,7 +335,7 @@ function setupPostMessageBridge() {
                 const ctx2 = SillyTavern.getContext();
                 if (e.source) {
                     const agents = ctx2.extensionSettings?.SillyTavernEnhancedLorebook?.agents || [];
-                    e.source.postMessage({ source: 'enhanced-lorebook', type: 'el-agent-chat-info', characterId: ctx2.characterId, chatId: ctx2.chatId ?? ctx2.chat?.chat_id, agents }, window.location.origin);
+                    e.source.postMessage({ source: 'enhanced-lorebook', type: 'el-agent-chat-info', nonce: _bridgeNonce, characterId: ctx2.characterId, chatId: ctx2.chatId ?? ctx2.chat?.chat_id, agents }, window.location.origin);
                 }
                 break;
             }
@@ -283,12 +357,12 @@ function setupPostMessageBridge() {
                     }
                     const info = await getActiveCharacterLorebooks();
                     if (e.source) {
-                        e.source.postMessage({ source: 'enhanced-lorebook', type: 'el-agent-chat-books', requestId: msg.requestId || null, globalBooks, chatLorebook: info.chatLorebook, characterLorebooks: info.characterLorebooks, embeddedBook: info.embeddedBook }, window.location.origin);
+                        e.source.postMessage({ source: 'enhanced-lorebook', type: 'el-agent-chat-books', nonce: _bridgeNonce, requestId: typeof msg.requestId === 'string' ? msg.requestId : null, globalBooks, chatLorebook: info.chatLorebook, characterLorebooks: info.characterLorebooks, embeddedBook: info.embeddedBook }, window.location.origin);
                     }
                 } catch (err) {
                     console.error('Enhanced Lorebook: chat books request failed', err);
                     if (e.source) {
-                        e.source.postMessage({ source: 'enhanced-lorebook', type: 'el-agent-chat-books', requestId: msg?.requestId || null, globalBooks: [], chatLorebook: null, characterLorebooks: [], embeddedBook: null }, window.location.origin);
+                        e.source.postMessage({ source: 'enhanced-lorebook', type: 'el-agent-chat-books', nonce: _bridgeNonce, requestId: typeof msg?.requestId === 'string' ? msg.requestId : null, globalBooks: [], chatLorebook: null, characterLorebooks: [], embeddedBook: null }, window.location.origin);
                     }
                 }
                 break;
@@ -297,12 +371,12 @@ function setupPostMessageBridge() {
                 try {
                     const info = await getActiveCharacterLorebooks();
                     if (e.source) {
-                        e.source.postMessage({ source: 'enhanced-lorebook', type: 'el-agent-character-lorebooks', ...info }, window.location.origin);
+                        e.source.postMessage({ source: 'enhanced-lorebook', type: 'el-agent-character-lorebooks', nonce: _bridgeNonce, ...info }, window.location.origin);
                     }
                 } catch (err) {
                     console.error('Enhanced Lorebook: character lorebooks request failed', err);
                     if (e.source) {
-                        e.source.postMessage({ source: 'enhanced-lorebook', type: 'el-agent-character-lorebooks', characterId: null, characterName: '', chatLorebook: null, characterLorebooks: [], embeddedBook: null }, window.location.origin);
+                        e.source.postMessage({ source: 'enhanced-lorebook', type: 'el-agent-character-lorebooks', nonce: _bridgeNonce, characterId: null, characterName: '', chatLorebook: null, characterLorebooks: [], embeddedBook: null }, window.location.origin);
                     }
                 }
                 break;
@@ -311,19 +385,36 @@ function setupPostMessageBridge() {
                 try {
                     const ctx3 = SillyTavern.getContext();
                     if (!ctx3.extensionSettings.SillyTavernEnhancedLorebook) ctx3.extensionSettings.SillyTavernEnhancedLorebook = {};
-                    if (msg.agents && Array.isArray(msg.agents)) {
-                        delete ctx3.extensionSettings.SillyTavernEnhancedLorebook.agent;
-                        ctx3.extensionSettings.SillyTavernEnhancedLorebook.agents = msg.agents;
-                    } else if (msg.settings) {
-                        if (!ctx3.extensionSettings.SillyTavernEnhancedLorebook.agents) {
-                            ctx3.extensionSettings.SillyTavernEnhancedLorebook.agents = [];
+                    const store = ctx3.extensionSettings.SillyTavernEnhancedLorebook;
+                    if (Array.isArray(msg.agents)) {
+                        if (!msg.agents.length || msg.agents.length > 200) {
+                            console.error('Enhanced Lorebook: rejected agent settings push (bad agent count)');
+                            break;
                         }
-                        const idx = ctx3.extensionSettings.SillyTavernEnhancedLorebook.agents.findIndex(a => a.id === msg.settings.id);
+                        const valid = msg.agents.every(a => a && typeof a === 'object' && !Array.isArray(a) && typeof a.id === 'string' && a.id && typeof a.name === 'string');
+                        if (!valid) {
+                            console.error('Enhanced Lorebook: rejected agent settings push (bad agent shape)');
+                            break;
+                        }
+                        delete store.agent;
+                        store.agents = msg.agents;
+                    } else if (msg.settings && typeof msg.settings === 'object' && !Array.isArray(msg.settings)) {
+                        if (typeof msg.settings.id !== 'string' || !msg.settings.id) {
+                            console.error('Enhanced Lorebook: rejected single-agent settings push (missing id)');
+                            break;
+                        }
+                        if (!store.agents) {
+                            store.agents = [];
+                        }
+                        const idx = store.agents.findIndex(a => a && a.id === msg.settings.id);
                         if (idx !== -1) {
-                            ctx3.extensionSettings.SillyTavernEnhancedLorebook.agents[idx] = msg.settings;
+                            store.agents[idx] = msg.settings;
                         } else {
-                            ctx3.extensionSettings.SillyTavernEnhancedLorebook.agent = msg.settings;
+                            store.agent = msg.settings;
                         }
+                    } else {
+                        console.error('Enhanced Lorebook: rejected agent settings push (no agents/settings payload)');
+                        break;
                     }
                     ctx3.saveSettingsDebounced();
                 } catch (e) {
@@ -333,6 +424,7 @@ function setupPostMessageBridge() {
             }
             case 'el-agent-quick-task-ack': {
                 // The app window confirms it received the task; stop re-sending.
+                if (typeof msg.requestId !== 'string' || !msg.requestId) break;
                 const entry = pendingQuickTasks.get(msg.requestId);
                 if (entry) {
                     entry.acked = true;
@@ -342,6 +434,7 @@ function setupPostMessageBridge() {
                 break;
             }
             case 'el-agent-quick-task-result': {
+                if (typeof msg.requestId !== 'string' || !msg.requestId) break;
                 const entry = pendingQuickTasks.get(msg.requestId);
                 if (!entry) break;
                 pendingQuickTasks.delete(msg.requestId);
@@ -364,7 +457,12 @@ function setupPostMessageBridge() {
                 break;
             }
         }
-    });
+}
+
+function setupPostMessageBridge() {
+    if (_elBridgeReady) return;
+    _elBridgeReady = true;
+    _elOn(window, 'message', _elOnBridgeMessage);
 }
 
 function injectLauncherStyles() {
@@ -446,7 +544,97 @@ function injectLauncherStyles() {
     document.head.appendChild(style);
 }
 
+function _elPositionLauncherDropdown() {
+    try {
+        if (!_elLauncher.dropdown || !_elLauncher.drawerIcon) return;
+        const rect = _elLauncher.drawerIcon.getBoundingClientRect();
+        _elLauncher.dropdown.style.top = (rect.bottom + 6) + 'px';
+        _elLauncher.dropdown.style.right = Math.max(8, window.innerWidth - rect.right - 10) + 'px';
+        _elLauncher.dropdown.style.left = 'auto';
+    } catch (e) {
+        console.error('Enhanced Lorebook: launcher position failed', e);
+    }
+}
+
+function _elShowLauncher() {
+    _elPositionLauncherDropdown();
+    if (_elLauncher.scrim) _elLauncher.scrim.classList.add('visible');
+    if (_elLauncher.dropdown) _elLauncher.dropdown.classList.add('visible');
+    _elLauncher.isOpen = true;
+}
+
+function _elHideLauncher() {
+    if (_elLauncher.scrim) _elLauncher.scrim.classList.remove('visible');
+    if (_elLauncher.dropdown) _elLauncher.dropdown.classList.remove('visible');
+    _elLauncher.isOpen = false;
+}
+
+function _elOnLauncherDocClick(e) {
+    try {
+        if (!_elLauncher.drawerToggle || !_elLauncher.drawerToggle.contains(e.target)) return;
+
+        if (_elLauncher.bypassIntercept) {
+            _elLauncher.bypassIntercept = false;
+            return;
+        }
+
+        if (_elLauncher.worldInfoContent && _elLauncher.worldInfoContent.classList.contains('openDrawer')) {
+            if (_elLauncher.isOpen) _elHideLauncher();
+            return;
+        }
+
+        e.stopPropagation();
+        e.preventDefault();
+
+        if (_elLauncher.isOpen) {
+            _elHideLauncher();
+        } else {
+            _elShowLauncher();
+        }
+    } catch (err) {
+        console.error('Enhanced Lorebook: launcher click failed', err);
+    }
+}
+
+function _elOnLauncherScrimClick() {
+    _elHideLauncher();
+}
+
+function _elOnLauncherDropdownClick(e) {
+    try {
+        const item = e.target.closest('[data-action]');
+        if (!item) return;
+
+        e.stopPropagation();
+        _elHideLauncher();
+
+        if (item.dataset.action === 'native') {
+            _elLauncher.bypassIntercept = true;
+            if (_elLauncher.drawerToggle) _elLauncher.drawerToggle.click();
+        } else if (item.dataset.action === 'enhanced') {
+            openStandaloneApp();
+        } else if (item.dataset.action === 'agent-dashboard') {
+            openStandaloneApp('agent-dashboard');
+        } else if (item.dataset.action === 'agent-feed') {
+            openStandaloneApp('agent-feed');
+        }
+    } catch (err) {
+        console.error('Enhanced Lorebook: launcher action failed', err);
+    }
+}
+
+function _elOnLauncherKeydown(e) {
+    if (e.key === 'Escape' && _elLauncher.isOpen) {
+        e.stopPropagation();
+        _elHideLauncher();
+    }
+}
+
 function setupLauncherDropdown() {
+    if (_elLauncherReady) {
+        if (document.getElementById('el-launcher-dropdown')) return true;
+        _elLauncherReady = false;
+    }
     const wiDrawer = document.getElementById('WI-SP-button');
     if (!wiDrawer) {
         console.warn(`${EXTENSION_NAME}: WI button not found.`);
@@ -462,6 +650,10 @@ function setupLauncherDropdown() {
     }
 
     injectLauncherStyles();
+
+    const staleDropdown = document.getElementById('el-launcher-dropdown');
+    if (staleDropdown) staleDropdown.remove();
+    document.querySelectorAll('.el-launcher-scrim').forEach(el => el.remove());
 
     const dropdown = document.createElement('div');
     dropdown.id = 'el-launcher-dropdown';
@@ -497,6 +689,8 @@ function setupLauncherDropdown() {
     if (getComputedStyle(drawerIcon).position === 'static') {
         drawerIcon.style.position = 'relative';
     }
+    const staleChevron = drawerIcon.querySelector('.charlib-chevron-badge');
+    if (staleChevron) staleChevron.remove();
     const chevron = document.createElement('i');
     chevron.className = 'fa-solid fa-caret-down charlib-chevron-badge';
     Object.assign(chevron.style, {
@@ -510,82 +704,21 @@ function setupLauncherDropdown() {
     });
     drawerIcon.appendChild(chevron);
 
-    let isOpen = false;
-    let bypassIntercept = false;
+    _elLauncher.dropdown = dropdown;
+    _elLauncher.scrim = scrim;
+    _elLauncher.chevron = chevron;
+    _elLauncher.drawerToggle = drawerToggle;
+    _elLauncher.drawerIcon = drawerIcon;
+    _elLauncher.worldInfoContent = document.getElementById('WorldInfo');
+    _elLauncher.isOpen = false;
+    _elLauncher.bypassIntercept = false;
 
-    function positionDropdown() {
-        const rect = drawerIcon.getBoundingClientRect();
-        dropdown.style.top = (rect.bottom + 6) + 'px';
-        dropdown.style.right = Math.max(8, window.innerWidth - rect.right - 10) + 'px';
-        dropdown.style.left = 'auto';
-    }
+    _elOn(document, 'click', _elOnLauncherDocClick, true);
+    _elOn(scrim, 'click', _elOnLauncherScrimClick);
+    _elOn(dropdown, 'click', _elOnLauncherDropdownClick);
+    _elOn(document, 'keydown', _elOnLauncherKeydown);
 
-    function show() {
-        positionDropdown();
-        scrim.classList.add('visible');
-        dropdown.classList.add('visible');
-        isOpen = true;
-    }
-
-    function hide() {
-        scrim.classList.remove('visible');
-        dropdown.classList.remove('visible');
-        isOpen = false;
-    }
-
-    const worldInfoContent = document.getElementById('WorldInfo');
-
-    document.addEventListener('click', (e) => {
-        if (!drawerToggle.contains(e.target)) return;
-
-        if (bypassIntercept) {
-            bypassIntercept = false;
-            return;
-        }
-
-        if (worldInfoContent && worldInfoContent.classList.contains('openDrawer')) {
-            if (isOpen) hide();
-            return;
-        }
-
-        e.stopPropagation();
-        e.preventDefault();
-
-        if (isOpen) {
-            hide();
-        } else {
-            show();
-        }
-    }, true);
-
-    scrim.addEventListener('click', () => hide());
-
-    dropdown.addEventListener('click', (e) => {
-        const item = e.target.closest('[data-action]');
-        if (!item) return;
-
-        e.stopPropagation();
-        hide();
-
-        if (item.dataset.action === 'native') {
-            bypassIntercept = true;
-            drawerToggle.click();
-        } else if (item.dataset.action === 'enhanced') {
-            openStandaloneApp();
-        } else if (item.dataset.action === 'agent-dashboard') {
-            openStandaloneApp('agent-dashboard');
-        } else if (item.dataset.action === 'agent-feed') {
-            openStandaloneApp('agent-feed');
-        }
-    });
-
-    document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape' && isOpen) {
-            e.stopPropagation();
-            hide();
-        }
-    });
-
+    _elLauncherReady = true;
     return true;
 }
 
@@ -850,6 +983,7 @@ async function elRunQuickTask(agentId, taskText, runOpts) {
         const payload = {
             source: 'enhanced-lorebook',
             type: 'el-agent-quick-task',
+            nonce: _bridgeNonce,
             requestId,
             agentId,
             task,
@@ -1122,13 +1256,22 @@ async function openElQuickPrompt(prefill) {
     }
 }
 
+function _elOpenWandPopup() {
+    try { if (window.jQuery) jQuery('#extensionsMenu').hide(); } catch (_) {}
+    openElQuickPrompt('');
+}
+
+function _elOnWandKeydown(e) {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); _elOpenWandPopup(); }
+}
+
 function addElWandButton(retries) {
     if (typeof retries !== 'number') retries = 40;
     try {
         if (document.getElementById('el-quick-wand')) return true;
         const menu = document.getElementById('extensionsMenu');
         if (!menu) {
-            if (retries > 0) setTimeout(() => addElWandButton(retries - 1), 500);
+            if (retries > 0) _elWandRetryId = setTimeout(() => addElWandButton(retries - 1), 500);
             return false;
         }
         const container = document.createElement('div');
@@ -1146,15 +1289,9 @@ function addElWandButton(retries) {
         item.appendChild(icon);
         item.appendChild(label);
         container.appendChild(item);
-        const open = () => {
-            try { if (window.jQuery) jQuery('#extensionsMenu').hide(); } catch (_) {}
-            openElQuickPrompt('');
-        };
-        container.addEventListener('click', open);
-        container.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
-        });
         menu.appendChild(container);
+        _elOn(container, 'click', _elOpenWandPopup);
+        _elOn(container, 'keydown', _elOnWandKeydown);
         return true;
     } catch (e) {
         console.error('Enhanced Lorebook: failed to add wand button', e);
@@ -1192,22 +1329,86 @@ async function registerElSlash() {
     }
 }
 
-jQuery(async () => {
-    setupLauncherDropdown();
-    setupPostMessageBridge();
-    addElWandButton();
-    registerElSlash();
+function _elOnCharacterMessageRendered() {
+    handleNewMessage();
+}
 
+function _elOnUserMessageRendered() {
+    handleNewMessage();
+}
+
+function _elOnChatChanged() {
+    for (const k of Object.keys(periodicCounters)) delete periodicCounters[k];
+    messageCounter = 0;
+    sendChatChangedToApp();
+}
+
+function setupElEventSubscriptions() {
+    if (_elEventsReady) return;
     try {
         const context = SillyTavern.getContext();
-        context.eventSource.on(context.event_types.CHARACTER_MESSAGE_RENDERED, () => handleNewMessage());
-        context.eventSource.on(context.event_types.USER_MESSAGE_RENDERED, () => handleNewMessage());
-        context.eventSource.on(context.event_types.CHAT_CHANGED, () => {
-            for (const k of Object.keys(periodicCounters)) delete periodicCounters[k];
-            messageCounter = 0;
-            sendChatChangedToApp();
-        });
+        _elOn(context.eventSource, context.event_types.CHARACTER_MESSAGE_RENDERED, _elOnCharacterMessageRendered);
+        _elOn(context.eventSource, context.event_types.USER_MESSAGE_RENDERED, _elOnUserMessageRendered);
+        _elOn(context.eventSource, context.event_types.CHAT_CHANGED, _elOnChatChanged);
+        _elEventsReady = true;
     } catch (e) {
         console.error('Enhanced Lorebook: failed to subscribe to events', e);
     }
+}
+
+function setupElUnloadTeardown() {
+    if (_elTeardownOnUnloadRegistered) return;
+    _elTeardownOnUnloadRegistered = true;
+    _elOn(window, 'beforeunload', elHostTeardown);
+}
+
+function elHostTeardown() {
+    const tracked = _elHostListeners.splice(0, _elHostListeners.length);
+    for (const entry of tracked) _elRemoveTrackedListener(entry);
+    if (_elWandRetryId) {
+        try { clearTimeout(_elWandRetryId); } catch (e) {
+            console.error('Enhanced Lorebook: failed to clear wand retry', e);
+        }
+        _elWandRetryId = null;
+    }
+    try {
+        if (_elLauncher.dropdown) _elLauncher.dropdown.remove();
+        const orphanDropdown = document.getElementById('el-launcher-dropdown');
+        if (orphanDropdown) orphanDropdown.remove();
+        if (_elLauncher.scrim) _elLauncher.scrim.remove();
+        document.querySelectorAll('.el-launcher-scrim').forEach(el => el.remove());
+        if (_elLauncher.chevron) _elLauncher.chevron.remove();
+        const wiDrawer = document.getElementById('WI-SP-button');
+        const orphanChevron = wiDrawer ? wiDrawer.querySelector('.charlib-chevron-badge') : document.querySelector('.charlib-chevron-badge');
+        if (orphanChevron) orphanChevron.remove();
+        const styleEl = document.getElementById('enhanced-lorebook-launcher-styles');
+        if (styleEl) styleEl.remove();
+        const wand = document.getElementById('el-quick-wand');
+        if (wand) wand.remove();
+    } catch (e) {
+        console.error('Enhanced Lorebook: teardown DOM removal failed', e);
+    }
+    _elLauncher.dropdown = null;
+    _elLauncher.scrim = null;
+    _elLauncher.chevron = null;
+    _elLauncher.drawerToggle = null;
+    _elLauncher.drawerIcon = null;
+    _elLauncher.worldInfoContent = null;
+    _elLauncher.isOpen = false;
+    _elLauncher.bypassIntercept = false;
+    _elLauncherReady = false;
+    _elBridgeReady = false;
+    _elEventsReady = false;
+    _elTeardownOnUnloadRegistered = false;
+}
+
+window.EL_hostTeardown = elHostTeardown;
+
+jQuery(async () => {
+    setupLauncherDropdown();
+    setupPostMessageBridge();
+    setupElEventSubscriptions();
+    setupElUnloadTeardown();
+    addElWandButton();
+    registerElSlash();
 });

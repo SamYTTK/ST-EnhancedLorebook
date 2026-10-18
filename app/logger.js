@@ -368,25 +368,11 @@ const ELLogger = {
     flush() { _flushQueue(); },
     // Toast helper for data-loss (Q4)
     toastWarn(msg) {
-        try {
-            const host = (typeof ST_Window !== 'undefined' && ST_Window) || window.opener || window.parent;
-            if (host && typeof host.toastr !== 'undefined' && host.toastr) {
-                (host.toastr.warning || host.toastr.error).call(host.toastr, String(msg));
-            } else if (typeof toastr !== 'undefined') {
-                toastr.warning(String(msg));
-            }
-        } catch {}
+        try { if (typeof EL_toast === 'function') EL_toast(String(msg), 'warning'); } catch {}
         this.warn(msg);
     },
     toastError(msg) {
-        try {
-            const host = (typeof ST_Window !== 'undefined' && ST_Window) || window.opener || window.parent;
-            if (host && typeof host.toastr !== 'undefined' && host.toastr) {
-                host.toastr.error(String(msg));
-            } else if (typeof toastr !== 'undefined') {
-                toastr.error(String(msg));
-            }
-        } catch {}
+        try { if (typeof EL_toast === 'function') EL_toast(String(msg), 'error'); } catch {}
         this.error(msg);
     },
 };

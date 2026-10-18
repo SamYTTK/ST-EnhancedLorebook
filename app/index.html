@@ -15,6 +15,9 @@
                 <h2>Lorebooks</h2>
                 <div class="header-actions">
                     <button id="btn-refresh-lorebooks" title="Refresh"><i class="fa-solid fa-sync"></i></button>
+                    <button id="btn-create-lorebook" title="New lorebook"><i class="fa-solid fa-plus"></i></button>
+                    <button id="btn-import-lorebook" title="Import lorebook (.json)"><i class="fa-solid fa-upload"></i></button>
+                    <input type="file" id="import-lorebook-file" accept=".json,application/json" style="display:none;">
                     <button id="btn-settings" title="Settings"><i class="fa-solid fa-cog"></i></button>
                     <button id="btn-terminal" title="Terminal (extension logs)" style="position:relative;"><i class="fa-solid fa-terminal"></i><span id="terminal-error-badge" style="display:none; position:absolute; top:-5px; right:-5px; background:#ef4444; color:#fff; border-radius:999px; padding:0 5px; font-size:0.65rem; font-weight:700; line-height:1.35;">0</span></button>
                     <button id="btn-close-app" title="Close"><i class="fa-solid fa-xmark"></i></button>
@@ -56,7 +59,12 @@
 
                         <div class="section-header mt-4">
                             <h3>Templates</h3>
+                            <div style="display:flex; gap:2px;">
+                                <button id="btn-export-templates" title="Export templates (.json)"><i class="fa-solid fa-download"></i></button>
+                                <button id="btn-import-templates" title="Import templates (.json)"><i class="fa-solid fa-upload"></i></button>
+                            </div>
                         </div>
+                        <input type="file" id="import-templates-file" accept=".json,application/json" style="display:none;">
                         <div id="templates-list" class="list-container">
                             <!-- Saved presets go here -->
                         </div>
@@ -129,6 +137,13 @@
                     <div class="search-bar">
                         <i class="fa-solid fa-search"></i>
                         <input type="text" id="search-entries" placeholder="Search entries...">
+                    <select id="search-scope" title="Search field scope" style="background: transparent; color: var(--text-color); border: none; outline: none; margin-left: 8px; cursor: pointer;">
+                            <option value="all" style="color: black;">All fields</option>
+                            <option value="keys" style="color: black;">Keys</option>
+                            <option value="content" style="color: black;">Content</option>
+                            <option value="comments" style="color: black;">Comments</option>
+                        </select>
+                        <span id="search-count" style="display:none; font-size:0.8rem; color:var(--text-muted); white-space:nowrap; margin-left:8px;"></span>
                     <select id="sort-entries" style="background: transparent; color: var(--text-color); border: none; outline: none; margin-left: 8px; cursor: pointer;" title="Sort Entries">
                             <option value="order_desc" style="color: black;">Order (Highest)</option>
                             <option value="order_asc" style="color: black;">Order (Lowest)</option>
@@ -144,6 +159,7 @@
                     <button id="btn-batch-options" title="Batch Options" disabled><i class="fa-solid fa-layer-group"></i> Batch</button>
                     <button id="btn-download-selected" title="Download Selected Entries" disabled style="display:none;"><i class="fa-solid fa-download"></i> Download</button>
                     <button id="btn-backup-watch" title="Backup Watch"><i class="fa-solid fa-shield-halved"></i> Backup Watch</button>
+                    <button id="btn-export-lorebook" title="Export this lorebook (.json)"><i class="fa-solid fa-download"></i> Export</button>
                 </div>
             </div>
 
@@ -1760,7 +1776,7 @@
     <script src="agent-backup.js?v=7"></script>
     <script src="worldinfo-guard.js?v=8"></script>
     <script src="folder-url.js?v=6"></script>
-    <script src="app.js?v=11"></script>
+    <script src="app.js?v=12"></script>
     <script src="agent-ui.js?v=11"></script>
     <script src="el.js?v=1"></script>
 </body>

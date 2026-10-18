@@ -28,7 +28,35 @@ The sidebar shows you, in one place:
 - Every lorebook you have, with a search box to find one fast.
 
 Click any lorebook to see its entries. You can search inside by keys, content,
-or comments, and sort them however you like.
+or comments, narrow the search to just one of those fields with the dropdown
+next to the search box, and sort them however you like. Matching words are
+highlighted on the entry cards, and a small count tells you how many entries
+match.
+
+## Managing your lorebooks
+
+You don't have to go back to SillyTavern's panel for file chores any more:
+
+- **New**: the **+** button at the top of the sidebar creates an empty
+  lorebook. Just give it a name.
+- **Rename**: right-click any lorebook in the "All Lorebooks" list and choose
+  Rename. The app copies everything to the new name, checks the copy
+  matches, and only then removes the old file. If the old book was switched
+  on globally, you'll be asked whether to switch the new one on instead.
+  Chat and character links still point at the old name, so re-select those
+  by hand — the app will remind you.
+- **Delete**: right-click and choose Delete. You'll see the exact name for
+  confirmation, and a backup is attempted first in case you change your mind.
+- **Import**: the upload button at the top of the sidebar reads a `.json`
+  file and saves it as a lorebook (the file must contain an entries list).
+  If a book with that name already exists, you'll be asked before anything
+  is overwritten.
+- **Export**: right-click a lorebook, or use the Export button in the toolbar
+  while a book is open, to download it as a `.json` file.
+
+Names with `/ \ : * ? " < > |`, or starting or ending with a dot or space,
+are rejected up front, since SillyTavern would silently save those under a
+different filename.
 
 ## Editing entries
 
@@ -59,6 +87,21 @@ inside this app. They don't change your actual lorebook files.
 If you have a combination of global lorebooks you like to switch on together,
 save it as a template with one click. Later, applying that template switches
 the same set back on. Handy when different stories want different setups.
+
+Right-click a template (or double-click it) to apply it two ways:
+
+- **Apply (replace)** — switches off everything, then switches the
+  template's books on. This is the classic behaviour.
+- **Add to current** — switches the template's books on without switching
+  anything else off.
+
+If a template mentions lorebooks you no longer have, the app tells you which
+ones are missing before applying — they simply can't be switched on, and the
+template itself is left untouched. Saving under a name that already exists
+asks before overwriting, and you can rename a template from its right-click
+menu. The download/upload buttons next to "Templates" export all your
+templates to a file or merge a file back in (existing names ask before they
+are replaced).
 
 ## If something goes wrong
 

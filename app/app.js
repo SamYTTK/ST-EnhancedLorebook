@@ -1120,6 +1120,18 @@ function renderLorebookList(container, names, onClick, showToggle = false, showR
             div.classList.add('active');
             onClick(name);
         });
+        try {
+            if (typeof els !== 'undefined' && els && els.listAll && container === els.listAll) {
+                div.dataset.lorebookName = name;
+                div.addEventListener('contextmenu', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    try {
+                        showContextMenu(e.clientX, e.clientY, 'lorebook', name);
+                    } catch (err) {}
+                });
+            }
+        } catch (e) {}
         container.appendChild(div);
     });
 }
@@ -1138,20 +1150,25 @@ function renderTemplatesList() {
         div.title = safeJoin(extensionSettings.templates[tName], ', ');
         div.innerHTML = `<i class="fa-solid fa-bookmark"></i><span>${escapeHtml(tName)}</span>`;
 
-        // Double click to load template
+        // Double click to load template (replace mode)
         div.addEventListener('dblclick', () => {
             if (confirm(`Apply template '${tName}'? This will replace your currently active global lorebooks.`)) {
-                applyTemplate(tName);
+                applyTemplate(tName, 'replace');
             }
         });
 
-        // Right click to delete
+        // Right click: template actions menu
         div.addEventListener('contextmenu', (e) => {
             e.preventDefault();
-            if (confirm(`Delete template '${tName}'?`)) {
-                delete extensionSettings.templates[tName];
-                saveSettings();
-                renderTemplatesList();
+            e.stopPropagation();
+            try {
+                showContextMenu(e.clientX, e.clientY, 'template', tName);
+            } catch (err) {
+                if (confirm(`Delete template '${tName}'?`)) {
+                    delete extensionSettings.templates[tName];
+                    saveSettings();
+                    renderTemplatesList();
+                }
             }
         });
 
@@ -1159,20 +1176,163 @@ function renderTemplatesList() {
     });
 }
 
-async function applyTemplate(tName) {
+/**
+ * Rename a saved template. Overwriting an existing name asks first.
+ * @param {string} oldName Current template name.
+ */
+function EL_renameTemplate(oldName) {
+    const list = (extensionSettings.templates || {})[oldName];
+    if (!list) return;
+    let raw = null;
+    try {
+        raw = prompt('Enter a new name for template "' + oldName + '":', oldName);
+    } catch (e) {
+        return;
+    }
+    if (raw === null || raw === undefined) return;
+    const newName = String(raw).trim();
+    if (!newName) {
+        EL_toast('Template name cannot be empty.', 'error');
+        return;
+    }
+    if (newName === oldName) return;
+    if (extensionSettings.templates[newName]) {
+        let ok = false;
+        try {
+            ok = confirm('Template "' + newName + '" already exists. Overwrite?');
+        } catch (e) {}
+        if (!ok) return;
+    }
+    extensionSettings.templates[newName] = list;
+    delete extensionSettings.templates[oldName];
+    saveSettings();
+    renderTemplatesList();
+    EL_toast('Renamed template "' + oldName + '" to "' + newName + '".', 'success');
+}
+
+/**
+ * Download the saved templates as a JSON file.
+ */
+function EL_exportTemplates() {
+    try {
+        const data = (extensionSettings && extensionSettings.templates) || {};
+        download(JSON.stringify(data, null, 2), 'lorebook-templates.json', 'application/json');
+        EL_toast('Exported ' + Object.keys(data).length + ' template(s).', 'success');
+    } catch (e) {
+        EL_toast('Export failed: ' + ((e && e.message) || e), 'error');
+    }
+}
+
+/**
+ * Check an imported templates object has the shape { [name]: string[] }.
+ * @param {*} data Parsed JSON value.
+ * @returns {boolean} True when the shape is valid.
+ */
+function EL_isValidTemplatesData(data) {
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
+    return Object.entries(data).every(([k, v]) => typeof k === 'string' && Array.isArray(v) && v.every(s => typeof s === 'string'));
+}
+
+/**
+ * Import templates from a user-picked .json file and MERGE into the current
+ * set. Existing names ask before overwriting; nothing is dropped silently.
+ * @param {File} file User-picked JSON file.
+ */
+async function EL_importTemplatesFile(file) {
+    if (!file) return;
+    let text = '';
+    try {
+        text = await new Promise((resolve, reject) => {
+            try {
+                const reader = new FileReader();
+                reader.onload = () => resolve(String(reader.result || ''));
+                reader.onerror = () => reject(new Error('Could not read file.'));
+                reader.readAsText(file);
+            } catch (e) {
+                reject(e);
+            }
+        });
+    } catch (e) {
+        EL_toast('Could not read file: ' + ((e && e.message) || e), 'error');
+        return;
+    }
+    let data = null;
+    try {
+        data = JSON.parse(text);
+    } catch (e) {
+        EL_toast('Import failed: file is not valid JSON.', 'error');
+        return;
+    }
+    if (!EL_isValidTemplatesData(data)) {
+        EL_toast('Import failed: file must look like { "template name": ["lorebook", ...] }.', 'error');
+        return;
+    }
+    let imported = 0;
+    let skipped = 0;
+    for (const [tName, books] of Object.entries(data)) {
+        const name = String(tName).trim();
+        if (!name) {
+            skipped++;
+            continue;
+        }
+        if (extensionSettings.templates[name]) {
+            let ok = false;
+            try {
+                ok = confirm('Template "' + name + '" already exists. Overwrite?');
+            } catch (e) {}
+            if (!ok) {
+                skipped++;
+                continue;
+            }
+        }
+        extensionSettings.templates[name] = books.slice();
+        imported++;
+    }
+    saveSettings();
+    renderTemplatesList();
+    EL_toast('Imported ' + imported + ' template(s)' + (skipped ? ' (' + skipped + ' skipped)' : '') + '.', imported ? 'success' : 'info');
+}
+
+/**
+ * Apply a saved template of global lorebooks.
+ * Replace mode clears all globals first (today's behaviour); add mode only
+ * switches the template's books on and leaves everything else untouched.
+ * Missing books are reported before applying and never silently dropped.
+ * @param {string} tName Template name.
+ * @param {string} [mode] 'replace' (default) or 'add'.
+ */
+async function applyTemplate(tName, mode) {
     const list = extensionSettings.templates[tName];
     if (!list) return;
+    const m = (mode === 'add') ? 'add' : 'replace';
+
+    try {
+        const allNames = (stContext && typeof stContext.getWorldInfoNames === 'function') ? stContext.getWorldInfoNames() : [];
+        const missing = Array.isArray(allNames) ? list.filter(n => !allNames.includes(n)) : [];
+        if (missing.length) {
+            EL_toast('Template "' + tName + '" is missing ' + missing.length + ' lorebook(s): ' + missing.join(', ') + ' — they cannot be selected.', 'warning');
+        }
+    } catch (e) {}
 
     const stSelect = ST_Window.document.getElementById('world_info');
     if (stSelect) {
-        // Clear all
-        Array.from(stSelect.options).forEach(opt => opt.selected = false);
-        // Select matching
-        Array.from(stSelect.options).forEach(opt => {
-            if (list.includes(opt.text)) {
-                opt.selected = true;
-            }
-        });
+        if (m === 'add') {
+            // Additive: switch the template's books on, change nothing else.
+            Array.from(stSelect.options).forEach(opt => {
+                if (list.includes(opt.text)) {
+                    opt.selected = true;
+                }
+            });
+        } else {
+            // Clear all
+            Array.from(stSelect.options).forEach(opt => opt.selected = false);
+            // Select matching
+            Array.from(stSelect.options).forEach(opt => {
+                if (list.includes(opt.text)) {
+                    opt.selected = true;
+                }
+            });
+        }
         // Trigger change
         if (ST_Window.jQuery) {
             ST_Window.jQuery(stSelect).trigger('change');
@@ -1244,6 +1404,504 @@ function ensureFoldersStructure(lbName, { prune = true } = {}) {
     });
 }
 
+ // ==========================================
+// Whole-lorebook file operations (create / rename / delete / import / export)
+// Direct core endpoints only — never the entry guard (ELG_guardSave), which is
+// for entry writes with fingerprint verification. Whole-book operations are a
+// different class and use /api/worldinfo/* directly.
+// ==========================================
+
+/**
+ * Validate a lorebook file name BEFORE any core call. Core runs
+ * sanitize-filename, so a name with path characters would silently become a
+ * different file and could collide with another book.
+ * @param {string} name Raw user-supplied name.
+ * @param {object} [opts] { checkExists: boolean } — reject names already taken.
+ * @returns {string|null} Error message, or null when the name is usable.
+ */
+function EL_validateLorebookName(name, opts) {
+    const o = opts || {};
+    const raw = (name === null || name === undefined) ? '' : String(name);
+    const trimmed = raw.trim();
+    if (!trimmed) return 'Name cannot be empty.';
+    if (trimmed === '.' || trimmed === '..') return 'Name cannot be "." or "..".';
+    if (/[\/\\:*?"<>|]/.test(trimmed)) return 'Name cannot contain any of / \\ : * ? " < > |.';
+    if (/^[. ]/.test(trimmed) || /[. ]$/.test(trimmed)) return 'Name cannot start or end with a dot or space.';
+    if (o.checkExists) {
+        try {
+            const names = (stContext && typeof stContext.getWorldInfoNames === 'function') ? stContext.getWorldInfoNames() : [];
+            if (Array.isArray(names) && names.includes(trimmed)) return 'A lorebook named "' + trimmed + '" already exists.';
+        } catch (e) {}
+    }
+    return null;
+}
+
+/**
+ * Headers for direct core /api/worldinfo/* calls.
+ * @returns {object} Header map with at least Content-Type.
+ */
+function EL_worldinfoHeaders() {
+    try {
+        if (typeof stContext !== 'undefined' && stContext && typeof stContext.getRequestHeaders === 'function') {
+            return stContext.getRequestHeaders();
+        }
+    } catch (e) {}
+    return { 'Content-Type': 'application/json' };
+}
+
+/**
+ * Read a whole lorebook straight from the core endpoint.
+ * @param {string} name Lorebook name.
+ * @returns {Promise<object>} Parsed book data.
+ */
+async function EL_worldinfoGet(name) {
+    const resp = await fetch('/api/worldinfo/get', {
+        method: 'POST',
+        headers: EL_worldinfoHeaders(),
+        body: JSON.stringify({ name: name }),
+        cache: 'no-cache',
+    });
+    if (!resp.ok) throw new Error('Could not read lorebook "' + name + '" (HTTP ' + resp.status + ').');
+    return await resp.json();
+}
+
+/**
+ * Write a whole lorebook via the core edit endpoint (creates when missing).
+ * @param {string} name Lorebook name.
+ * @param {object} data Book data; must contain an entries object.
+ * @returns {Promise<void>}
+ */
+async function EL_worldinfoEdit(name, data) {
+    const resp = await fetch('/api/worldinfo/edit', {
+        method: 'POST',
+        headers: EL_worldinfoHeaders(),
+        body: JSON.stringify({ name: name, data: data }),
+        cache: 'no-cache',
+    });
+    if (!resp.ok) {
+        let detail = '';
+        try { detail = await resp.text(); } catch (e) {}
+        throw new Error('Could not save lorebook "' + name + '" (HTTP ' + resp.status + ')' + (detail ? ' — ' + String(detail).slice(0, 200) : ''));
+    }
+}
+
+/**
+ * Delete a whole lorebook via the core endpoint.
+ * @param {string} name Lorebook name.
+ * @returns {Promise<void>}
+ */
+async function EL_worldinfoDelete(name) {
+    const resp = await fetch('/api/worldinfo/delete', {
+        method: 'POST',
+        headers: EL_worldinfoHeaders(),
+        body: JSON.stringify({ name: name }),
+        cache: 'no-cache',
+    });
+    if (!resp.ok) {
+        let detail = '';
+        try { detail = await resp.text(); } catch (e) {}
+        throw new Error('Could not delete lorebook "' + name + '" (HTTP ' + resp.status + ')' + (detail ? ' — ' + String(detail).slice(0, 200) : ''));
+    }
+}
+
+/**
+ * Clear the open-book view (empty state + hidden toolbar).
+ */
+function EL_clearOpenBookView() {
+    EL_setLorebookName('');
+    EL_setLorebookData(null, { own: false });
+    currentLorebookData = null;
+    try {
+        selectedEntries.clear();
+    } catch (e) {}
+    try {
+        if (els && els.currentTitle) els.currentTitle.textContent = 'No Lorebook Selected';
+        if (els && els.entriesContainer) els.entriesContainer.innerHTML = '<div class="empty-state"><i class="fa-solid fa-book-open fa-3x"></i><p>Select a lorebook from the sidebar</p></div>';
+        if (els && els.mainToolbar) els.mainToolbar.style.display = 'none';
+    } catch (e) {}
+}
+
+/**
+ * Create a new empty lorebook. Prompts for a name, validates it, writes an
+ * empty book via the core edit endpoint, then opens it.
+ */
+async function EL_createLorebook() {
+    let name = null;
+    try {
+        name = prompt('Enter a name for the new lorebook:');
+    } catch (e) {
+        return;
+    }
+    if (name === null || name === undefined) return;
+    const trimmed = String(name).trim();
+    const err = EL_validateLorebookName(trimmed, { checkExists: true });
+    if (err) {
+        EL_toast(err, 'error');
+        return;
+    }
+    try {
+        await EL_worldinfoEdit(trimmed, { entries: {} });
+    } catch (e) {
+        EL_toast((e && e.message) || ('Could not create lorebook "' + trimmed + '".'), 'error');
+        return;
+    }
+    try {
+        if (stContext && typeof stContext.updateWorldInfoList === 'function') await stContext.updateWorldInfoList();
+    } catch (e) {}
+    try {
+        await refreshSidebar();
+    } catch (e) {}
+    EL_toast('Created lorebook "' + trimmed + '".', 'success');
+    try {
+        await openLorebook(trimmed);
+    } catch (e) {}
+}
+
+/**
+ * Rename a lorebook: read old, write new, verify, then delete old.
+ * Moves the extension folder layout and, when the renamed book is open,
+ * reloads it under the new name. Updating the global World Info selection
+ * is opt-in via confirm; chat/character attachments are never auto-updated.
+ * @param {string} oldName Current lorebook name.
+ */
+async function EL_renameLorebook(oldName) {
+    if (!oldName) return;
+    let raw = null;
+    try {
+        raw = prompt('Enter a new name for lorebook "' + oldName + '":', oldName);
+    } catch (e) {
+        return;
+    }
+    if (raw === null || raw === undefined) return;
+    const newName = String(raw).trim();
+    if (!newName) {
+        EL_toast('Name cannot be empty.', 'error');
+        return;
+    }
+    if (newName === oldName) return;
+    const err = EL_validateLorebookName(newName, { checkExists: true });
+    if (err) {
+        EL_toast(err, 'error');
+        return;
+    }
+    let wasGlobalSelected = false;
+    try {
+        const stSelect = ST_Window.document.getElementById('world_info');
+        if (stSelect) {
+            wasGlobalSelected = Array.from(stSelect.selectedOptions).map(opt => opt.text).includes(oldName);
+        }
+    } catch (e) {}
+    let oldData = null;
+    try {
+        oldData = await EL_worldinfoGet(oldName);
+    } catch (e) {
+        EL_toast((e && e.message) || ('Could not read lorebook "' + oldName + '".'), 'error');
+        return;
+    }
+    if (!oldData || !oldData.entries || typeof oldData.entries !== 'object') {
+        EL_toast('Could not read lorebook "' + oldName + '" — rename aborted.', 'error');
+        return;
+    }
+    const oldCount = Object.keys(oldData.entries).length;
+    try {
+        await EL_worldinfoEdit(newName, oldData);
+    } catch (e) {
+        EL_toast((e && e.message) || ('Could not write lorebook "' + newName + '".'), 'error');
+        return;
+    }
+    let newData = null;
+    try {
+        newData = await EL_worldinfoGet(newName);
+    } catch (e) {
+        newData = null;
+    }
+    const newCount = (newData && newData.entries && typeof newData.entries === 'object') ? Object.keys(newData.entries).length : -1;
+    if (newCount !== oldCount) {
+        EL_toast('Rename verification failed: "' + newName + '" does not match "' + oldName + '" (' + oldCount + ' vs ' + newCount + ' entries). The old lorebook was NOT deleted.', 'error');
+        return;
+    }
+    try {
+        await EL_worldinfoDelete(oldName);
+    } catch (e) {
+        EL_toast((e && e.message) || ('Renamed to "' + newName + '" but could not delete "' + oldName + '".'), 'error');
+        return;
+    }
+    try {
+        if (extensionSettings && extensionSettings.folders && extensionSettings.folders[oldName]) {
+            extensionSettings.folders[newName] = extensionSettings.folders[oldName];
+            delete extensionSettings.folders[oldName];
+        }
+        saveSettings();
+    } catch (e) {}
+    try {
+        if (stContext && typeof stContext.updateWorldInfoList === 'function') await stContext.updateWorldInfoList();
+    } catch (e) {}
+    try {
+        await refreshSidebar();
+    } catch (e) {}
+    if (wasGlobalSelected) {
+        let doUpdate = false;
+        try {
+            doUpdate = confirm('"' + oldName + '" was selected as a global lorebook. Switch that selection to "' + newName + '"?');
+        } catch (e) {
+            doUpdate = false;
+        }
+        if (doUpdate) {
+            try {
+                const stSelect = ST_Window.document.getElementById('world_info');
+                if (stSelect) {
+                    Array.from(stSelect.options).forEach(opt => {
+                        if (opt.text === oldName) opt.selected = false;
+                        if (opt.text === newName) opt.selected = true;
+                    });
+                    if (ST_Window.jQuery) ST_Window.jQuery(stSelect).trigger('change');
+                    else stSelect.dispatchEvent(new Event('change', { bubbles: true }));
+                    if (stContext && typeof stContext.saveSettingsDebounced === 'function') stContext.saveSettingsDebounced();
+                    await refreshSidebar();
+                }
+            } catch (e) {}
+        }
+    }
+    try {
+        EL_toast('Chat-attached and character-attached lorebooks referencing "' + oldName + '" were NOT updated automatically — re-select them if needed.', 'warning');
+    } catch (e) {}
+    if (currentLorebookName === oldName) {
+        try {
+            EL_setLorebookName(newName);
+            if (els && els.currentTitle) els.currentTitle.textContent = newName;
+            await openLorebook(newName);
+        } catch (e) {}
+    }
+    EL_toast('Renamed lorebook "' + oldName + '" to "' + newName + '".', 'success');
+}
+
+/**
+ * Delete a whole lorebook: best-effort server backup, then core delete.
+ * Clears the view when the deleted book is open.
+ * @param {string} name Lorebook name.
+ */
+async function EL_deleteLorebook(name) {
+    if (!name) return;
+    let confirmed = false;
+    try {
+        confirmed = confirm('Delete lorebook "' + name + '"? This cannot be undone. A backup will be attempted first.');
+    } catch (e) {
+        return;
+    }
+    if (!confirmed) return;
+    try {
+        const client = (typeof BackupClient !== 'undefined') ? new BackupClient({ stContext: stContext }) : null;
+        if (client && typeof client.createBackup === 'function') {
+            await client.createBackup(name);
+        }
+    } catch (e) {}
+    try {
+        await EL_worldinfoDelete(name);
+    } catch (e) {
+        EL_toast((e && e.message) || ('Could not delete lorebook "' + name + '".'), 'error');
+        return;
+    }
+    try {
+        if (extensionSettings && extensionSettings.folders && extensionSettings.folders[name]) {
+            delete extensionSettings.folders[name];
+        }
+        saveSettings();
+    } catch (e) {}
+    const wasOpen = (currentLorebookName === name);
+    if (wasOpen) {
+        EL_clearOpenBookView();
+        try {
+            showLorebookView();
+        } catch (e) {}
+    }
+    try {
+        if (stContext && typeof stContext.updateWorldInfoList === 'function') await stContext.updateWorldInfoList();
+    } catch (e) {}
+    try {
+        await refreshSidebar();
+    } catch (e) {}
+    EL_toast('Deleted lorebook "' + name + '".', 'success');
+}
+
+/**
+ * Export a whole lorebook as a <name>.json download.
+ * @param {string} name Lorebook name.
+ */
+async function EL_exportLorebook(name) {
+    if (!name) {
+        EL_toast('Open a lorebook first.', 'warning');
+        return;
+    }
+    let data = null;
+    try {
+        data = await EL_worldinfoGet(name);
+    } catch (e) {
+        try {
+            if (stContext && typeof stContext.loadWorldInfo === 'function') data = await stContext.loadWorldInfo(name);
+        } catch (e2) {}
+    }
+    if (!data || !data.entries) {
+        EL_toast('Could not read lorebook "' + name + '" — export aborted.', 'error');
+        return;
+    }
+    try {
+        download(JSON.stringify(data, null, 2), name + '.json', 'application/json');
+        EL_toast('Exported lorebook "' + name + '".', 'success');
+    } catch (e) {
+        EL_toast('Export failed: ' + ((e && e.message) || e), 'error');
+    }
+}
+
+/**
+ * Import a lorebook from a user-picked .json file object.
+ * Validates the shape, derives the book name from the filename, and writes
+ * via the core edit endpoint (never the multipart import endpoint).
+ * @param {File} file User-picked JSON file.
+ */
+async function EL_importLorebookFile(file) {
+    if (!file) return;
+    let rawName = String(file.name || 'lorebook');
+    if (rawName.toLowerCase().endsWith('.json')) rawName = rawName.slice(0, -5);
+    rawName = rawName.trim() || 'lorebook';
+    const validateErr = EL_validateLorebookName(rawName, { checkExists: false });
+    if (validateErr) {
+        EL_toast('Invalid lorebook name "' + rawName + '": ' + validateErr, 'error');
+        return;
+    }
+    let text = '';
+    try {
+        text = await new Promise((resolve, reject) => {
+            try {
+                const reader = new FileReader();
+                reader.onload = () => resolve(String(reader.result || ''));
+                reader.onerror = () => reject(new Error('Could not read file.'));
+                reader.readAsText(file);
+            } catch (e) {
+                reject(e);
+            }
+        });
+    } catch (e) {
+        EL_toast('Could not read file: ' + ((e && e.message) || e), 'error');
+        return;
+    }
+    let data = null;
+    try {
+        data = JSON.parse(text);
+    } catch (e) {
+        EL_toast('Import failed: file is not valid JSON.', 'error');
+        return;
+    }
+    if (!data || typeof data !== 'object' || !data.entries || typeof data.entries !== 'object') {
+        EL_toast('Import failed: file must contain an "entries" object.', 'error');
+        return;
+    }
+    let exists = false;
+    try {
+        const names = (stContext && typeof stContext.getWorldInfoNames === 'function') ? stContext.getWorldInfoNames() : [];
+        exists = Array.isArray(names) && names.includes(rawName);
+    } catch (e) {}
+    if (exists) {
+        let ok = false;
+        try {
+            ok = confirm('A lorebook named "' + rawName + '" already exists. Overwrite it with the imported file?');
+        } catch (e) {}
+        if (!ok) return;
+    }
+    try {
+        await EL_worldinfoEdit(rawName, data);
+    } catch (e) {
+        EL_toast((e && e.message) || ('Could not import lorebook "' + rawName + '".'), 'error');
+        return;
+    }
+    try {
+        if (stContext && typeof stContext.updateWorldInfoList === 'function') await stContext.updateWorldInfoList();
+    } catch (e) {}
+    try {
+        await refreshSidebar();
+    } catch (e) {}
+    EL_toast('Imported lorebook "' + rawName + '".', 'success');
+    try {
+        await openLorebook(rawName);
+    } catch (e) {}
+}
+
+/**
+ * Current entry-search field scope, read from the toolbar control.
+ * @returns {string} 'all', 'keys', 'content' or 'comments'.
+ */
+function EL_getSearchScope() {
+    try {
+        const sel = document.getElementById('search-scope');
+        const v = sel ? String(sel.value || 'all').toLowerCase() : 'all';
+        if (v === 'keys' || v === 'key') return 'keys';
+        if (v === 'content') return 'content';
+        if (v === 'comments' || v === 'comment') return 'comments';
+        return 'all';
+    } catch (e) {
+        return 'all';
+    }
+}
+
+/**
+ * Escape HTML then highlight every case-insensitive occurrence of term.
+ * Splitting on the raw text first keeps escaping correct: user text can
+ * never become markup, only the wrapper we add here is markup.
+ * @param {string} raw Raw user-supplied text.
+ * @param {string} term Current search term (may be empty).
+ * @returns {string} Escaped HTML with <mark> wrappers around matches.
+ */
+function EL_escapeAndHighlight(raw, term) {
+    const text = (raw === null || raw === undefined) ? '' : String(raw);
+    const q = (term === null || term === undefined) ? '' : String(term);
+    if (!q) return escapeHtml(text);
+    const lowerText = text.toLowerCase();
+    const lowerTerm = q.toLowerCase();
+    if (!lowerTerm || lowerText.indexOf(lowerTerm) === -1) return escapeHtml(text);
+    let out = '';
+    let i = 0;
+    while (i <= text.length) {
+        const idx = lowerText.indexOf(lowerTerm, i);
+        if (idx === -1) {
+            out += escapeHtml(text.slice(i));
+            break;
+        }
+        out += escapeHtml(text.slice(i, idx));
+        out += '<mark style="background:rgba(250,204,21,0.45); color:inherit; border-radius:2px; padding:0 1px;">' + escapeHtml(text.slice(idx, idx + lowerTerm.length)) + '</mark>';
+        i = idx + lowerTerm.length;
+        if (i >= text.length) break;
+    }
+    return out;
+}
+
+/**
+ * Update the "N matches" label beside the entry search box.
+ * Hidden and empty when there is no query.
+ * @param {string} query Raw query text (untrimmed is fine).
+ */
+function EL_updateSearchCount(query) {
+    try {
+        const el = document.getElementById('search-count');
+        if (!el) return;
+        const q = (query === null || query === undefined) ? '' : String(query).trim();
+        if (!q) {
+            el.style.display = 'none';
+            el.textContent = '';
+            return;
+        }
+        let n = 0;
+        try {
+            const entries = (currentLorebookData && currentLorebookData.entries) || {};
+            for (const uid of Object.keys(entries)) {
+                try {
+                    if (getMatchScore({ type: 'entry', uid: String(uid) }, q) > 0) n++;
+                } catch (e) {}
+            }
+        } catch (e) {}
+        el.style.display = '';
+        el.textContent = (n === 1) ? '1 match' : (n + ' matches');
+    } catch (e) {}
+}
+
 /**
  * Per-render memoisation context. renderEntries builds ONE context per render so
  * the per-item hot spots below run in O(1) instead of re-walking the tree.
@@ -1252,6 +1910,7 @@ function ensureFoldersStructure(lbName, { prune = true } = {}) {
  */
 function EL_buildRenderContext(query) {
     const term = (query || '').toLowerCase();
+    const scope = EL_getSearchScope();
     let startsWithRegex = null;
     let containsRegex = null;
     if (term) {
@@ -1272,6 +1931,7 @@ function EL_buildRenderContext(query) {
     }
     return {
         query: term,
+        scope: scope,
         startsWithRegex: startsWithRegex,
         containsRegex: containsRegex,
         folderById: folderById,
@@ -1469,10 +2129,11 @@ function escapeRegex(string) {
 function getMatchScore(item, query) {
     if (!query) return 0;
     const term = query.toLowerCase();
+    const scope = EL_getSearchScope();
 
     let startsWithRegex = null;
     let containsRegex = null;
-    if (_elRenderCtx && _elRenderCtx.query === term && _elRenderCtx.startsWithRegex && _elRenderCtx.containsRegex) {
+    if (_elRenderCtx && _elRenderCtx.query === term && _elRenderCtx.scope === scope && _elRenderCtx.startsWithRegex && _elRenderCtx.containsRegex) {
         startsWithRegex = _elRenderCtx.startsWithRegex;
         containsRegex = _elRenderCtx.containsRegex;
     } else {
@@ -1484,7 +2145,7 @@ function getMatchScore(item, query) {
     if (item.type === 'folder') {
         const name = (item.data.name || '').toLowerCase();
         if (name === term) return 10000;
-        
+
         if (startsWithRegex.test(name)) return 5000;
         if (containsRegex.test(name)) return 2000;
         if (name.includes(term)) return 1000;
@@ -1492,20 +2153,28 @@ function getMatchScore(item, query) {
     } else {
         const entry = currentLorebookData.entries[item.uid];
         if (!entry) return 0;
+        const inKeys = (scope === 'all' || scope === 'keys');
+        const inComments = (scope === 'all' || scope === 'comments');
+        const inContent = (scope === 'all' || scope === 'content');
         const comment = (entry.comment || '').toLowerCase();
         const keys = (Array.isArray(entry.key) ? entry.key : []).map(k => String(k).toLowerCase());
-        
-        if (comment === term || keys.includes(term)) return 10000;
-        
-        if (startsWithRegex.test(comment) || keys.some(k => startsWithRegex.test(k))) return 5000;
-        if (containsRegex.test(comment) || keys.some(k => containsRegex.test(k))) return 2000;
-        if (comment.includes(term) || keys.some(k => k.includes(term))) return 1000;
-        
+        const keysSecondary = (Array.isArray(entry.keysecondary) ? entry.keysecondary : []).map(k => String(k).toLowerCase());
+
+        if ((inComments && comment === term) || (inKeys && (keys.includes(term) || keysSecondary.includes(term)))) return 10000;
+
+        const startsKeys = inKeys && (keys.some(k => startsWithRegex.test(k)) || keysSecondary.some(k => startsWithRegex.test(k)));
+        if ((inComments && startsWithRegex.test(comment)) || startsKeys) return 5000;
+        const containsKeys = inKeys && (keys.some(k => containsRegex.test(k)) || keysSecondary.some(k => containsRegex.test(k)));
+        if ((inComments && containsRegex.test(comment)) || containsKeys) return 2000;
+        const includesKeys = inKeys && (keys.some(k => k.includes(term)) || keysSecondary.some(k => k.includes(term)));
+        if ((inComments && comment.includes(term)) || includesKeys) return 1000;
+
+        if (!inContent) return 0;
         const content = (entry.content || '').toLowerCase();
         if (startsWithRegex.test(content)) return 100;
         if (containsRegex.test(content)) return 50;
         if (content.includes(term)) return 10;
-        
+
         return 0;
     }
 }
@@ -1513,7 +2182,8 @@ function getMatchScore(item, query) {
 function getItemMaxScore(item, query) {
     if (!query) return 0;
     const term = (query || '').toLowerCase();
-    if (_elRenderCtx && _elRenderCtx.query === term) {
+    const scope = EL_getSearchScope();
+    if (_elRenderCtx && _elRenderCtx.query === term && _elRenderCtx.scope === scope) {
         if (item.type === 'entry') {
             return EL_renderEntryScore(_elRenderCtx, item.uid);
         }
@@ -1618,6 +2288,9 @@ function renderEntries() {
                 if (card) els.entriesContainer.appendChild(card);
             }
         });
+        try {
+            EL_updateSearchCount(query);
+        } catch (e) {}
     } finally {
         _elRenderCtx = null;
     }
@@ -1812,6 +2485,19 @@ function createFolderElement(folder, filteredUids, isRoot = false) {
         }
     });
 
+    if (query && contentItems.length === 0) {
+        try {
+            const ownScore = getMatchScore({ type: 'folder', data: folder }, query);
+            if (ownScore > 0) {
+                const hint = document.createElement('div');
+                hint.className = 'folder-name-match-hint';
+                hint.style.cssText = 'font-size:0.8rem; color:var(--text-muted); padding:6px 4px; font-style:italic;';
+                hint.textContent = 'Folder name matches — no entries inside match.';
+                content.appendChild(hint);
+            }
+        } catch (e) {}
+    }
+
     container.appendChild(header);
     container.appendChild(content);
     return container;
@@ -1870,22 +2556,32 @@ function createEntryCard(uid) {
     };
     const logicName = ST_LOGICS[entry.selectiveLogic] || 'AND ANY';
 
+    const _hlQuery = (els.searchEntries && typeof els.searchEntries.value === 'string') ? els.searchEntries.value.trim() : '';
+    const _hlScope = EL_getSearchScope();
+    const _hlKeys = !_hlQuery || _hlScope === 'all' || _hlScope === 'keys';
+    const _hlComments = !_hlQuery || _hlScope === 'all' || _hlScope === 'comments';
+    const _hlContent = !_hlQuery || _hlScope === 'all' || _hlScope === 'content';
+    const _keysHtml = _hlKeys ? EL_escapeAndHighlight(keysStr, _hlQuery) : escapeHtml(keysStr);
+    const _commentHtml = _hlComments ? EL_escapeAndHighlight(entry.comment, _hlQuery) : escapeHtml(entry.comment);
+    const _secKeysHtml = _hlKeys ? EL_escapeAndHighlight(secondaryKeysStr, _hlQuery) : escapeHtml(secondaryKeysStr);
+    const _contentHtml = _hlContent ? EL_escapeAndHighlight(entry.content || 'Empty Entry...', _hlQuery) : escapeHtml(entry.content || 'Empty Entry...');
+
     card.innerHTML = `
         <div class="entry-header" style="align-items: center;">
             <div style="display:flex; flex-direction:column; gap: 4px; flex: 1;">
                 <div class="entry-keys" title="${escapeHtml(keysStr)}" style="display:flex; align-items:center;">
                     ${iconHtml}
-                    ${entry.comment ? `<span style="color:var(--text-muted)">[${escapeHtml(entry.comment)}]</span> ` : ''}
-                    ${escapeHtml(keysStr) || '<em>No Primary Keys</em>'}
+                    ${entry.comment ? `<span style="color:var(--text-muted)">[${_commentHtml}]</span> ` : ''}
+                    ${_keysHtml || '<em>No Primary Keys</em>'}
                 </div>
-                ${secondaryKeysStr ? `<div style="font-size: 0.8rem; color:var(--text-muted)">Sec: ${escapeHtml(secondaryKeysStr)}</div>` : ''}
+                ${secondaryKeysStr ? `<div style="font-size: 0.8rem; color:var(--text-muted)">Sec: ${_secKeysHtml}</div>` : ''}
             </div>
             <div class="entry-badges" style="flex-wrap: wrap; justify-content: flex-end; max-width: 250px; align-items: center; gap: 8px;">
                 ${badges.join('')}
                 <input type="checkbox" class="entry-select-checkbox" style="width: 18px; height: 18px; cursor: pointer; margin: 0;">
             </div>
         </div>
-        <div class="entry-content" style="-webkit-line-clamp: 2;">${escapeHtml(entry.content || 'Empty Entry...')}</div>
+        <div class="entry-content" style="-webkit-line-clamp: 2;">${_contentHtml}</div>
         <div class="entry-meta" style="font-size: 0.8rem; color: var(--text-muted); display:flex; gap: 16px; justify-content: flex-start; margin-top: 12px; flex-wrap: wrap; border-top: 1px solid var(--panel-border); padding-top: 8px;">
             <div style="display:flex; align-items:center; gap:4px;"><i class="fa-solid fa-sort-numeric-down"></i> Order: <input type="number" class="inline-edit inline-entry-order" value="${entry.order ?? 100}" style="width:60px;"></div>
             <div style="display:flex; align-items:center; gap:4px;"><i class="fa-solid fa-layer-group"></i> Depth: <input type="number" class="inline-edit inline-entry-depth" value="${entry.depth ?? 4}" style="width:50px;" min="0"></div>
@@ -4333,6 +5029,98 @@ function showContextMenu(x, y, targetType = 'entry', targetId = null) {
             deleteFolder(targetId);
         });
         els.contextMenu.appendChild(deleteFolderItem);
+    } else if (targetType === 'lorebook') {
+        const bookName = targetId;
+
+        const openItem = document.createElement('div');
+        openItem.className = 'context-item';
+        openItem.innerHTML = '<i class="fa-solid fa-book-open"></i> Open';
+        openItem.addEventListener('click', () => {
+            els.contextMenu.classList.remove('visible');
+            openLorebook(bookName);
+        });
+        els.contextMenu.appendChild(openItem);
+
+        const exportItem = document.createElement('div');
+        exportItem.className = 'context-item';
+        exportItem.innerHTML = '<i class="fa-solid fa-download"></i> Export (.json)';
+        exportItem.addEventListener('click', () => {
+            els.contextMenu.classList.remove('visible');
+            EL_exportLorebook(bookName);
+        });
+        els.contextMenu.appendChild(exportItem);
+
+        const renameItem = document.createElement('div');
+        renameItem.className = 'context-item';
+        renameItem.innerHTML = '<i class="fa-solid fa-pencil"></i> Rename...';
+        renameItem.addEventListener('click', () => {
+            els.contextMenu.classList.remove('visible');
+            EL_renameLorebook(bookName);
+        });
+        els.contextMenu.appendChild(renameItem);
+
+        const dividerLb = document.createElement('div');
+        dividerLb.className = 'context-divider';
+        els.contextMenu.appendChild(dividerLb);
+
+        const deleteItem = document.createElement('div');
+        deleteItem.className = 'context-item';
+        deleteItem.innerHTML = '<i class="fa-solid fa-trash"></i> Delete...';
+        deleteItem.style.color = 'var(--danger-color)';
+        deleteItem.addEventListener('click', () => {
+            els.contextMenu.classList.remove('visible');
+            EL_deleteLorebook(bookName);
+        });
+        els.contextMenu.appendChild(deleteItem);
+    } else if (targetType === 'template') {
+        const tName = targetId;
+
+        const applyItem = document.createElement('div');
+        applyItem.className = 'context-item';
+        applyItem.innerHTML = '<i class="fa-solid fa-check"></i> Apply (replace)';
+        applyItem.addEventListener('click', () => {
+            els.contextMenu.classList.remove('visible');
+            if (confirm(`Apply template '${tName}'? This will replace your currently active global lorebooks.`)) {
+                applyTemplate(tName, 'replace');
+            }
+        });
+        els.contextMenu.appendChild(applyItem);
+
+        const addItem = document.createElement('div');
+        addItem.className = 'context-item';
+        addItem.innerHTML = '<i class="fa-solid fa-plus"></i> Add to current';
+        addItem.addEventListener('click', () => {
+            els.contextMenu.classList.remove('visible');
+            applyTemplate(tName, 'add');
+        });
+        els.contextMenu.appendChild(addItem);
+
+        const renameTplItem = document.createElement('div');
+        renameTplItem.className = 'context-item';
+        renameTplItem.innerHTML = '<i class="fa-solid fa-pencil"></i> Rename...';
+        renameTplItem.addEventListener('click', () => {
+            els.contextMenu.classList.remove('visible');
+            EL_renameTemplate(tName);
+        });
+        els.contextMenu.appendChild(renameTplItem);
+
+        const dividerTpl = document.createElement('div');
+        dividerTpl.className = 'context-divider';
+        els.contextMenu.appendChild(dividerTpl);
+
+        const deleteTplItem = document.createElement('div');
+        deleteTplItem.className = 'context-item';
+        deleteTplItem.innerHTML = '<i class="fa-solid fa-trash"></i> Delete';
+        deleteTplItem.style.color = 'var(--danger-color)';
+        deleteTplItem.addEventListener('click', () => {
+            els.contextMenu.classList.remove('visible');
+            if (confirm(`Delete template '${tName}'?`)) {
+                delete extensionSettings.templates[tName];
+                saveSettings();
+                renderTemplatesList();
+            }
+        });
+        els.contextMenu.appendChild(deleteTplItem);
     }
 
     els.contextMenu.style.left = `${Math.min(x, window.innerWidth - 180)}px`;
@@ -4760,15 +5548,70 @@ function setupEventListeners() {
 
         const name = prompt('Enter a name for this preset:');
         if (!name) return;
+        const trimmed = String(name).trim();
+        if (!trimmed) {
+            EL_toast('Template name cannot be empty.', 'error');
+            return;
+        }
 
-        extensionSettings.templates[name] = activeGlobals;
+        if (extensionSettings.templates[trimmed]) {
+            if (!confirm(`Template '${trimmed}' already exists. Overwrite?`)) return;
+        }
+
+        extensionSettings.templates[trimmed] = activeGlobals;
         saveSettings();
         renderTemplatesList();
+        EL_toast(`Template "${trimmed}" saved.`, 'success');
     });
+
+    // Whole-lorebook file operations (sidebar header)
+    const btnCreateLorebook = document.getElementById('btn-create-lorebook');
+    if (btnCreateLorebook) {
+        btnCreateLorebook.addEventListener('click', () => EL_createLorebook());
+    }
+    const btnImportLorebook = document.getElementById('btn-import-lorebook');
+    const importLorebookFile = document.getElementById('import-lorebook-file');
+    if (btnImportLorebook && importLorebookFile) {
+        btnImportLorebook.addEventListener('click', () => importLorebookFile.click());
+        importLorebookFile.addEventListener('change', () => {
+            const f = importLorebookFile.files && importLorebookFile.files[0];
+            importLorebookFile.value = '';
+            if (f) EL_importLorebookFile(f);
+        });
+    }
+
+    // Template import / export
+    const btnExportTemplates = document.getElementById('btn-export-templates');
+    if (btnExportTemplates) {
+        btnExportTemplates.addEventListener('click', () => EL_exportTemplates());
+    }
+    const btnImportTemplates = document.getElementById('btn-import-templates');
+    const importTemplatesFile = document.getElementById('import-templates-file');
+    if (btnImportTemplates && importTemplatesFile) {
+        btnImportTemplates.addEventListener('click', () => importTemplatesFile.click());
+        importTemplatesFile.addEventListener('change', () => {
+            const f = importTemplatesFile.files && importTemplatesFile.files[0];
+            importTemplatesFile.value = '';
+            if (f) EL_importTemplatesFile(f);
+        });
+    }
+
+    // Search field scope
+    const searchScope = document.getElementById('search-scope');
+    if (searchScope) {
+        searchScope.addEventListener('change', () => {
+            renderEntries();
+        });
+    }
 
     // Toolbar
     if (els.btnAddItem) {
         els.btnAddItem.addEventListener('click', () => openAddItemModal(null));
+    }
+
+    const btnExportLorebook = document.getElementById('btn-export-lorebook');
+    if (btnExportLorebook) {
+        btnExportLorebook.addEventListener('click', () => EL_exportLorebook(currentLorebookName));
     }
     
     const btnToggleAllFolders = document.getElementById('btn-toggle-all-folders');

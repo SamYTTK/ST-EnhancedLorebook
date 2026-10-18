@@ -386,6 +386,12 @@ function applyColors() {
             try { root.style.removeProperty(k); } catch (e) {}
         });
     } else {
+        // Mirror residue from EL_applyFollowTheme (light values written for a
+        // light SillyTavern theme) would punch holes in the dark palette, so
+        // drop the mirrored variables first; saved custom colours re-apply below.
+        ['--bg-color', '--panel-bg', '--text-color', '--text-muted', '--panel-border', '--primary-color'].forEach(k => {
+            try { root.style.removeProperty(k); } catch (e) {}
+        });
         if (colors.bg) root.style.setProperty('--bg-color', colors.bg);
         if (colors.panel) root.style.setProperty('--panel-bg', colors.panel);
         if (colors.text) root.style.setProperty('--text-color', colors.text);
@@ -509,6 +515,11 @@ function EL_applyFollowTheme() {
         if (em) set('--primary-color', em);
     } catch (e) {
         try { document.body.classList.remove('el-theme-light'); } catch (_e) {}
+        try {
+            ['--bg-color', '--panel-bg', '--text-color', '--text-muted', '--panel-border', '--primary-color'].forEach(k => {
+                document.documentElement.style.removeProperty(k);
+            });
+        } catch (_e2) {}
         EL_warn('follow theme unavailable, staying on dark palette', e);
     }
 }
@@ -1561,7 +1572,7 @@ function ensureFoldersStructure(lbName, { prune = true } = {}) {
  * sanitize-filename, so a name with path characters would silently become a
  * different file and could collide with another book.
  * @param {string} name Raw user-supplied name.
- * @param {object} [opts] { checkExists: boolean } — reject names already taken.
+ * @param {object} [opts] { checkExists: boolean, selfName: string } — reject names already taken (case-insensitively); selfName is the book being renamed, so a new name that differs from it only in letter case is rejected as unsafe on case-insensitive filesystems.
  * @returns {string|null} Error message, or null when the name is usable.
  */
 function EL_validateLorebookName(name, opts) {
@@ -1572,10 +1583,21 @@ function EL_validateLorebookName(name, opts) {
     if (trimmed === '.' || trimmed === '..') return 'Name cannot be "." or "..".';
     if (/[\/\\:*?"<>|]/.test(trimmed)) return 'Name cannot contain any of / \\ : * ? " < > |.';
     if (/^[. ]/.test(trimmed) || /[. ]$/.test(trimmed)) return 'Name cannot start or end with a dot or space.';
+    if (/[\x00-\x1f\x7f-\x9f]/.test(trimmed)) return 'Name cannot contain control characters.';
+    if (trimmed.length > 255) return 'Name is too long (255 characters maximum).';
     if (o.checkExists) {
         try {
             const names = (stContext && typeof stContext.getWorldInfoNames === 'function') ? stContext.getWorldInfoNames() : [];
-            if (Array.isArray(names) && names.includes(trimmed)) return 'A lorebook named "' + trimmed + '" already exists.';
+            if (Array.isArray(names)) {
+                const lower = trimmed.toLowerCase();
+                const hit = names.find(n => String(n).toLowerCase() === lower);
+                if (hit !== undefined) {
+                    if (o.selfName !== undefined && o.selfName !== null && String(o.selfName).toLowerCase() === lower) {
+                        return 'A name that differs only in letter case is not supported — the filesystem treats it as the same file.';
+                    }
+                    return 'A lorebook named "' + trimmed + '" already exists (names are matched ignoring case).';
+                }
+            }
         } catch (e) {}
     }
     return null;
@@ -1724,7 +1746,7 @@ async function EL_renameLorebook(oldName) {
         return;
     }
     if (newName === oldName) return;
-    const err = EL_validateLorebookName(newName, { checkExists: true });
+    const err = EL_validateLorebookName(newName, { checkExists: true, selfName: oldName });
     if (err) {
         EL_toast(err, 'error');
         return;
@@ -1775,6 +1797,10 @@ async function EL_renameLorebook(oldName) {
         if (extensionSettings && extensionSettings.folders && extensionSettings.folders[oldName]) {
             extensionSettings.folders[newName] = extensionSettings.folders[oldName];
             delete extensionSettings.folders[oldName];
+        }
+        if (extensionSettings && extensionSettings.foldersExpanded && extensionSettings.foldersExpanded[oldName]) {
+            extensionSettings.foldersExpanded[newName] = extensionSettings.foldersExpanded[oldName];
+            delete extensionSettings.foldersExpanded[oldName];
         }
         saveSettings();
     } catch (e) {}
@@ -1905,6 +1931,10 @@ async function EL_exportLorebook(name) {
  */
 async function EL_importLorebookFile(file) {
     if (!file) return;
+    if (typeof file.size === 'number' && file.size > 20 * 1024 * 1024) {
+        EL_toast('Import failed: file is too large (20 MB maximum).', 'error');
+        return;
+    }
     let rawName = String(file.name || 'lorebook');
     if (rawName.toLowerCase().endsWith('.json')) rawName = rawName.slice(0, -5);
     rawName = rawName.trim() || 'lorebook';
@@ -1936,14 +1966,14 @@ async function EL_importLorebookFile(file) {
         EL_toast('Import failed: file is not valid JSON.', 'error');
         return;
     }
-    if (!data || typeof data !== 'object' || !data.entries || typeof data.entries !== 'object') {
+    if (!data || typeof data !== 'object' || Array.isArray(data) || !data.entries || typeof data.entries !== 'object' || Array.isArray(data.entries)) {
         EL_toast('Import failed: file must contain an "entries" object.', 'error');
         return;
     }
     let exists = false;
     try {
         const names = (stContext && typeof stContext.getWorldInfoNames === 'function') ? stContext.getWorldInfoNames() : [];
-        exists = Array.isArray(names) && names.includes(rawName);
+        exists = Array.isArray(names) && names.some(n => String(n).toLowerCase() === rawName.toLowerCase());
     } catch (e) {}
     if (exists) {
         let ok = false;
@@ -4317,6 +4347,23 @@ function EL_batchValuesEqual(a, b) {
 }
 
 /**
+ * Canonical serialisation for undo comparisons: EL_canonicalJson when the
+ * hub-tools script exposed it, otherwise plain JSON. Two deep-equal values
+ * must serialise identically regardless of key insertion order.
+ * @param {*} value Value to serialise.
+ * @returns {string} Canonical string form (never throws).
+ */
+function EL_batchCanonicalJson(value) {
+    try {
+        if (typeof EL_canonicalJson === 'function') return EL_canonicalJson(value);
+    } catch (e) {}
+    try {
+        if (typeof window !== 'undefined' && window && typeof window.EL_canonicalJson === 'function') return window.EL_canonicalJson(value);
+    } catch (e) {}
+    try { return JSON.stringify(value); } catch (e) { return String(value); }
+}
+
+/**
  * Short human label for an entry in the preview/undo UI.
  * @param {string} uid
  * @param {object} entry
@@ -4802,6 +4849,7 @@ async function EL_batchConfirmApply() {
         }
         const book = currentLorebookName;
         const prev = {};
+        const applied = {};
         const foldersBefore = EL_cloneBatchValue((extensionSettings.folders && extensionSettings.folders[book]) || []);
         const changedUids = [];
         for (const uid of plan.uids) {
@@ -4819,10 +4867,13 @@ async function EL_batchConfirmApply() {
             if (!changedFields.length) continue;
             changedUids.push(String(uid));
             const oldVals = {};
+            const appliedVals = {};
             for (const f of changedFields) {
                 oldVals[f] = (entry[f] === undefined) ? EL_BATCH_MISSING : EL_cloneBatchValue(entry[f]);
+                appliedVals[f] = EL_cloneBatchValue(writes[f]);
             }
             prev[String(uid)] = oldVals;
+            applied[String(uid)] = appliedVals;
             for (const f of changedFields) entry[f] = writes[f];
             if (Object.prototype.hasOwnProperty.call(writes, 'delayUntilRecursion')) {
                 try { delete entry.delayUntilRecursionLevel; } catch (e) {}
@@ -4865,7 +4916,11 @@ async function EL_batchConfirmApply() {
             return;
         }
         try { saveSettings(); } catch (e) {}
-        EL_batchUndoState = { book, prev, foldersBefore: folderChanged ? foldersBefore : null, at: Date.now() };
+        let foldersAfter = null;
+        if (folderChanged) {
+            try { foldersAfter = EL_cloneBatchValue((extensionSettings.folders && extensionSettings.folders[book]) || []); } catch (e) { foldersAfter = null; }
+        }
+        EL_batchUndoState = { book, prev, applied, foldersBefore: folderChanged ? foldersBefore : null, foldersAfter, at: Date.now() };
         EL_updateBatchUndoButton();
         EL_batchPendingPlan = null;
         try { EL_modalClose(previewEl); } catch (e) {}
@@ -4883,7 +4938,11 @@ async function EL_batchConfirmApply() {
 
 /**
  * Restore the previous values captured by the last batch apply, through
- * the same guard-save path, then re-render.
+ * the same guard-save path, then re-render. A field is only reverted when
+ * the entry still holds the value the batch wrote: anything the user
+ * edited afterwards is left untouched and reported. The folder snapshot
+ * is only restored when the current layout still matches what the batch
+ * left behind.
  */
 async function EL_batchUndoBatch() {
     try {
@@ -4898,11 +4957,17 @@ async function EL_batchUndoBatch() {
             return;
         }
         const uids = Object.keys(s.prev || {});
+        let skipped = 0;
         for (const uid of uids) {
             const entry = currentLorebookData.entries[uid];
             if (!entry) continue;
             const oldVals = s.prev[uid] || {};
+            const appliedVals = (s.applied && s.applied[uid]) || {};
             for (const f of Object.keys(oldVals)) {
+                if (Object.prototype.hasOwnProperty.call(appliedVals, f) && !EL_batchValuesEqual(entry[f], appliedVals[f])) {
+                    skipped++;
+                    continue;
+                }
                 const v = oldVals[f];
                 try {
                     if (v === EL_BATCH_MISSING) delete entry[f];
@@ -4910,12 +4975,26 @@ async function EL_batchUndoBatch() {
                 } catch (e) {}
             }
         }
+        let foldersSkipped = false;
         if (s.foldersBefore) {
+            let restoreFolders = true;
             try {
-                if (!extensionSettings.folders) extensionSettings.folders = {};
-                extensionSettings.folders[s.book] = EL_cloneBatchValue(s.foldersBefore);
-                saveSettings();
-            } catch (e) {}
+                if (s.foldersAfter !== undefined && s.foldersAfter !== null) {
+                    const curFolders = (extensionSettings.folders && extensionSettings.folders[s.book]) || [];
+                    if (EL_batchCanonicalJson(curFolders) !== EL_batchCanonicalJson(s.foldersAfter)) {
+                        restoreFolders = false;
+                    }
+                }
+            } catch (e) { restoreFolders = true; }
+            if (restoreFolders) {
+                try {
+                    if (!extensionSettings.folders) extensionSettings.folders = {};
+                    extensionSettings.folders[s.book] = EL_cloneBatchValue(s.foldersBefore);
+                    saveSettings();
+                } catch (e) {}
+            } else {
+                foldersSkipped = true;
+            }
         }
         const ok = await ELG_guardSave(s.book, currentLorebookData, { explicitDelete: false, source: 'user', note: 'Undo batch edit' });
         EL_logGuardResult(ok, 'Undo batch edit', s.book);
@@ -4928,7 +5007,12 @@ async function EL_batchUndoBatch() {
         }
         EL_batchClearUndo();
         renderEntries();
-        if (typeof showToast === 'function') showToast('Batch edit undone (' + uids.length + ' entr' + (uids.length === 1 ? 'y' : 'ies') + ').');
+        const skippedTotal = skipped + (foldersSkipped ? 1 : 0);
+        if (skippedTotal > 0) {
+            if (typeof EL_toast === 'function') EL_toast('Undid the batch, but left ' + skippedTotal + ' field(s) you changed afterwards untouched.', 'warning');
+        } else if (typeof showToast === 'function') {
+            showToast('Batch edit undone (' + uids.length + ' entr' + (uids.length === 1 ? 'y' : 'ies') + ').');
+        }
     } catch (e) {
         EL_error('batch undo failed', e);
         if (typeof showToast === 'function') showToast('Undo failed.');
@@ -7704,6 +7788,23 @@ function EL_uniqueFolderName(base, parentId, excludeId) {
 }
 
 /**
+ * True when folderId sits inside ancestorId (its parentId chain contains
+ * ancestorId). A copy of the ancestor already carries the whole subtree,
+ * so copying the descendant as well would duplicate it.
+ * @param {string} folderId Candidate descendant folder id.
+ * @param {string} ancestorId Candidate ancestor folder id.
+ * @returns {boolean} True when folderId is a strict descendant of ancestorId.
+ */
+function EL_folderIsDescendantOf(folderId, ancestorId) {
+    if (!folderId || !ancestorId || folderId === ancestorId) return false;
+    try {
+        return EL_folderMoveWouldCycle(ancestorId, folderId);
+    } catch (e) {
+        return false;
+    }
+}
+
+/**
  * Cycle check: would moving dragId under targetId make dragId its own
  * ancestor? Walks the target's parentId chain; refuses self-drops too.
  * Without this the tree becomes an infinite loop and render recursion hangs.
@@ -7951,7 +8052,12 @@ async function EL_pasteFoldersInto(targetFolderId) {
                 EL_toast(done ? ('Moved ' + done + ' folder' + (done === 1 ? '' : 's') + ' to "' + targetPath + '".' + (skipped ? ' Skipped ' + skipped + '.' : '')) : 'Nothing pasted.', done ? 'success' : 'error');
             } catch (e) {}
         } else {
-            for (const id of ids) {
+            // Copying a parent already duplicates its whole subtree via
+            // duplicateFolderHelper, so drop any selected folder that sits
+            // inside another selected folder. Cut mode is unaffected.
+            const copyIds = ids.filter(id => !ids.some(other => EL_folderIsDescendantOf(id, other)));
+            skipped += ids.length - copyIds.length;
+            for (const id of copyIds) {
                 const f = folders.find(x => x && x.id === id);
                 if (!f) {
                     skipped++;

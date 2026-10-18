@@ -75,9 +75,25 @@ together, or delete and download them in bulk.
 ## Tidying up with folders
 
 You can group entries into named folders, and folders can hold sub-folders,
-as deep as you like. Drag entries and folders around to arrange them, fold
-whole branches away with one click, and right-click a folder to rename it or
-make a new one inside it.
+as deep as you like. Fold whole branches away with one click — the app
+remembers which branches you left open, even after you switch lorebooks.
+Nested folders show their path (like `Bestiary / Dragons`) under the name so
+you always know where you are. Right-click a folder to rename it or make a new
+one inside it. Folder names can't contain `/` or `\` and can't repeat a name
+already used next to it, so the layout stays unambiguous.
+
+To rearrange, drag the little grip handle on any entry or folder: drop entries
+into folders (and folders into other folders to nest them), and drop onto the
+empty list area to move things back to the top level. Entry order itself is set
+with the Order field on the card — dragging never changes it. A folder can never be dropped into itself or one of its own
+sub-folders. If you prefer the list to stay put, the drag handles can be
+switched off in Settings (gear icon).
+
+To move whole folders at once, Ctrl-click (or Cmd-click) folder headers to
+select several, then right-click to cut or copy them and paste them into
+another folder. If a folder has nothing in it — no entries and no sub-folders
+— the "Remove Empty Folders" menu item clears those away for you (it always
+asks first).
 
 These folders are just your own way of keeping the overview — a grouping
 inside this app. They don't change your actual lorebook files.

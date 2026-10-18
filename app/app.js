@@ -16,6 +16,8 @@ let _syncPollActive = null;   // { id, startedAt }
 let _elRenderCtx = null;
 let extensionSettings = {};
 let expandedFolders = new Set();
+let selectedFolders = new Set();
+let EL_folderClipboard = null;
 let agentEngine = null;
 let agentManager = null;
 let agentUIInitialized = false;
@@ -178,11 +180,15 @@ async function init() {
             colors: {},
             templates: {}, // name -> array of lorebook names
             folders: {},    // lorebookName -> array of {id, name, entries: [uid, uid]}
+            dragAndDrop: true,
+            foldersExpanded: {}, // lorebookName -> array of expanded folder ids
         };
     }
     extensionSettings = stContext.extensionSettings[EL_SETTINGS_KEY];
     if (!extensionSettings.folders) extensionSettings.folders = {};
     if (!extensionSettings.templates) extensionSettings.templates = {};
+    if (typeof extensionSettings.dragAndDrop !== 'boolean') extensionSettings.dragAndDrop = true;
+    if (!extensionSettings.foldersExpanded || typeof extensionSettings.foldersExpanded !== 'object') extensionSettings.foldersExpanded = {};
     if (!extensionSettings.sidebarPanelHeights) extensionSettings.sidebarPanelHeights = {};
     if (!extensionSettings.sidebarPanelsCollapsed) extensionSettings.sidebarPanelsCollapsed = {};
     if (!extensionSettings.sync) extensionSettings.sync = {};
@@ -389,6 +395,8 @@ function openSettings() {
     if (syncLogLevel) syncLogLevel.value = (extensionSettings.sync?.logLevel || 'INFO').toUpperCase();
     const syncVerbose = document.getElementById('sync-verbose');
     if (syncVerbose) syncVerbose.checked = !!extensionSettings.sync?.verbose;
+    const dragDrop = document.getElementById('setting-drag-drop');
+    if (dragDrop) dragDrop.checked = extensionSettings.dragAndDrop !== false;
     EL_modalOpen(els.settingsModal);
 }
 
@@ -1357,7 +1365,9 @@ async function openLorebook(name) {
     els.entriesContainer.classList.remove('hidden');
     selectedEntries.clear();
     lastClickedEntryUid = null;
-    expandedFolders.clear();
+    try { selectedFolders.clear(); } catch (e) {}
+    try { EL_clearDragHighlights(); } catch (e) {}
+    try { EL_restoreExpandedFolders(); } catch (e) { try { expandedFolders.clear(); } catch (_e) {} }
     updateBatchButton();
 
     document.querySelectorAll('.agent-sidebar-item').forEach(i => i.classList.remove('active'));
@@ -2329,15 +2339,40 @@ function createFolderElement(folder, filteredUids, isRoot = false) {
 
     header.innerHTML = titleHtml;
 
+    if (!isRoot && folder.parentId) {
+        try {
+            const fullPath = getFolderPathName(folder.id);
+            const sep = ' / ';
+            const idx = fullPath.lastIndexOf(sep);
+            const ancestors = (idx === -1) ? '' : fullPath.slice(0, idx);
+            if (ancestors) {
+                const crumb = document.createElement('div');
+                crumb.className = 'el-breadcrumb';
+                crumb.textContent = ancestors;
+                crumb.title = fullPath;
+                const titleEl = header.querySelector('.folder-title');
+                if (titleEl && titleEl.parentNode === header) header.insertBefore(crumb, titleEl.nextSibling);
+                else header.appendChild(crumb);
+            }
+        } catch (e) {}
+    }
+
     if (!isRoot) {
         header.addEventListener('click', (e) => {
             if (e.target.closest('button') || e.target.closest('input') || e.target.closest('label')) return;
+            if (e.target.closest('.el-drag-handle')) return;
+            if (e.ctrlKey || e.metaKey) {
+                e.stopPropagation();
+                try { EL_toggleFolderSelected(folder.id, container); } catch (err) {}
+                return;
+            }
             container.classList.toggle('collapsed');
             if (container.classList.contains('collapsed')) {
                 expandedFolders.delete(folder.id);
             } else {
                 expandedFolders.add(folder.id);
             }
+            try { EL_saveExpandedFolders(); } catch (err) {}
         });
 
         const orderInput = header.querySelector('.folder-order-input');
@@ -2500,6 +2535,12 @@ function createFolderElement(folder, filteredUids, isRoot = false) {
 
     container.appendChild(header);
     container.appendChild(content);
+    try {
+        if (selectedFolders.has(folder.id)) container.classList.add('el-folder-selected');
+        if (EL_folderClipboard && EL_folderClipboard.mode === 'cut' && EL_folderClipboard.book === currentLorebookName && Array.isArray(EL_folderClipboard.folderIds) && EL_folderClipboard.folderIds.includes(folder.id)) container.classList.add('el-folder-cut');
+    } catch (e) {}
+    try { EL_setupFolderDrag(header, container, folder); } catch (e) {}
+    try { EL_setupFolderDrop(container, header, content, folder); } catch (e) {}
     return container;
 }
 
@@ -2689,6 +2730,8 @@ function createEntryCard(uid) {
         showContextMenu(e.clientX, e.clientY);
     });
 
+    try { EL_setupEntryDrag(card, String(uid)); } catch (e) {}
+
     return card;
 }
 
@@ -2817,9 +2860,19 @@ function download(content, fileName, contentType) {
 function renameFolder(folderId) {
     const folder = extensionSettings.folders[currentLorebookName].find(f => f.id === folderId);
     if (!folder) return;
-    const name = prompt('Enter new folder name:', folder.name);
-    if (!name) return;
-    folder.name = name;
+    let name = null;
+    try {
+        name = prompt('Enter new folder name:', folder.name);
+    } catch (e) {
+        return;
+    }
+    if (name === null || name === undefined) return;
+    const err = EL_validateFolderName(name, folder.parentId, folder.id);
+    if (err) {
+        try { EL_toast(err, 'error'); } catch (e) {}
+        return;
+    }
+    folder.name = String(name).trim();
     saveSettings();
     renderEntries();
 }
@@ -2951,18 +3004,19 @@ function executeFolderMove(folderId, targetParentId) {
     const folder = folders.find(f => f.id === folderId);
     if (!folder) return;
 
-    // Guard: prevent moving a folder into itself or its descendants
-    if (targetParentId) {
-        const descendants = getDescendantFolderIds(folderId);
-        if (targetParentId === folderId || descendants.has(targetParentId)) {
-            alert('Cannot move a folder into itself or one of its subfolders.');
-            return;
-        }
+    const res = EL_moveFolderToParent(folderId, targetParentId);
+    if (!res || !res.ok) {
+        try { EL_toast((res && res.reason) || 'Cannot move folder.', 'error'); } catch (e) {}
+        return;
     }
 
-    folder.parentId = targetParentId;
     saveSettings();
+    try { EL_saveExpandedFolders(); } catch (e) {}
     renderEntries();
+    try {
+        const label = targetParentId ? getFolderPathName(targetParentId) : 'root';
+        EL_toast('Moved folder "' + ((res.folder && res.folder.name) || '') + '" to ' + label + '.', 'success');
+    } catch (e) {}
 }
 
 // ==========================================
@@ -3590,12 +3644,22 @@ async function createItems() {
             if (!extensionSettings.folders[currentLorebookName]) {
                 extensionSettings.folders[currentLorebookName] = [];
             }
-            
+
+            const stagedNames = new Set();
+            for (const rawName of folderNamesList) {
+                const nameErr = EL_validateFolderName(rawName, parentFolderId, null, stagedNames);
+                if (nameErr) {
+                    try { EL_toast(nameErr, 'error'); } catch (e) {}
+                    return;
+                }
+                stagedNames.add(String(rawName).trim().toLowerCase());
+            }
+
             folderNamesList.forEach(name => {
                 const newId = 'folder_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5);
                 extensionSettings.folders[currentLorebookName].push({
                     id: newId,
-                    name: name,
+                    name: String(name).trim(),
                     parentId: parentFolderId,
                     order: order,
                     entries: [],
@@ -4994,6 +5058,47 @@ function showContextMenu(x, y, targetType = 'entry', targetId = null) {
         });
         els.contextMenu.appendChild(moveFolderItem);
 
+        // Cut / Copy folder(s): operate on the multi-selection when non-empty, else on the clicked folder
+        {
+            const liveFolders = (extensionSettings.folders[currentLorebookName] || []).map(f => f.id);
+            const picked = selectedFolders.size ? Array.from(selectedFolders).filter(id => liveFolders.includes(id)) : [targetId];
+            const n = picked.length;
+            const cutItem = document.createElement('div');
+            cutItem.className = 'context-item';
+            cutItem.innerHTML = '<i class="fa-solid fa-scissors"></i> ' + (n > 1 ? `Cut ${n} Selected Folders` : 'Cut Folder');
+            cutItem.addEventListener('click', () => {
+                els.contextMenu.classList.remove('visible');
+                try { EL_cutFolders(picked); } catch (e) {}
+            });
+            els.contextMenu.appendChild(cutItem);
+
+            const copyItem = document.createElement('div');
+            copyItem.className = 'context-item';
+            copyItem.innerHTML = '<i class="fa-solid fa-copy"></i> ' + (n > 1 ? `Copy ${n} Selected Folders` : 'Copy Folder');
+            copyItem.addEventListener('click', () => {
+                els.contextMenu.classList.remove('visible');
+                try { EL_copyFolders(picked); } catch (e) {}
+            });
+            els.contextMenu.appendChild(copyItem);
+        }
+
+        // Paste folder(s) into this folder
+        {
+            const hasFolderClip = EL_folderClipboard && Array.isArray(EL_folderClipboard.folderIds) && EL_folderClipboard.folderIds.length > 0 && EL_folderClipboard.book === currentLorebookName;
+            const pasteFolderItem = document.createElement('div');
+            pasteFolderItem.className = 'context-item' + (hasFolderClip ? '' : ' disabled');
+            pasteFolderItem.style.opacity = hasFolderClip ? '' : '0.45';
+            pasteFolderItem.style.pointerEvents = hasFolderClip ? '' : 'none';
+            pasteFolderItem.innerHTML = '<i class="fa-solid fa-paste"></i> Paste into this Folder' + (hasFolderClip ? ` (${EL_folderClipboard.folderIds.length})` : '');
+            if (hasFolderClip) {
+                pasteFolderItem.addEventListener('click', async () => {
+                    els.contextMenu.classList.remove('visible');
+                    try { await EL_pasteFoldersInto(targetId); } catch (e) {}
+                });
+            }
+            els.contextMenu.appendChild(pasteFolderItem);
+        }
+
         // Send Folder to Lorebook
         const sendFolderItem = document.createElement('div');
         sendFolderItem.className = 'context-item';
@@ -5013,6 +5118,16 @@ function showContextMenu(x, y, targetType = 'entry', targetId = null) {
             renameFolder(targetId);
         });
         els.contextMenu.appendChild(renameFolderItem);
+
+        // Remove Empty Folders (book-wide cleanup, confirmed, never automatic)
+        const cleanupItem = document.createElement('div');
+        cleanupItem.className = 'context-item';
+        cleanupItem.innerHTML = '<i class="fa-solid fa-broom"></i> Remove Empty Folders...';
+        cleanupItem.addEventListener('click', async () => {
+            els.contextMenu.classList.remove('visible');
+            try { await EL_cleanupEmptyFolders(); } catch (e) {}
+        });
+        els.contextMenu.appendChild(cleanupItem);
 
         // Divider
         const divider = document.createElement('div');
@@ -5058,6 +5173,15 @@ function showContextMenu(x, y, targetType = 'entry', targetId = null) {
             EL_renameLorebook(bookName);
         });
         els.contextMenu.appendChild(renameItem);
+
+        const cleanupLbItem = document.createElement('div');
+        cleanupLbItem.className = 'context-item';
+        cleanupLbItem.innerHTML = '<i class="fa-solid fa-broom"></i> Remove Empty Folders...';
+        cleanupLbItem.addEventListener('click', async () => {
+            els.contextMenu.classList.remove('visible');
+            try { await EL_cleanupEmptyFolders(bookName); } catch (e) {}
+        });
+        els.contextMenu.appendChild(cleanupLbItem);
 
         const dividerLb = document.createElement('div');
         dividerLb.className = 'context-divider';
@@ -5424,7 +5548,7 @@ function toggleAllFolders() {
         expandedFolders.clear();
     }
 
-    saveSettings();
+    try { EL_saveExpandedFolders(); } catch (e) { try { saveSettings(); } catch (_e) {} }
     renderEntries();
 }
 
@@ -5518,6 +5642,17 @@ function setupEventListeners() {
             try { (window.ELLogger||console).info(`[EL] verbose → ${extensionSettings.sync.verbose}`); } catch {}
         });
     }
+    const dragDropInput = document.getElementById('setting-drag-drop');
+    if (dragDropInput) {
+        dragDropInput.addEventListener('change', () => {
+            try {
+                extensionSettings.dragAndDrop = !!dragDropInput.checked;
+                saveSettings();
+                renderEntries();
+                EL_toast(extensionSettings.dragAndDrop ? 'Drag-and-drop enabled.' : 'Drag-and-drop disabled.', 'info');
+            } catch (e) {}
+        });
+    }
 
     // Search Lorebooks
     const searchLorebooksInput = document.getElementById('search-lorebooks');
@@ -5608,6 +5743,26 @@ function setupEventListeners() {
     if (els.btnAddItem) {
         els.btnAddItem.addEventListener('click', () => openAddItemModal(null));
     }
+
+    // Root drop target (un-file entries / un-nest folders) + global drag cleanup
+    try { EL_setupRootDrop(); } catch (e) {}
+    try {
+        document.addEventListener('dragend', () => { try { EL_clearDragHighlights(); } catch (_e) {} });
+        document.addEventListener('dragleave', (e) => {
+            try {
+                if (!e.relatedTarget) EL_clearDragHighlights();
+            } catch (_e) {}
+        });
+        if (!document.__elDndMouseup) {
+            document.__elDndMouseup = true;
+            document.addEventListener('mouseup', () => {
+                try {
+                    if (EL_dragPayload) return;
+                    if (typeof EL_clearStaleDraggables === 'function') EL_clearStaleDraggables();
+                } catch (_e) {}
+            });
+        }
+    } catch (e) {}
 
     const btnExportLorebook = document.getElementById('btn-export-lorebook');
     if (btnExportLorebook) {
@@ -6728,6 +6883,871 @@ async function restoreBackupWatch(backupId, closeViewModal) {
     } catch (e) {
         if (typeof showToast === 'function') showToast('Restore failed: ' + e.message);
     }
+}
+
+// ==========================================
+// Folders: names, expand state, drag-and-drop, clipboard (5.1 / 5.3)
+// ==========================================
+let EL_dragPayload = null;
+
+/**
+ * Whether drag-and-drop is enabled. Off means the list behaves exactly as it
+ * does today: no handles, no drop targets.
+ * @returns {boolean} True unless the user turned the setting off.
+ */
+function EL_isDragEnabled() {
+    try {
+        return !!extensionSettings && extensionSettings.dragAndDrop !== false;
+    } catch (e) {
+        return true;
+    }
+}
+
+/**
+ * Shared validator for folder names. Folder names flow into folder-url.js
+ * URLs where the path is slash- or " / "-joined, so separators and sibling
+ * duplicates would corrupt the path encoding or make the tree ambiguous.
+ * @param {string} rawName User-supplied name.
+ * @param {string|null} parentId Sibling scope (same parentId).
+ * @param {string|null} [excludeId] Folder id to ignore (rename case).
+ * @param {Set<string>} [extraLowerNames] Extra taken lowercase names (batch create).
+ * @returns {string|null} Error message, or null when the name is usable.
+ */
+function EL_validateFolderName(rawName, parentId, excludeId, extraLowerNames) {
+    const trimmed = (rawName === null || rawName === undefined) ? '' : String(rawName).trim();
+    if (!trimmed) return 'Folder name cannot be empty.';
+    if (trimmed === '.' || trimmed === '..') return 'Folder name cannot be "." or "..".';
+    if (trimmed.includes(' / ')) return 'Folder name cannot contain " / " — it separates folders in the path.';
+    if (trimmed.includes('/') || trimmed.includes('\\')) return 'Folder name cannot contain / or \\ — they would split the folder path.';
+    try {
+        const lower = trimmed.toLowerCase();
+        if (extraLowerNames && typeof extraLowerNames.has === 'function' && extraLowerNames.has(lower)) {
+            return 'A folder named "' + trimmed + '" already exists here.';
+        }
+        const folders = (extensionSettings && extensionSettings.folders && currentLorebookName) ? (extensionSettings.folders[currentLorebookName] || []) : [];
+        const clash = folders.some(f => f && f.id !== excludeId && (f.parentId || null) === (parentId || null) && String(f.name || '').toLowerCase() === lower);
+        if (clash) return 'A folder named "' + trimmed + '" already exists here.';
+    } catch (e) {}
+    return null;
+}
+
+/**
+ * Disambiguate a folder name among siblings: "Name" -> "Name (2)", ...
+ * @param {string} base Desired name.
+ * @param {string|null} parentId Sibling scope.
+ * @param {string|null} [excludeId] Folder id to ignore.
+ * @returns {string} A name no sibling currently uses.
+ */
+function EL_uniqueFolderName(base, parentId, excludeId) {
+    let name = (base === null || base === undefined) ? '' : String(base).trim();
+    if (!name) name = 'Folder';
+    try {
+        const folders = (extensionSettings && extensionSettings.folders && currentLorebookName) ? (extensionSettings.folders[currentLorebookName] || []) : [];
+        const taken = new Set();
+        folders.forEach(f => {
+            if (f && f.id !== excludeId && (f.parentId || null) === (parentId || null)) taken.add(String(f.name || '').toLowerCase());
+        });
+        if (!taken.has(name.toLowerCase())) return name;
+        let i = 2;
+        while (taken.has((name + ' (' + i + ')').toLowerCase())) i++;
+        return name + ' (' + i + ')';
+    } catch (e) {
+        return name;
+    }
+}
+
+/**
+ * Cycle check: would moving dragId under targetId make dragId its own
+ * ancestor? Walks the target's parentId chain; refuses self-drops too.
+ * Without this the tree becomes an infinite loop and render recursion hangs.
+ * @param {string} dragId Folder being moved.
+ * @param {string|null} targetId Proposed new parent (null = root, always safe).
+ * @returns {boolean} True when the move must be refused.
+ */
+function EL_folderMoveWouldCycle(dragId, targetId) {
+    if (!dragId || !targetId) return false;
+    if (dragId === targetId) return true;
+    try {
+        const folders = (extensionSettings && extensionSettings.folders && currentLorebookName) ? (extensionSettings.folders[currentLorebookName] || []) : [];
+        let cur = folders.find(f => f && f.id === targetId) || null;
+        let guard = 0;
+        while (cur && guard < 256) {
+            const pid = cur.parentId || null;
+            if (pid === null) break;
+            if (pid === dragId) return true;
+            cur = folders.find(f => f && f.id === pid) || null;
+            guard++;
+        }
+    } catch (e) {}
+    return false;
+}
+
+/**
+ * Move an entry into a folder (or root). Membership goes through the
+ * folder-url helper so the entry leaves its previous folder (one folder
+ * at a time).
+ * @param {string|number} uid Entry to move.
+ * @param {string|null} targetFolderId Destination folder (null = root).
+ * @returns {{ok: boolean, reason?: string, target?: string|null}} Outcome.
+ */
+function EL_moveEntryToFolderAt(uid, targetFolderId) {
+    try {
+        const book = currentLorebookName;
+        if (!book || !currentLorebookData || !currentLorebookData.entries || !currentLorebookData.entries[uid]) {
+            return { ok: false, reason: 'Entry not found.' };
+        }
+        const sUid = String(uid);
+        const folders = (extensionSettings && extensionSettings.folders) ? (extensionSettings.folders[book] || []) : [];
+        const target = (targetFolderId === null || targetFolderId === undefined) ? null : targetFolderId;
+        if (target !== null && !folders.some(f => f && f.id === target)) {
+            return { ok: false, reason: 'Target folder not found.' };
+        }
+        try {
+            if (window.ELFolderUrl && typeof window.ELFolderUrl.assignEntryToFolderId === 'function') {
+                const assigned = window.ELFolderUrl.assignEntryToFolderId(sUid, target, book);
+                if (!assigned && target !== null) return { ok: false, reason: 'Could not move entry.' };
+            } else {
+                folders.forEach(f => {
+                    if (f && Array.isArray(f.entries)) f.entries = f.entries.filter(x => String(x) !== sUid);
+                });
+                if (target !== null) {
+                    const t = folders.find(f => f && f.id === target);
+                    if (!t) return { ok: false, reason: 'Target folder not found.' };
+                    if (!Array.isArray(t.entries)) t.entries = [];
+                    if (!t.entries.map(String).includes(sUid)) t.entries.push(sUid);
+                }
+            }
+        } catch (e) {
+            return { ok: false, reason: 'Could not move entry.' };
+        }
+        return { ok: true, target: target };
+    } catch (e) {
+        return { ok: false, reason: 'Could not move entry.' };
+    }
+}
+
+/**
+ * Move a folder under a new parent (or root), with the cycle check.
+ * @param {string} folderId Folder to move.
+ * @param {string|null} newParentId Destination parent (null = root).
+ * @param {number} [newOrder] Optional order for sibling reordering.
+ * @returns {{ok: boolean, reason?: string, folder?: object}} Outcome.
+ */
+function EL_moveFolderToParent(folderId, newParentId, newOrder) {
+    try {
+        const folders = (extensionSettings && extensionSettings.folders && currentLorebookName) ? (extensionSettings.folders[currentLorebookName] || []) : [];
+        const folder = folders.find(f => f && f.id === folderId);
+        if (!folder) return { ok: false, reason: 'Folder not found.' };
+        const target = (newParentId === null || newParentId === undefined) ? null : newParentId;
+        if (target !== null && !folders.some(f => f && f.id === target)) {
+            return { ok: false, reason: 'Target folder not found.' };
+        }
+        if (EL_folderMoveWouldCycle(folderId, target)) {
+            return { ok: false, reason: 'Cannot move a folder into itself or one of its subfolders.' };
+        }
+        folder.parentId = target;
+        if (typeof newOrder === 'number' && !isNaN(newOrder)) folder.order = newOrder;
+        return { ok: true, folder: folder };
+    } catch (e) {
+        return { ok: false, reason: 'Could not move folder.' };
+    }
+}
+
+/**
+ * Persist the current expand/collapse set for the open book.
+ */
+function EL_saveExpandedFolders() {
+    try {
+        if (!currentLorebookName) return;
+        if (!extensionSettings.foldersExpanded || typeof extensionSettings.foldersExpanded !== 'object') {
+            extensionSettings.foldersExpanded = {};
+        }
+        extensionSettings.foldersExpanded[currentLorebookName] = Array.from(expandedFolders);
+        saveSettings();
+    } catch (e) {}
+}
+
+/**
+ * Restore the expand/collapse set for the open book. Prunes ids that no
+ * longer exist. Books with no saved entry default to fully expanded.
+ */
+function EL_restoreExpandedFolders() {
+    try {
+        expandedFolders.clear();
+        const folders = (extensionSettings && extensionSettings.folders && currentLorebookName) ? (extensionSettings.folders[currentLorebookName] || []) : [];
+        const saved = extensionSettings && extensionSettings.foldersExpanded ? extensionSettings.foldersExpanded[currentLorebookName] : undefined;
+        if (!Array.isArray(saved)) {
+            folders.forEach(f => { if (f && f.id !== undefined && f.id !== null) expandedFolders.add(f.id); });
+            return;
+        }
+        const live = new Set(folders.map(f => f && f.id));
+        saved.forEach(id => { if (live.has(id)) expandedFolders.add(id); });
+    } catch (e) {}
+}
+
+/**
+ * Toggle a folder id in the multi-selection set.
+ * @param {string} folderId Folder to toggle.
+ * @param {Element} [container] Folder container to restyle.
+ */
+function EL_toggleFolderSelected(folderId, container) {
+    try {
+        if (selectedFolders.has(folderId)) {
+            selectedFolders.delete(folderId);
+            if (container && container.classList) container.classList.remove('el-folder-selected');
+        } else {
+            selectedFolders.add(folderId);
+            if (container && container.classList) container.classList.add('el-folder-selected');
+        }
+    } catch (e) {}
+}
+
+/**
+ * Cut folders: stash them in the folder clipboard for a later paste (move).
+ * @param {string[]} ids Live folder ids.
+ */
+function EL_cutFolders(ids) {
+    try {
+        const folders = (extensionSettings && extensionSettings.folders && currentLorebookName) ? (extensionSettings.folders[currentLorebookName] || []) : [];
+        const live = new Set(folders.map(f => f && f.id));
+        const list = (ids || []).filter(id => live.has(id));
+        if (!list.length) {
+            try { EL_toast('No folder to cut.', 'error'); } catch (e) {}
+            return;
+        }
+        EL_folderClipboard = { mode: 'cut', folderIds: list, book: currentLorebookName };
+        try { renderEntries(); } catch (e) {}
+        try { EL_toast('Cut ' + list.length + ' folder' + (list.length === 1 ? '' : 's') + ' — paste into a folder.', 'info'); } catch (e) {}
+    } catch (e) {}
+}
+
+/**
+ * Copy folders: stash them in the folder clipboard for repeated pastes.
+ * @param {string[]} ids Live folder ids.
+ */
+function EL_copyFolders(ids) {
+    try {
+        const folders = (extensionSettings && extensionSettings.folders && currentLorebookName) ? (extensionSettings.folders[currentLorebookName] || []) : [];
+        const live = new Set(folders.map(f => f && f.id));
+        const list = (ids || []).filter(id => live.has(id));
+        if (!list.length) {
+            try { EL_toast('No folder to copy.', 'error'); } catch (e) {}
+            return;
+        }
+        EL_folderClipboard = { mode: 'copy', folderIds: list, book: currentLorebookName };
+        try { renderEntries(); } catch (e) {}
+        try { EL_toast('Copied ' + list.length + ' folder' + (list.length === 1 ? '' : 's') + ' — paste into a folder.', 'info'); } catch (e) {}
+    } catch (e) {}
+}
+
+/**
+ * Paste the folder clipboard into a folder. Copies duplicate via
+ * duplicateFolderHelper; cuts move via EL_moveFolderToParent. Refuses pastes
+ * that would make a folder its own ancestor, and disambiguates names that
+ * collide with existing siblings. Clears a cut clipboard after pasting.
+ * @param {string} targetFolderId Destination folder id.
+ */
+async function EL_pasteFoldersInto(targetFolderId) {
+    try {
+        const clip = EL_folderClipboard;
+        if (!clip || !Array.isArray(clip.folderIds) || !clip.folderIds.length) {
+            try { EL_toast('Nothing to paste — cut or copy a folder first.', 'error'); } catch (e) {}
+            return;
+        }
+        if (!currentLorebookName || clip.book !== currentLorebookName) {
+            try { EL_toast('Clipboard is from a different lorebook.', 'error'); } catch (e) {}
+            return;
+        }
+        const folders = extensionSettings.folders[currentLorebookName] || [];
+        const target = folders.find(f => f && f.id === targetFolderId);
+        if (!target) {
+            try { EL_toast('Target folder not found.', 'error'); } catch (e) {}
+            return;
+        }
+        const ids = clip.folderIds.filter(id => folders.some(f => f && f.id === id));
+        if (!ids.length) {
+            try { EL_toast('Clipboard folders no longer exist.', 'error'); } catch (e) {}
+            EL_folderClipboard = null;
+            return;
+        }
+        let done = 0;
+        let skipped = 0;
+        let targetPath = targetFolderId;
+        try { targetPath = getFolderPathName(targetFolderId); } catch (e) {}
+        if (clip.mode === 'cut') {
+            for (const id of ids) {
+                const f = folders.find(x => x && x.id === id);
+                if (!f) {
+                    skipped++;
+                    continue;
+                }
+                if (EL_folderMoveWouldCycle(id, targetFolderId)) {
+                    skipped++;
+                    try { EL_toast('Cannot paste "' + f.name + '" into itself or a subfolder.', 'error'); } catch (e) {}
+                    continue;
+                }
+                const res = EL_moveFolderToParent(id, targetFolderId);
+                if (!res || !res.ok) {
+                    skipped++;
+                    try { EL_toast((res && res.reason) || 'Could not paste folder.', 'error'); } catch (e) {}
+                    continue;
+                }
+                try { f.name = EL_uniqueFolderName(f.name, targetFolderId, f.id); } catch (e) {}
+                done++;
+            }
+            EL_folderClipboard = null;
+            try { selectedFolders.clear(); } catch (e) {}
+            try { saveSettings(); } catch (e) {}
+            try { EL_saveExpandedFolders(); } catch (e) {}
+            try { renderEntries(); } catch (e) {}
+            try {
+                EL_toast(done ? ('Moved ' + done + ' folder' + (done === 1 ? '' : 's') + ' to "' + targetPath + '".' + (skipped ? ' Skipped ' + skipped + '.' : '')) : 'Nothing pasted.', done ? 'success' : 'error');
+            } catch (e) {}
+        } else {
+            for (const id of ids) {
+                const f = folders.find(x => x && x.id === id);
+                if (!f) {
+                    skipped++;
+                    continue;
+                }
+                if (EL_folderMoveWouldCycle(id, targetFolderId)) {
+                    skipped++;
+                    try { EL_toast('Cannot paste "' + f.name + '" into itself or a subfolder.', 'error'); } catch (e) {}
+                    continue;
+                }
+                let newId = null;
+                try {
+                    newId = await duplicateFolderHelper(id, targetFolderId);
+                } catch (e) {
+                    newId = null;
+                }
+                if (!newId) {
+                    skipped++;
+                    continue;
+                }
+                try {
+                    const nf = (extensionSettings.folders[currentLorebookName] || []).find(x => x && x.id === newId);
+                    if (nf) nf.name = EL_uniqueFolderName(nf.name, targetFolderId, newId);
+                } catch (e) {}
+                done++;
+            }
+            try { selectedFolders.clear(); } catch (e) {}
+            try { saveSettings(); } catch (e) {}
+            if (done) {
+                try {
+                    if (typeof ELG_guardSave === 'function') {
+                        const ok = await ELG_guardSave(currentLorebookName, currentLorebookData, { explicitDelete: false, source: 'user', note: 'Paste folders (copy)' });
+                        try { EL_logGuardResult(ok, 'Paste folders', currentLorebookName); } catch (_e) {}
+                    }
+                } catch (e) {}
+            }
+            try { renderEntries(); } catch (e) {}
+            try {
+                EL_toast(done ? ('Copied ' + done + ' folder' + (done === 1 ? '' : 's') + ' to "' + targetPath + '".' + (skipped ? ' Skipped ' + skipped + '.' : '')) : 'Nothing pasted.', done ? 'success' : 'error');
+            } catch (e) {}
+        }
+    } catch (e) {}
+}
+
+/**
+ * Remove folders which have no entries AND no subfolders, recursively (a
+ * folder holding only empty folders is itself removed). Never runs
+ * automatically: always confirms, reports the count, and persists.
+ * @param {string} [bookName] Book to clean (default: open book).
+ */
+async function EL_cleanupEmptyFolders(bookName) {
+    try {
+        const book = bookName || currentLorebookName;
+        if (!book) {
+            try { EL_toast('Open a lorebook first.', 'error'); } catch (e) {}
+            return;
+        }
+        const folders = (extensionSettings && extensionSettings.folders && extensionSettings.folders[book]) || [];
+        if (!folders.length) {
+            try { EL_toast('No folders to clean up.', 'info'); } catch (e) {}
+            return;
+        }
+        let live = null;
+        try {
+            if (book === currentLorebookName && currentLorebookData && currentLorebookData.entries) {
+                live = new Set(Object.keys(currentLorebookData.entries).map(String));
+            } else if (typeof stContext !== 'undefined' && stContext && typeof stContext.loadWorldInfo === 'function') {
+                const fresh = await stContext.loadWorldInfo(book);
+                if (fresh && fresh.entries) live = new Set(Object.keys(fresh.entries).map(String));
+            }
+        } catch (e) {
+            live = null;
+        }
+        if (live === null) {
+            try { EL_toast('Could not verify entries — cleanup cancelled, nothing removed.', 'error'); } catch (e) {}
+            return;
+        }
+        let ok = false;
+        try {
+            ok = confirm('Remove folders with no entries and no subfolders from "' + book + '"?');
+        } catch (e) {
+            return;
+        }
+        if (!ok) return;
+        const byId = new Map(folders.map(f => [f.id, f]));
+        const hasLiveEntries = (f) => {
+            try {
+                return Array.isArray(f.entries) && f.entries.some(uid => live.has(String(uid)));
+            } catch (e) {
+                return true;
+            }
+        };
+        let removed = 0;
+        let progress = true;
+        let guard = 0;
+        const removedIds = [];
+        while (progress && guard < 1000) {
+            guard++;
+            progress = false;
+            for (const f of folders) {
+                if (!f || !byId.has(f.id)) continue;
+                let kids = 0;
+                for (const x of folders) {
+                    if (x && byId.has(x.id) && x.parentId === f.id) {
+                        kids++;
+                        break;
+                    }
+                }
+                if (kids === 0 && !hasLiveEntries(f)) {
+                    byId.delete(f.id);
+                    removedIds.push(f.id);
+                    removed++;
+                    progress = true;
+                }
+            }
+        }
+        if (!removed) {
+            try { EL_toast('No empty folders found.', 'info'); } catch (e) {}
+            return;
+        }
+        extensionSettings.folders[book] = folders.filter(f => f && byId.has(f.id));
+        try {
+            removedIds.forEach(id => {
+                try { expandedFolders.delete(id); } catch (_e) {}
+                try { selectedFolders.delete(id); } catch (_e) {}
+            });
+            if (EL_folderClipboard && Array.isArray(EL_folderClipboard.folderIds)) {
+                EL_folderClipboard.folderIds = EL_folderClipboard.folderIds.filter(id => byId.has(id));
+                if (!EL_folderClipboard.folderIds.length) EL_folderClipboard = null;
+            }
+        } catch (e) {}
+        try { saveSettings(); } catch (e) {}
+        try { EL_saveExpandedFolders(); } catch (e) {}
+        if (book === currentLorebookName) {
+            try { renderEntries(); } catch (e) {}
+        }
+        try { EL_toast('Removed ' + removed + ' empty folder' + (removed === 1 ? '' : 's') + '.', 'success'); } catch (e) {}
+    } catch (e) {}
+}
+
+/**
+ * Read the in-flight drag payload (same-window drags set EL_dragPayload on
+ * dragstart; dataTransfer is the Firefox-safe fallback for drops).
+ * @param {DragEvent} e Drop event.
+ * @returns {{kind: string, uid?: string, id?: string}|null} Payload or null.
+ */
+function EL_readDragData(e) {
+    try {
+        if (EL_dragPayload && (EL_dragPayload.kind === 'entry' || EL_dragPayload.kind === 'folder')) return EL_dragPayload;
+        const raw = (e && e.dataTransfer && (e.dataTransfer.getData('application/x-el-drag') || e.dataTransfer.getData('text/plain'))) || '';
+        if (!raw) return null;
+        const d = JSON.parse(raw);
+        if (d && (d.kind === 'entry' || d.kind === 'folder')) return d;
+    } catch (err) {}
+    return null;
+}
+
+/**
+ * Clear every drop highlight. Called on dragleave/drop/dragend, including a
+ * document-level dragend so a cancelled drag or one leaving the window can
+ * never leave a stale highlight behind.
+ */
+function EL_clearDragHighlights() {
+    try {
+        const nodes = document.querySelectorAll('.el-drop-into, .el-drop-before, .el-drop-after, .el-drop-root');
+        nodes.forEach(el => el.classList.remove('el-drop-into', 'el-drop-before', 'el-drop-after', 'el-drop-root'));
+    } catch (e) {}
+}
+
+/**
+ * Reset draggable flags left set by a handle press that never became a drag
+ * (single global mouseup listener; never attached per card).
+ */
+function EL_clearStaleDraggables() {
+    try {
+        const nodes = document.querySelectorAll('.entry-card[draggable="true"], .folder-container[draggable="true"]');
+        nodes.forEach(el => { try { el.draggable = false; } catch (_e) {} });
+    } catch (e) {}
+}
+
+/**
+ * Persist + re-render + toast after a drop. Refused drags (cycles) toast an
+ * error and persist nothing.
+ * @param {{ok: boolean, reason?: string}} res Mutator outcome.
+ * @param {object} [opts] { entryMoved, note, success }.
+ */
+async function EL_afterDrop(res, opts) {
+    const o = opts || {};
+    try { EL_clearDragHighlights(); } catch (e) {}
+    if (!res || !res.ok) {
+        try { EL_toast((res && res.reason) || 'Drop failed.', 'error'); } catch (e) {}
+        return;
+    }
+    try { saveSettings(); } catch (e) {}
+    if (o.entryMoved) {
+        try {
+            if (typeof ELG_guardSave === 'function') {
+                const ok = await ELG_guardSave(currentLorebookName, currentLorebookData, { explicitDelete: false, source: 'user', note: o.note || 'Drag and drop' });
+                try { EL_logGuardResult(ok, o.note || 'Drag and drop', currentLorebookName); } catch (_e) {}
+                if (!ok) {
+                    try { EL_toast('Move applied locally but the save failed.', 'error'); } catch (_e) {}
+                }
+            }
+        } catch (e) {}
+    }
+    try { renderEntries(); } catch (e) {}
+    try {
+        if (o.success) EL_toast(o.success, 'success');
+    } catch (e) {}
+}
+
+/**
+ * Drop an entry into a folder (append).
+ * @param {string} uid Entry uid.
+ * @param {string} folderId Destination folder.
+ */
+async function EL_dropEntryIntoFolder(uid, folderId) {
+    let label = folderId;
+    try { label = getFolderPathName(folderId); } catch (e) {}
+    const res = EL_moveEntryToFolderAt(uid, folderId);
+    await EL_afterDrop(res, { entryMoved: true, note: 'Drag entry to folder', success: res && res.ok ? ('Moved entry to "' + label + '".') : '' });
+}
+
+/**
+ * Drop an entry on the root area (un-file it).
+ * @param {string} uid Entry uid.
+ */
+async function EL_dropEntryToRoot(uid) {
+    const res = EL_moveEntryToFolderAt(uid, null);
+    await EL_afterDrop(res, { entryMoved: true, note: 'Drag entry to root', success: res && res.ok ? 'Moved entry to root.' : '' });
+}
+
+/**
+ * Drop a folder into another folder (nest).
+ * @param {string} dragId Dragged folder id.
+ * @param {string} targetId Destination folder id.
+ */
+async function EL_dropFolderIntoFolder(dragId, targetId) {
+    const res = EL_moveFolderToParent(dragId, targetId);
+    let label = targetId;
+    try { label = getFolderPathName(targetId); } catch (e) {}
+    await EL_afterDrop(res, { success: res && res.ok ? ('Moved folder "' + ((res.folder && res.folder.name) || '') + '" into "' + label + '".') : '' });
+}
+
+/**
+ * Drop a folder above/below another folder header (reorder among siblings).
+ * @param {string} dragId Dragged folder id.
+ * @param {string} refId Target header folder id.
+ * @param {string} place 'before' or 'after'.
+ */
+async function EL_dropFolderAtHeader(dragId, refId, place) {
+    let ref = null;
+    try {
+        ref = (extensionSettings.folders[currentLorebookName] || []).find(f => f && f.id === refId) || null;
+    } catch (e) {
+        ref = null;
+    }
+    if (!ref) {
+        try { EL_toast('Target folder not found.', 'error'); } catch (e) {}
+        return;
+    }
+    const newOrder = (ref.order ?? 100) + ((place === 'before') ? 1 : -1);
+    const res = EL_moveFolderToParent(dragId, ref.parentId || null, newOrder);
+    await EL_afterDrop(res, { success: res && res.ok ? ('Moved folder "' + ((res.folder && res.folder.name) || '') + '" ' + place + ' "' + (ref.name || '') + '".') : '' });
+}
+
+/**
+ * Drop a folder on the root area (un-nest it).
+ * @param {string} dragId Folder id.
+ */
+async function EL_dropFolderToRoot(dragId) {
+    const res = EL_moveFolderToParent(dragId, null);
+    await EL_afterDrop(res, { success: res && res.ok ? ('Moved folder "' + ((res.folder && res.folder.name) || '') + '" to root.') : '' });
+}
+
+/**
+ * Attach the drag handle + dragstart/dragend wiring to an entry card. The
+ * card is NOT draggable by default (cards contain inline inputs and
+ * selectable text); dragging starts only from the small grip handle, which
+ * sets draggable = true while pressed and resets it on dragend.
+ * @param {Element} card Entry card element.
+ * @param {string} uid Entry uid.
+ */
+function EL_setupEntryDrag(card, uid) {
+    try {
+        if (!EL_isDragEnabled()) return;
+        if (!card || !card.querySelector) return;
+        const host = card.querySelector('.entry-header') || card;
+        if (host.querySelector(':scope > .el-drag-handle')) return;
+        const handle = document.createElement('span');
+        handle.className = 'el-drag-handle';
+        handle.title = 'Drag to move';
+        handle.innerHTML = '<i class="fa-solid fa-grip-vertical"></i>';
+        handle.addEventListener('mousedown', (e) => {
+            try { e.stopPropagation(); } catch (_e) {}
+            try { card.draggable = true; } catch (_e) {}
+        });
+        handle.addEventListener('click', (e) => {
+            try { e.stopPropagation(); } catch (_e) {}
+        });
+        try { host.insertBefore(handle, host.firstChild); } catch (_e) {}
+        card.addEventListener('dragstart', (e) => {
+            try {
+                if (!EL_isDragEnabled()) {
+                    e.preventDefault();
+                    return;
+                }
+                EL_dragPayload = { kind: 'entry', uid: String(uid) };
+                try {
+                    e.dataTransfer.setData('application/x-el-drag', JSON.stringify(EL_dragPayload));
+                    e.dataTransfer.setData('text/plain', JSON.stringify(EL_dragPayload));
+                } catch (_e) {}
+                try { e.dataTransfer.effectAllowed = 'move'; } catch (_e) {}
+            } catch (err) {
+                try { e.preventDefault(); } catch (_e) {}
+            }
+        });
+        card.addEventListener('dragend', () => {
+            try { card.draggable = false; } catch (e) {}
+            try { EL_dragPayload = null; } catch (e) {}
+            try { EL_clearDragHighlights(); } catch (e) {}
+        });
+    } catch (e) {}
+}
+
+/**
+ * Attach the drag handle + dragstart/dragend wiring to a folder header.
+ * @param {Element} header Folder header element.
+ * @param {Element} container Folder container element (the draggable).
+ * @param {object} folder Folder record.
+ */
+function EL_setupFolderDrag(header, container, folder) {
+    try {
+        if (!EL_isDragEnabled()) return;
+        if (!header || !container || !folder) return;
+        if (header.querySelector(':scope > .el-drag-handle')) return;
+        const handle = document.createElement('span');
+        handle.className = 'el-drag-handle';
+        handle.title = 'Drag to move folder';
+        handle.innerHTML = '<i class="fa-solid fa-grip-vertical"></i>';
+        handle.addEventListener('mousedown', (e) => {
+            try { e.stopPropagation(); } catch (_e) {}
+            try { container.draggable = true; } catch (_e) {}
+        });
+        handle.addEventListener('click', (e) => {
+            try { e.stopPropagation(); } catch (_e) {}
+        });
+        try { header.insertBefore(handle, header.firstChild); } catch (_e) {}
+        container.addEventListener('dragstart', (e) => {
+            try {
+                if (!EL_isDragEnabled()) {
+                    e.preventDefault();
+                    return;
+                }
+                EL_dragPayload = { kind: 'folder', id: String(folder.id) };
+                try {
+                    e.dataTransfer.setData('application/x-el-drag', JSON.stringify(EL_dragPayload));
+                    e.dataTransfer.setData('text/plain', JSON.stringify(EL_dragPayload));
+                } catch (_e) {}
+                try { e.dataTransfer.effectAllowed = 'move'; } catch (_e) {}
+            } catch (err) {
+                try { e.preventDefault(); } catch (_e) {}
+            }
+        });
+        container.addEventListener('dragend', () => {
+            try { container.draggable = false; } catch (e) {}
+            try { EL_dragPayload = null; } catch (e) {}
+            try { EL_clearDragHighlights(); } catch (e) {}
+        });
+    } catch (e) {}
+}
+
+/**
+ * Attach drop targeting to a folder: entries dropped on the header or body
+ * move INTO the folder; folders dropped on the middle of the header nest
+ * INTO it, while the top/bottom edge zones reorder among siblings.
+ * @param {Element} container Folder container element.
+ * @param {Element} header Folder header element.
+ * @param {Element} content Folder body element.
+ * @param {object} folder Folder record.
+ */
+function EL_setupFolderDrop(container, header, content, folder) {
+    try {
+        if (!EL_isDragEnabled()) return;
+        if (!container || !header || !folder) return;
+        const fid = String(folder.id);
+        header.addEventListener('dragover', (e) => {
+            try {
+                if (!EL_dragPayload) return;
+                if (EL_dragPayload.kind === 'entry') {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    try { e.dataTransfer.dropEffect = 'move'; } catch (_e) {}
+                    container.classList.add('el-drop-into');
+                    return;
+                }
+                if (EL_dragPayload.kind === 'folder' && String(EL_dragPayload.id) !== fid) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    try { e.dataTransfer.dropEffect = 'move'; } catch (_e) {}
+                    let zone = 'into';
+                    try {
+                        const rect = header.getBoundingClientRect ? header.getBoundingClientRect() : null;
+                        if (rect && rect.height > 0) {
+                            const y = e.clientY - rect.top;
+                            if (y < rect.height * 0.25) zone = 'before';
+                            else if (y > rect.height * 0.75) zone = 'after';
+                        }
+                    } catch (_e) {}
+                    header.classList.toggle('el-drop-before', zone === 'before');
+                    header.classList.toggle('el-drop-after', zone === 'after');
+                    container.classList.toggle('el-drop-into', zone === 'into');
+                }
+            } catch (err) {}
+        });
+        header.addEventListener('dragleave', (e) => {
+            try {
+                if (!header.contains(e.relatedTarget)) {
+                    header.classList.remove('el-drop-before');
+                    header.classList.remove('el-drop-after');
+                    container.classList.remove('el-drop-into');
+                }
+            } catch (err) {}
+        });
+        header.addEventListener('drop', (e) => {
+            try {
+                if (!EL_dragPayload) return;
+                const data = EL_readDragData(e);
+                if (!data) return;
+                e.preventDefault();
+                e.stopPropagation();
+                if (data.kind === 'entry') {
+                    const dragUid = String(data.uid);
+                    EL_dragPayload = null;
+                    EL_dropEntryIntoFolder(dragUid, fid);
+                    return;
+                }
+                if (data.kind === 'folder' && String(data.id) !== fid) {
+                    let zone = 'into';
+                    try {
+                        const rect = header.getBoundingClientRect ? header.getBoundingClientRect() : null;
+                        if (rect && rect.height > 0) {
+                            const y = e.clientY - rect.top;
+                            if (y < rect.height * 0.25) zone = 'before';
+                            else if (y > rect.height * 0.75) zone = 'after';
+                        }
+                    } catch (_e) {}
+                    const dragId = String(data.id);
+                    EL_dragPayload = null;
+                    if (zone === 'into') EL_dropFolderIntoFolder(dragId, fid);
+                    else EL_dropFolderAtHeader(dragId, fid, zone);
+                }
+            } catch (err) {}
+        });
+        if (content && content.addEventListener) {
+            content.addEventListener('dragover', (e) => {
+                try {
+                    if (!EL_dragPayload) return;
+                    if (EL_dragPayload.kind === 'folder' && String(EL_dragPayload.id) === fid) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    try { e.dataTransfer.dropEffect = 'move'; } catch (_e) {}
+                    container.classList.add('el-drop-into');
+                } catch (err) {}
+            });
+            content.addEventListener('dragleave', (e) => {
+                try {
+                    if (!container.contains(e.relatedTarget)) container.classList.remove('el-drop-into');
+                } catch (err) {}
+            });
+            content.addEventListener('drop', (e) => {
+                try {
+                    if (!EL_dragPayload) return;
+                    const data = EL_readDragData(e);
+                    if (!data) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (data.kind === 'entry') {
+                        const dragUid = String(data.uid);
+                        EL_dragPayload = null;
+                        EL_dropEntryIntoFolder(dragUid, fid);
+                    } else if (data.kind === 'folder' && String(data.id) !== fid) {
+                        const dragId = String(data.id);
+                        EL_dragPayload = null;
+                        EL_dropFolderIntoFolder(dragId, fid);
+                    }
+                } catch (err) {}
+            });
+        }
+        container.addEventListener('dragleave', (e) => {
+            try {
+                if (!container.contains(e.relatedTarget)) {
+                    container.classList.remove('el-drop-into');
+                    header.classList.remove('el-drop-before');
+                    header.classList.remove('el-drop-after');
+                }
+            } catch (err) {}
+        });
+    } catch (e) {}
+}
+
+/**
+ * Root drop target: dropping an entry on the empty list area un-files it,
+ * dropping a folder un-nests it to the top level.
+ */
+function EL_setupRootDrop() {
+    try {
+        const root = els.entriesContainer;
+        if (!root || !root.addEventListener) return;
+        if (root.dataset && root.dataset.elRootDrop === '1') return;
+        if (root.dataset) root.dataset.elRootDrop = '1';
+        root.addEventListener('dragover', (e) => {
+            try {
+                if (!EL_isDragEnabled() || !EL_dragPayload) return;
+                e.preventDefault();
+                try { e.dataTransfer.dropEffect = 'move'; } catch (_e) {}
+                root.classList.add('el-drop-root');
+            } catch (err) {}
+        });
+        root.addEventListener('dragleave', (e) => {
+            try {
+                if (!root.contains(e.relatedTarget)) root.classList.remove('el-drop-root');
+            } catch (err) {}
+        });
+        root.addEventListener('drop', (e) => {
+            try {
+                if (!EL_dragPayload) return;
+                const data = EL_readDragData(e);
+                if (!data) return;
+                e.preventDefault();
+                e.stopPropagation();
+                if (data.kind === 'entry') {
+                    const dragUid = String(data.uid);
+                    EL_dragPayload = null;
+                    EL_dropEntryToRoot(dragUid);
+                } else if (data.kind === 'folder') {
+                    const dragId = String(data.id);
+                    EL_dragPayload = null;
+                    EL_dropFolderToRoot(dragId);
+                }
+            } catch (err) {}
+        });
+    } catch (e) {}
 }
 
 // Start app

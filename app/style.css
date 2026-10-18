@@ -2037,3 +2037,62 @@ pre.term-detail {
     border-radius: 10px;
     background: rgba(0,0,0,0.08);
 }
+
+/* Folders: breadcrumbs, drag-and-drop, selection */
+.el-breadcrumb {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    font-weight: 400;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 40%;
+    margin-left: 8px;
+    flex-shrink: 1;
+}
+
+.el-drag-handle {
+    cursor: grab;
+    color: var(--text-muted);
+    padding: 4px 6px;
+    border-radius: 4px;
+    flex-shrink: 0;
+}
+
+.el-drag-handle:hover {
+    color: var(--text-color);
+    background: rgba(255, 255, 255, 0.06);
+}
+
+.el-drag-handle:active {
+    cursor: grabbing;
+}
+
+.folder-container.el-folder-selected > .folder-header {
+    outline: 2px solid var(--primary-color);
+    outline-offset: -2px;
+    background: var(--active-bg);
+    border-radius: var(--border-radius) var(--border-radius) 0 0;
+}
+
+.folder-container.el-folder-cut > .folder-header {
+    opacity: 0.55;
+}
+
+.folder-container.el-drop-into {
+    outline: 2px dashed var(--primary-color);
+    outline-offset: 2px;
+}
+
+.folder-header.el-drop-before {
+    box-shadow: 0 -3px 0 0 var(--primary-color);
+}
+
+.folder-header.el-drop-after {
+    box-shadow: 0 3px 0 0 var(--primary-color);
+}
+
+#entries-container.el-drop-root {
+    outline: 2px dashed var(--primary-color);
+    outline-offset: -2px;
+}

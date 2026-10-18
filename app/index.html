@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Enhanced Lorebook UI</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link rel="stylesheet" href="style.css?v=2">
+    <link rel="stylesheet" href="style.css?v=3">
 </head>
 <body>
     <div id="app" class="glass-container">
@@ -696,6 +696,18 @@
                     </div>
                     <p style="font-size:0.75rem;color:var(--text-muted);margin-top:6px;">
                         Updates the sidebar and open lorebook automatically when something changes elsewhere. Events make ST-internal edits instant; the lightweight poll catches external edits (other extensions, direct saves).
+                    </p>
+                </div>
+                <hr style="border:none;border-top:1px solid var(--panel-border);margin:16px 0;">
+                <div class="form-group">
+                    <label><i class="fa-solid fa-folder" style="margin-right:6px;"></i>Folders</label>
+                    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:8px;">
+                        <label style="display:flex;align-items:center;gap:6px;font-size:0.85rem;cursor:pointer;">
+                            <input type="checkbox" id="setting-drag-drop"> Drag-and-drop (entries &amp; folders)
+                        </label>
+                    </div>
+                    <p style="font-size:0.75rem;color:var(--text-muted);margin-top:6px;">
+                        Move entries and folders with the grip handle. Turn it off to keep the list static.
                     </p>
                 </div>
                 <hr style="border:none;border-top:1px solid var(--panel-border);margin:16px 0;">
@@ -1776,7 +1788,7 @@
     <script src="agent-backup.js?v=7"></script>
     <script src="worldinfo-guard.js?v=8"></script>
     <script src="folder-url.js?v=6"></script>
-    <script src="app.js?v=12"></script>
+    <script src="app.js?v=13"></script>
     <script src="agent-ui.js?v=11"></script>
     <script src="el.js?v=1"></script>
 </body>

@@ -178,6 +178,7 @@ async function init() {
     if (!stContext.extensionSettings[EL_SETTINGS_KEY]) {
         stContext.extensionSettings[EL_SETTINGS_KEY] = {
             colors: {},
+            themeMode: 'dark', // dark | light | follow (follow mirrors SillyTavern)
             templates: {}, // name -> array of lorebook names
             folders: {},    // lorebookName -> array of {id, name, entries: [uid, uid]}
             dragAndDrop: true,
@@ -191,6 +192,7 @@ async function init() {
     if (!extensionSettings.foldersExpanded || typeof extensionSettings.foldersExpanded !== 'object') extensionSettings.foldersExpanded = {};
     if (!extensionSettings.sidebarPanelHeights) extensionSettings.sidebarPanelHeights = {};
     if (!extensionSettings.sidebarPanelsCollapsed) extensionSettings.sidebarPanelsCollapsed = {};
+    if (typeof extensionSettings.themeMode !== 'string' || ['dark', 'light', 'follow'].indexOf(extensionSettings.themeMode) === -1) extensionSettings.themeMode = 'dark';
     if (!extensionSettings.sync) extensionSettings.sync = {};
     // Logging prefs: batched + relevance-filtered (verbose off by default)
     if (typeof extensionSettings.sync.logLevel !== 'string' || !['OFF','ERROR','WARN','INFO','DEBUG'].includes(extensionSettings.sync.logLevel.toUpperCase())) {
@@ -373,12 +375,142 @@ function refreshAfterAgentChange(lorebookName) {
 // Theme & Colors
 // ==========================================
 function applyColors() {
-    const colors = extensionSettings.colors || {};
+    const mode = EL_themeMode();
     const root = document.documentElement;
-    if (colors.bg) root.style.setProperty('--bg-color', colors.bg);
-    if (colors.panel) root.style.setProperty('--panel-bg', colors.panel);
-    if (colors.text) root.style.setProperty('--text-color', colors.text);
-    if (colors.primary) root.style.setProperty('--primary-color', colors.primary);
+    const colors = (extensionSettings && extensionSettings.colors) || {};
+    if (mode === 'light') {
+        // The light palette owns every variable; stale custom or mirrored
+        // overrides would punch dark holes in it, so drop them here. The
+        // saved custom colours stay in settings for dark mode.
+        ['--bg-color', '--panel-bg', '--text-color', '--text-muted', '--panel-border', '--primary-color'].forEach(k => {
+            try { root.style.removeProperty(k); } catch (e) {}
+        });
+    } else {
+        if (colors.bg) root.style.setProperty('--bg-color', colors.bg);
+        if (colors.panel) root.style.setProperty('--panel-bg', colors.panel);
+        if (colors.text) root.style.setProperty('--text-color', colors.text);
+        if (colors.primary) root.style.setProperty('--primary-color', colors.primary);
+    }
+    EL_applyThemeMode();
+}
+
+/**
+ * Current theme mode, always one of dark/light/follow.
+ * @returns {string}
+ */
+function EL_themeMode() {
+    try {
+        const m = extensionSettings && extensionSettings.themeMode;
+        if (m === 'light' || m === 'follow') return m;
+    } catch (e) {}
+    return 'dark';
+}
+
+/**
+ * Apply the theme mode: light class for the light palette, mirrored
+ * SillyTavern colours for follow, plain dark otherwise.
+ */
+function EL_applyThemeMode() {
+    const mode = EL_themeMode();
+    try {
+        document.body.classList.remove('el-theme-light');
+    } catch (e) {}
+    if (mode === 'light') {
+        try { document.body.classList.add('el-theme-light'); } catch (e) {}
+    } else if (mode === 'follow') {
+        EL_applyFollowTheme();
+    }
+}
+
+/**
+ * Read one computed custom property from the opener (SillyTavern) document.
+ * @param {string} name e.g. "--SmartThemeBodyColor".
+ * @returns {string} Trimmed value, or "" when unavailable.
+ */
+function EL_followThemeValue(name) {
+    try {
+        const host = (typeof ST_Window !== 'undefined' && ST_Window) || window.opener || window.parent;
+        if (!host || host === window || !host.document || !host.document.documentElement) return '';
+        const cs = host.getComputedStyle ? host.getComputedStyle(host.document.documentElement) : null;
+        if (!cs || typeof cs.getPropertyValue !== 'function') return '';
+        const v = cs.getPropertyValue(name);
+        return v ? String(v).trim() : '';
+    } catch (e) { return ''; }
+}
+
+/**
+ * Relative luminance of a CSS colour (0 = black, 1 = white), or null when
+ * the colour cannot be parsed.
+ * @param {string} color
+ * @returns {number|null}
+ */
+function EL_cssLuminance(color) {
+    try {
+        const c = String(color || '').trim().toLowerCase();
+        if (!c) return null;
+        let r = -1, g = -1, b = -1;
+        let m = /^#([0-9a-f]{6})$/.exec(c);
+        if (m) {
+            r = parseInt(m[1].slice(0, 2), 16);
+            g = parseInt(m[1].slice(2, 4), 16);
+            b = parseInt(m[1].slice(4, 6), 16);
+        } else if (/^#([0-9a-f]{3})$/.test(c)) {
+            const h = c.slice(1);
+            r = parseInt(h[0] + h[0], 16);
+            g = parseInt(h[1] + h[1], 16);
+            b = parseInt(h[2] + h[2], 16);
+        } else {
+            m = /^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)/.exec(c);
+            if (!m) return null;
+            r = Number(m[1]);
+            g = Number(m[2]);
+            b = Number(m[3]);
+        }
+        if (![r, g, b].every(v => Number.isFinite(v) && v >= 0 && v <= 255)) return null;
+        const lin = (v) => {
+            v /= 255;
+            return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+        };
+        return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+    } catch (e) { return null; }
+}
+
+/**
+ * Mirror SillyTavern's SmartTheme colours onto this window's variables and
+ * pick the matching (light/dark) app palette by tint luminance. Any failure
+ * (opener gone, values missing) leaves the app on the dark palette.
+ */
+function EL_applyFollowTheme() {
+    try {
+        const body = EL_followThemeValue('--SmartThemeBodyColor');
+        const tint = EL_followThemeValue('--SmartThemeBlurTintColor');
+        const border = EL_followThemeValue('--SmartThemeBorderColor');
+        const em = EL_followThemeValue('--SmartThemeEmColor');
+        const quote = EL_followThemeValue('--SmartThemeQuoteColor');
+        if (!body && !tint) throw new Error('no SmartTheme values from opener');
+        const lum = EL_cssLuminance(tint || body);
+        const isLight = (lum !== null) ? lum > 0.4 : false;
+        if (isLight) {
+            try { document.body.classList.add('el-theme-light'); } catch (e) {}
+        }
+        const root = document.documentElement;
+        const set = (k, v) => {
+            if (v) {
+                try { root.style.setProperty(k, v); } catch (e) {}
+            }
+        };
+        if (tint) {
+            set('--bg-color', tint);
+            set('--panel-bg', tint);
+        }
+        if (body) set('--text-color', body);
+        if (quote) set('--text-muted', quote);
+        if (border) set('--panel-border', border);
+        if (em) set('--primary-color', em);
+    } catch (e) {
+        try { document.body.classList.remove('el-theme-light'); } catch (_e) {}
+        EL_warn('follow theme unavailable, staying on dark palette', e);
+    }
 }
 
 function openSettings() {
@@ -387,6 +519,8 @@ function openSettings() {
     document.getElementById('color-panel').value = colors.panel || '#1a1c29'; /* Simplified */
     document.getElementById('color-text').value = colors.text || '#e2e8f0';
     document.getElementById('color-primary').value = colors.primary || '#6366f1';
+    const themeModeSelect = document.getElementById('setting-theme-mode');
+    if (themeModeSelect) themeModeSelect.value = EL_themeMode();
     const syncEnabled = document.getElementById('sync-enabled');
     if (syncEnabled) syncEnabled.checked = sync.enabled;
     const syncInterval = document.getElementById('sync-interval');
@@ -1369,6 +1503,7 @@ async function openLorebook(name) {
     try { EL_clearDragHighlights(); } catch (e) {}
     try { EL_restoreExpandedFolders(); } catch (e) { try { expandedFolders.clear(); } catch (_e) {} }
     updateBatchButton();
+    EL_batchClearUndo();
 
     document.querySelectorAll('.agent-sidebar-item').forEach(i => i.classList.remove('active'));
     hideAgentPanels();
@@ -3964,6 +4099,7 @@ function createNewEntries() {
 
 function openBatchModal() {
     document.getElementById('batch-selected-count').textContent = selectedEntries.size;
+    EL_batchPendingPlan = null;
     
     // Populate searchable batch folder picker
     const hiddenInput = document.getElementById('batch-folder-val');
@@ -4022,208 +4158,808 @@ function openBatchModal() {
     EL_modalOpen(els.batchModal);
 }
 
-async function applyBatchOptions() {
-    const applyOrder = document.getElementById('batch-apply-order').checked;
-    const orderVal = parseInt(document.getElementById('batch-order-val').value);
+/**
+ * Batch edit: three-state fields, preview diff, and single-level undo.
+ *
+ * Every field in the batch modal is a genuine three-state control:
+ *   - "leave"  — leave the field unchanged on every selected entry.
+ *   - "set"    — write the value from the field's value input.
+ *   - "reset"  — write SillyTavern's default from EL_ENTRY_DEFAULTS
+ *                (deep-copied, since some defaults are objects/arrays).
+ * Only fields actually set (set/reset) are collected into a plan. The plan
+ * is shown as a preview diff first; nothing is written until the user
+ * confirms. After a successful apply the previous values are kept for one
+ * undo, restored through the same ELG_guardSave path.
+ */
 
-    const applyFolder = document.getElementById('batch-apply-folder') ? document.getElementById('batch-apply-folder').checked : false;
-    const folderVal = document.getElementById('batch-folder-val') ? document.getElementById('batch-folder-val').value : '';
+let EL_batchUndoState = null;
+let EL_batchPendingPlan = null;
 
-    const applyStrategy = document.getElementById('batch-apply-strategy').checked;
-    const strategySelect = document.getElementById('batch-strategy-val');
-    const strategyOption = strategySelect.selectedOptions[0];
+/** Sentinel for "this entry had no such field", so undo can delete it back. */
+const EL_BATCH_MISSING = { elBatchMissing: true };
 
-    const applyDepth = document.getElementById('batch-apply-depth').checked;
-    const depthVal = parseInt(document.getElementById('batch-depth-val').value);
-
-    const applyProb = document.getElementById('batch-apply-probability').checked;
-    const probVal = parseInt(document.getElementById('batch-prob-val').value);
-
-    const applyUseProbability = document.getElementById('batch-apply-use-probability').checked;
-    const useProbabilityVal = document.getElementById('batch-use-probability-val').checked;
-
-    const applyConstant = document.getElementById('batch-apply-constant').checked;
-    const constantVal = document.getElementById('batch-constant-val').checked;
-
-    const applyVectorized = document.getElementById('batch-apply-vectorized').checked;
-    const vectorizedVal = document.getElementById('batch-vectorized-val').checked;
-
-    const applySelective = document.getElementById('batch-apply-selective').checked;
-    const selectiveVal = document.getElementById('batch-selective-val').checked;
-
-    const applyLogic = document.getElementById('batch-apply-logic').checked;
-    const logicVal = parseInt(document.getElementById('batch-logic-val').value);
-
-    const applyDisable = document.getElementById('batch-apply-disable').checked;
-    const disableVal = document.getElementById('batch-disable-val').checked;
-
-    const applyAddMemo = document.getElementById('batch-apply-add-memo').checked;
-    const addMemoVal = document.getElementById('batch-add-memo-val').checked;
-
-    const applyExcludeRecursion = document.getElementById('batch-apply-exclude-recursion').checked;
-    const excludeRecursionVal = document.getElementById('batch-exclude-recursion-val').checked;
-
-    const applyPreventRecursion = document.getElementById('batch-apply-prevent-recursion').checked;
-    const preventRecursionVal = document.getElementById('batch-prevent-recursion-val').checked;
-
-    const applyOutletName = document.getElementById('batch-apply-outlet-name').checked;
-    const outletNameVal = document.getElementById('batch-outlet-name-val').value;
-
-    const applyGroup = document.getElementById('batch-apply-group').checked;
-    const groupVal = document.getElementById('batch-group-val').value;
-
-    const applyGroupWeight = document.getElementById('batch-apply-group-weight').checked;
-    const groupWeightVal = parseInt(document.getElementById('batch-group-weight-val').value);
-
-    const applyGroupOverride = document.getElementById('batch-apply-group-override').checked;
-    const groupOverrideVal = document.getElementById('batch-group-override-val').checked;
-
-    const applySticky = document.getElementById('batch-apply-sticky').checked;
-    const stickyVal = parseInt(document.getElementById('batch-sticky-val').value);
-
-    const applyCooldown = document.getElementById('batch-apply-cooldown').checked;
-    const cooldownVal = parseInt(document.getElementById('batch-cooldown-val').value);
-
-    const applyDelay = document.getElementById('batch-apply-delay').checked;
-    const delayVal = parseInt(document.getElementById('batch-delay-val').value);
-
-    const applyCharFilter = document.getElementById('batch-apply-char-filter').checked;
-    const charFilterVal = document.getElementById('batch-char-filter-val').value;
-
-    const applyTriggers = document.getElementById('batch-apply-triggers').checked;
-    const triggersVal = document.getElementById('batch-triggers-val').value;
-
-    const applyCharExclusion = document.getElementById('batch-apply-char-exclusion').checked;
-    const charExclusionVal = document.getElementById('batch-char-exclusion-val').checked;
-
-    const applyMatchCharDesc = document.getElementById('batch-apply-match-char-desc').checked;
-    const matchCharDescVal = document.getElementById('batch-match-char-desc-val').checked;
-
-    const applyMatchCharPers = document.getElementById('batch-apply-match-char-pers').checked;
-    const matchCharPersVal = document.getElementById('batch-match-char-pers-val').checked;
-
-    const applyMatchScenario = document.getElementById('batch-apply-match-scenario').checked;
-    const matchScenarioVal = document.getElementById('batch-match-scenario-val').checked;
-
-    const applyMatchPersona = document.getElementById('batch-apply-match-persona').checked;
-    const matchPersonaVal = document.getElementById('batch-match-persona-val').checked;
-
-    const applyMatchCharDepth = document.getElementById('batch-apply-match-char-depth').checked;
-    const matchCharDepthVal = document.getElementById('batch-match-char-depth-val').checked;
-
-    const applyMatchCreatorNotes = document.getElementById('batch-apply-match-creator-notes').checked;
-    const matchCreatorNotesVal = document.getElementById('batch-match-creator-notes-val').checked;
-
-    const applyScanDepth = document.getElementById('batch-apply-scan-depth').checked;
-    const scanDepthRaw = document.getElementById('batch-scan-depth-val').value;
-
-    const applyRecursionLevel = document.getElementById('batch-apply-recursion-level').checked;
-    const recursionLevelVal = parseInt(document.getElementById('batch-recursion-level-val').value);
-
-    const parseNullBool = (v) => v === 'true' ? true : (v === 'false' ? false : null);
-
-    const applyCaseSensitive = document.getElementById('batch-apply-case-sensitive').checked;
-    const caseSensitiveVal = parseNullBool(document.getElementById('batch-case-sensitive-val').value);
-
-    const applyWholeWords = document.getElementById('batch-apply-whole-words').checked;
-    const wholeWordsVal = parseNullBool(document.getElementById('batch-whole-words-val').value);
-
-    const applyGroupScoring = document.getElementById('batch-apply-group-scoring').checked;
-    const groupScoringVal = parseNullBool(document.getElementById('batch-group-scoring-val').value);
-
-    const applyAutomationId = document.getElementById('batch-apply-automation-id').checked;
-    const automationIdVal = document.getElementById('batch-automation-id-val').value;
-
-    const applyDelayRecursion = document.getElementById('batch-apply-delay-recursion').checked;
-    const delayRecursionVal = document.getElementById('batch-delay-recursion-val').checked;
-
-    const applyIgnoreBudget = document.getElementById('batch-apply-ignore-budget').checked;
-    const ignoreBudgetVal = document.getElementById('batch-ignore-budget-val').checked;
-
-    const foldersBefore = JSON.parse(JSON.stringify(extensionSettings.folders[currentLorebookName] || []));
-
-    selectedEntries.forEach(uid => {
-        const entry = currentLorebookData.entries[uid];
-        if (!entry) return;
-
-        if (applyOrder && !isNaN(orderVal)) entry.order = orderVal;
-        if (applyStrategy && strategyOption) {
-            entry.position = parseInt(strategyOption.value);
-            entry.role = strategyOption.dataset.role !== '' ? parseInt(strategyOption.dataset.role) : (entry.role ?? null);
+/**
+ * Read the three-state mode for one batch field.
+ * @param {string} short Short key, e.g. "order" for #batch-mode-order.
+ * @returns {"leave"|"set"|"reset"}
+ */
+function EL_batchModeOf(short) {
+    try {
+        const sel = document.getElementById('batch-mode-' + short);
+        if (sel && typeof sel.value === 'string') {
+            if (sel.value === 'set' || sel.value === 'reset') return sel.value;
+            return 'leave';
         }
-        if (applyDepth && !isNaN(depthVal)) entry.depth = depthVal;
-        if (applyProb && !isNaN(probVal)) entry.probability = probVal;
-        if (applyUseProbability) entry.useProbability = useProbabilityVal;
-        if (applyConstant) { entry.constant = constantVal; if (constantVal) entry.vectorized = false; }
-        if (applyVectorized) { entry.vectorized = vectorizedVal; if (vectorizedVal) entry.constant = false; }
-        if (applySelective) entry.selective = selectiveVal;
-        if (applyLogic) entry.selectiveLogic = logicVal;
-        if (applyDisable) entry.disable = disableVal;
-        if (applyAddMemo) entry.addMemo = addMemoVal;
-        if (applyExcludeRecursion) entry.excludeRecursion = excludeRecursionVal;
-        if (applyPreventRecursion) entry.preventRecursion = preventRecursionVal;
-        if (applyOutletName) entry.outletName = outletNameVal;
-        if (applyGroup) entry.group = groupVal;
-        if (applyGroupWeight && !isNaN(groupWeightVal)) entry.groupWeight = groupWeightVal;
-        if (applyGroupOverride) entry.groupOverride = groupOverrideVal;
-        if (applySticky && !isNaN(stickyVal)) entry.sticky = stickyVal;
-        if (applyCooldown && !isNaN(cooldownVal)) entry.cooldown = cooldownVal;
-        if (applyDelay && !isNaN(delayVal)) entry.delay = delayVal;
-        if (applyCharFilter) entry.characterFilter = EL_buildCharacterFilter(charFilterVal, applyCharExclusion ? charExclusionVal : (entry.characterFilter?.isExclude === true), entry.characterFilter);
-        if (applyTriggers) entry.triggers = [...new Set((triggersVal ? triggersVal.split(',').map(s => s.trim()).filter(Boolean) : []).filter(t => EL_GENERATION_TYPE_TRIGGERS.includes(t)))];
-        if (applyCharExclusion && !applyCharFilter) entry.characterFilter = EL_buildCharacterFilter(EL_characterFilterToText(entry.characterFilter), charExclusionVal, entry.characterFilter);
-        if (applyMatchCharDesc) entry.matchCharacterDescription = matchCharDescVal;
-        if (applyMatchCharPers) entry.matchCharacterPersonality = matchCharPersVal;
-        if (applyMatchScenario) entry.matchScenario = matchScenarioVal;
-        if (applyMatchPersona) entry.matchPersonaDescription = matchPersonaVal;
-        if (applyMatchCharDepth) entry.matchCharacterDepthPrompt = matchCharDepthVal;
-        if (applyMatchCreatorNotes) entry.matchCreatorNotes = matchCreatorNotesVal;
-        if (applyScanDepth) entry.scanDepth = scanDepthRaw === '' ? null : parseInt(scanDepthRaw);
-        if (applyRecursionLevel || applyDelayRecursion) {
-            const delayOn = applyDelayRecursion ? delayRecursionVal : !!entry.delayUntilRecursion;
-            const recLvl = applyRecursionLevel ? recursionLevelVal
-                : (typeof entry.delayUntilRecursion === 'number' ? entry.delayUntilRecursion : NaN);
-            entry.delayUntilRecursion = !delayOn ? false
-                : (!Number.isFinite(recLvl) || recLvl <= 1) ? true
-                    : recLvl;
-            delete entry.delayUntilRecursionLevel;
-            delete entry.delay_until_recursion;
-        }
-        if (applyCaseSensitive) entry.caseSensitive = caseSensitiveVal;
-        if (applyWholeWords) entry.matchWholeWords = wholeWordsVal;
-        if (applyGroupScoring) entry.useGroupScoring = groupScoringVal;
-        if (applyAutomationId) entry.automationId = automationIdVal;
-        if (applyIgnoreBudget) entry.ignoreBudget = ignoreBudgetVal;
-    });
+    } catch (e) {}
+    try {
+        const legacy = document.getElementById('batch-apply-' + short);
+        if (legacy) return legacy.checked ? 'set' : 'leave';
+    } catch (e) {}
+    return 'leave';
+}
 
-    if (applyFolder) {
-        // Remove from all folders first
-        const folders = extensionSettings.folders[currentLorebookName] || [];
-        folders.forEach(f => {
-            f.entries = f.entries.filter(uid => !selectedEntries.has(String(uid)));
+/**
+ * Canonical entry defaults table (mirrored from hub-client.js).
+ * characterFilter is not in EL_ENTRY_DEFAULTS, so it gets its own default.
+ * @returns {object}
+ */
+function EL_batchDefaults() {
+    try {
+        if (typeof window !== 'undefined' && window.EL_ENTRY_DEFAULTS) return window.EL_ENTRY_DEFAULTS;
+    } catch (e) {}
+    try {
+        if (typeof EL_ENTRY_DEFAULTS !== 'undefined' && EL_ENTRY_DEFAULTS) return EL_ENTRY_DEFAULTS;
+    } catch (e) {}
+    return {
+        order: 100, position: 0, depth: 4, probability: 100, useProbability: true,
+        constant: false, vectorized: false, selective: true, selectiveLogic: 0,
+        disable: false, addMemo: false, excludeRecursion: false, preventRecursion: false,
+        outletName: '', group: '', groupOverride: false, groupWeight: 100, sticky: null,
+        cooldown: null, delay: null, matchPersonaDescription: false,
+        matchCharacterDescription: false, matchCharacterPersonality: false,
+        matchCharacterDepthPrompt: false, matchScenario: false, matchCreatorNotes: false,
+        delayUntilRecursion: 0, scanDepth: null, caseSensitive: null, matchWholeWords: null,
+        useGroupScoring: null, automationId: '', role: 0, ignoreBudget: false, triggers: [],
+    };
+}
+
+/**
+ * Fresh default characterFilter object (never a shared reference).
+ * @returns {{isExclude: boolean, names: Array, tags: Array}}
+ */
+function EL_batchDefaultCharFilter() {
+    return { isExclude: false, names: [], tags: [] };
+}
+
+/**
+ * Deep copy for snapshot/default values.
+ * @param {*} value
+ * @returns {*}
+ */
+function EL_cloneBatchValue(value) {
+    if (value === null || value === undefined) return value;
+    try {
+        if (typeof structuredClone === 'function') return structuredClone(value);
+    } catch (e) {}
+    try { return JSON.parse(JSON.stringify(value)); } catch (e) {}
+    if (Array.isArray(value)) return value.slice();
+    if (typeof value === 'object') {
+        const out = {};
+        try { for (const k of Object.keys(value)) out[k] = value[k]; } catch (e) {}
+        return out;
+    }
+    return value;
+}
+
+/**
+ * Read an integer value input (NaN when missing/unparseable).
+ * @param {string} id Element id.
+ * @returns {number}
+ */
+function EL_batchIntVal(id) {
+    try {
+        const el = document.getElementById(id);
+        if (!el) return NaN;
+        return parseInt(el.value);
+    } catch (e) { return NaN; }
+}
+
+/**
+ * Read a boolean (checkbox) value input.
+ * @param {string} id Element id.
+ * @returns {boolean}
+ */
+function EL_batchBoolVal(id) {
+    try {
+        const el = document.getElementById(id);
+        return !!(el && el.checked);
+    } catch (e) { return false; }
+}
+
+/**
+ * Read a text value input.
+ * @param {string} id Element id.
+ * @returns {string}
+ */
+function EL_batchTextVal(id) {
+    try {
+        const el = document.getElementById(id);
+        return el ? String(el.value ?? '') : '';
+    } catch (e) { return ''; }
+}
+
+/**
+ * Read a tri-state (true/false/null) select value input.
+ * @param {string} id Element id.
+ * @returns {boolean|null}
+ */
+function EL_batchNullBoolVal(id) {
+    try {
+        const el = document.getElementById(id);
+        if (!el) return null;
+        if (el.value === 'true') return true;
+        if (el.value === 'false') return false;
+        return null;
+    } catch (e) { return null; }
+}
+
+/**
+ * Compare two field values by content.
+ * @param {*} a
+ * @param {*} b
+ * @returns {boolean}
+ */
+function EL_batchValuesEqual(a, b) {
+    try {
+        if (a === b) return true;
+        return JSON.stringify(a) === JSON.stringify(b);
+    } catch (e) { return false; }
+}
+
+/**
+ * Short human label for an entry in the preview/undo UI.
+ * @param {string} uid
+ * @param {object} entry
+ * @returns {string}
+ */
+function EL_batchEntryLabel(uid, entry) {
+    try {
+        const c = entry && entry.comment ? String(entry.comment).trim() : '';
+        if (c) return c;
+        const k = entry && entry.key ? safeJoin(entry.key, ', ') : '';
+        if (k) return k;
+    } catch (e) {}
+    return 'Entry ' + uid;
+}
+
+/**
+ * Short human rendering of one new/old field value.
+ * @param {string} field Entry field name.
+ * @param {*} value
+ * @returns {string}
+ */
+function EL_batchDisplayValue(field, value) {
+    try {
+        if (value === null || value === undefined || value === '') return '(empty)';
+        if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+        if (field === 'characterFilter' && typeof value === 'object') {
+            const names = Array.isArray(value.names) ? value.names : [];
+            const base = names.length ? names.join(', ') : '(no names)';
+            return value.isExclude ? base + ' [excluded]' : base;
+        }
+        if (field === 'delayUntilRecursion') {
+            if (value === false || value === 0) return 'Off';
+            if (value === true) return 'On (default level)';
+            return 'Level ' + value;
+        }
+        if (Array.isArray(value)) return value.length ? value.join(', ') : '(none)';
+        if (typeof value === 'object') return JSON.stringify(value);
+        return String(value);
+    } catch (e) {
+        try { return String(value); } catch (_e) { return '?'; }
+    }
+}
+
+/**
+ * Human label for an insertion-strategy position/role pair, using the
+ * batch modal's own strategy select when available.
+ * @param {number} position
+ * @param {number|null} role
+ * @returns {string}
+ */
+function EL_batchStrategyLabel(position, role) {
+    try {
+        const sel = document.getElementById('batch-strategy-val');
+        if (sel && sel.options) {
+            for (const opt of sel.options) {
+                if (parseInt(opt.value) !== position) continue;
+                const r = opt.dataset && opt.dataset.role !== '' ? parseInt(opt.dataset.role) : null;
+                if (r === null || r === role) return String(opt.textContent || '').trim();
+            }
+        }
+    } catch (e) {}
+    return 'position ' + position + ((role !== null && role !== undefined) ? ', role ' + role : '');
+}
+
+/**
+ * Folder display name for the preview ("Root (no folder)" for top level).
+ * @param {string} folderId
+ * @returns {string}
+ */
+function EL_batchFolderName(folderId) {
+    try {
+        if (!folderId) return 'Root (no folder)';
+        if (typeof getFolderPathName === 'function') return getFolderPathName(folderId);
+    } catch (e) {}
+    return folderId || 'Root (no folder)';
+}
+
+/**
+ * Folder id currently holding an entry ("" when at root).
+ * @param {string} uid
+ * @returns {string}
+ */
+function EL_batchEntryFolder(uid) {
+    try {
+        const folders = (extensionSettings.folders && extensionSettings.folders[currentLorebookName]) || [];
+        const f = folders.find(x => (x.entries || []).map(String).includes(String(uid)));
+        return f ? f.id : '';
+    } catch (e) { return ''; }
+}
+
+/**
+ * Collect the batch plan: one op per field the user actually set
+ * (set/reset; "leave" fields are omitted entirely), plus the folder move.
+ * Each op carries a compute(entry) returning the writes for that entry.
+ * @returns {{ops: Array, folderOp: object|null, uids: Array, uidSet: Set}|null}
+ */
+function EL_batchCollectPlan() {
+    if (!currentLorebookData || !currentLorebookData.entries) return null;
+    const D = EL_batchDefaults() || {};
+    const def = (k, fb) => (D[k] !== undefined ? EL_cloneBatchValue(D[k]) : fb);
+    const uids = Array.from(selectedEntries || []).filter(uid => currentLorebookData.entries[uid]);
+    if (!uids.length) return null;
+    const ops = [];
+    const modeOf = (short) => EL_batchModeOf(short);
+
+    const intFields = [
+        { short: 'order', label: 'Order', valId: 'batch-order-val', field: 'order', dk: 'order', fb: 100 },
+        { short: 'depth', label: 'Insertion Depth', valId: 'batch-depth-val', field: 'depth', dk: 'depth', fb: 4 },
+        { short: 'probability', label: 'Probability (%)', valId: 'batch-prob-val', field: 'probability', dk: 'probability', fb: 100 },
+        { short: 'group-weight', label: 'Group Weight', valId: 'batch-group-weight-val', field: 'groupWeight', dk: 'groupWeight', fb: 100 },
+        { short: 'sticky', label: 'Sticky (Turns)', valId: 'batch-sticky-val', field: 'sticky', dk: 'sticky', fb: null },
+        { short: 'cooldown', label: 'Cooldown (Turns)', valId: 'batch-cooldown-val', field: 'cooldown', dk: 'cooldown', fb: null },
+        { short: 'delay', label: 'Delay (Turns)', valId: 'batch-delay-val', field: 'delay', dk: 'delay', fb: null },
+        { short: 'logic', label: 'Selective Logic', valId: 'batch-logic-val', field: 'selectiveLogic', dk: 'selectiveLogic', fb: 0, isSelect: true },
+    ];
+    for (const f of intFields) {
+        const m = modeOf(f.short);
+        if (m === 'leave') continue;
+        if (m === 'set') {
+            let v = NaN;
+            try {
+                const el = document.getElementById(f.valId);
+                v = el ? parseInt(el.value) : NaN;
+            } catch (e) { v = NaN; }
+            if (isNaN(v)) continue;
+            ops.push({ short: f.short, label: f.label, valId: f.valId, mode: m, compute: () => ({ [f.field]: v }) });
+        } else {
+            ops.push({ short: f.short, label: f.label, valId: f.valId, mode: m, compute: () => ({ [f.field]: def(f.dk, f.fb) }) });
+        }
+    }
+
+    const mStrategy = modeOf('strategy');
+    if (mStrategy === 'set') {
+        let opt = null;
+        try {
+            const sel = document.getElementById('batch-strategy-val');
+            opt = sel ? sel.selectedOptions[0] : null;
+        } catch (e) { opt = null; }
+        if (opt) {
+            const p = parseInt(opt.value);
+            const r = (opt.dataset && opt.dataset.role !== '') ? parseInt(opt.dataset.role) : null;
+            ops.push({
+                short: 'strategy', label: 'Insertion Strategy', valId: 'batch-strategy-val', mode: mStrategy,
+                compute: () => {
+                    const w = { position: p };
+                    if (r !== null && !isNaN(r)) w.role = r;
+                    return w;
+                },
+            });
+        }
+    } else if (mStrategy === 'reset') {
+        ops.push({
+            short: 'strategy', label: 'Insertion Strategy', valId: 'batch-strategy-val', mode: mStrategy,
+            compute: () => ({ position: def('position', 0), role: def('role', 0) }),
         });
+    }
 
-        // Add to selected folder
-        if (folderVal) {
-            const target = folders.find(f => f.id === folderVal);
-            if (target) {
-                target.entries.push(...Array.from(selectedEntries).map(String));
+    const boolFields = [
+        { short: 'use-probability', label: 'Use Probability', valId: 'batch-use-probability-val', field: 'useProbability', dk: 'useProbability', fb: true },
+        { short: 'constant', label: 'Constant', valId: 'batch-constant-val', field: 'constant', dk: 'constant', fb: false },
+        { short: 'vectorized', label: 'Vectorized', valId: 'batch-vectorized-val', field: 'vectorized', dk: 'vectorized', fb: false },
+        { short: 'selective', label: 'Selective', valId: 'batch-selective-val', field: 'selective', dk: 'selective', fb: true },
+        { short: 'disable', label: 'Disabled', valId: 'batch-disable-val', field: 'disable', dk: 'disable', fb: false },
+        { short: 'add-memo', label: 'Add Memo', valId: 'batch-add-memo-val', field: 'addMemo', dk: 'addMemo', fb: false },
+        { short: 'exclude-recursion', label: 'Exclude Recursion', valId: 'batch-exclude-recursion-val', field: 'excludeRecursion', dk: 'excludeRecursion', fb: false },
+        { short: 'prevent-recursion', label: 'Prevent Recursion', valId: 'batch-prevent-recursion-val', field: 'preventRecursion', dk: 'preventRecursion', fb: false },
+        { short: 'group-override', label: 'Group Override', valId: 'batch-group-override-val', field: 'groupOverride', dk: 'groupOverride', fb: false },
+        { short: 'match-char-desc', label: 'Match Char Desc', valId: 'batch-match-char-desc-val', field: 'matchCharacterDescription', dk: 'matchCharacterDescription', fb: false },
+        { short: 'match-char-pers', label: 'Match Char Pers', valId: 'batch-match-char-pers-val', field: 'matchCharacterPersonality', dk: 'matchCharacterPersonality', fb: false },
+        { short: 'match-scenario', label: 'Match Scenario', valId: 'batch-match-scenario-val', field: 'matchScenario', dk: 'matchScenario', fb: false },
+        { short: 'match-persona', label: 'Match Persona', valId: 'batch-match-persona-val', field: 'matchPersonaDescription', dk: 'matchPersonaDescription', fb: false },
+        { short: 'match-char-depth', label: 'Match Char Note', valId: 'batch-match-char-depth-val', field: 'matchCharacterDepthPrompt', dk: 'matchCharacterDepthPrompt', fb: false },
+        { short: 'match-creator-notes', label: 'Match Creator Notes', valId: 'batch-match-creator-notes-val', field: 'matchCreatorNotes', dk: 'matchCreatorNotes', fb: false },
+        { short: 'ignore-budget', label: 'Ignore Budget', valId: 'batch-ignore-budget-val', field: 'ignoreBudget', dk: 'ignoreBudget', fb: false },
+    ];
+    for (const f of boolFields) {
+        const m = modeOf(f.short);
+        if (m === 'leave') continue;
+        if (m === 'set') {
+            const v = EL_batchBoolVal(f.valId);
+            if (f.short === 'constant' && v) {
+                ops.push({ short: f.short, label: f.label, valId: f.valId, mode: m, compute: () => ({ constant: true, vectorized: false }) });
+            } else if (f.short === 'vectorized' && v) {
+                ops.push({ short: f.short, label: f.label, valId: f.valId, mode: m, compute: () => ({ vectorized: true, constant: false }) });
+            } else {
+                ops.push({ short: f.short, label: f.label, valId: f.valId, mode: m, compute: () => ({ [f.field]: v }) });
+            }
+        } else {
+            if (f.short === 'constant') {
+                ops.push({ short: f.short, label: f.label, valId: f.valId, mode: m, compute: () => ({ constant: def('constant', false) }) });
+            } else if (f.short === 'vectorized') {
+                ops.push({ short: f.short, label: f.label, valId: f.valId, mode: m, compute: () => ({ vectorized: def('vectorized', false) }) });
+            } else {
+                ops.push({ short: f.short, label: f.label, valId: f.valId, mode: m, compute: () => ({ [f.field]: def(f.dk, f.fb) }) });
             }
         }
     }
 
-    const batchOk = await ELG_guardSave(currentLorebookName, currentLorebookData, { explicitDelete: false, source: 'user', note: 'Batch edit' });
-    EL_logGuardResult(batchOk, 'Batch edit', currentLorebookName);
-    if (!batchOk) {
-        EL_error('Batch edit blocked/failed');
-        extensionSettings.folders[currentLorebookName] = foldersBefore;
-        try { const fresh = await ELG_loadFresh(currentLorebookName); if (fresh) EL_setLorebookData(fresh, { own: true }); } catch (e) { EL_warn('reload after failed save failed', e); }
-        if (typeof showToast === 'function') showToast('Batch edit was blocked — no changes were saved.');
-    } else {
-        saveSettings();
+    const textFields = [
+        { short: 'outlet-name', label: 'Outlet Name', valId: 'batch-outlet-name-val', field: 'outletName', dk: 'outletName', fb: '' },
+        { short: 'group', label: 'Inclusion Group', valId: 'batch-group-val', field: 'group', dk: 'group', fb: '' },
+        { short: 'automation-id', label: 'Automation ID', valId: 'batch-automation-id-val', field: 'automationId', dk: 'automationId', fb: '' },
+    ];
+    for (const f of textFields) {
+        const m = modeOf(f.short);
+        if (m === 'leave') continue;
+        if (m === 'set') {
+            const v = EL_batchTextVal(f.valId);
+            ops.push({ short: f.short, label: f.label, valId: f.valId, mode: m, compute: () => ({ [f.field]: v }) });
+        } else {
+            ops.push({ short: f.short, label: f.label, valId: f.valId, mode: m, compute: () => ({ [f.field]: def(f.dk, f.fb) }) });
+        }
     }
-    EL_modalClose(els.batchModal);
-    renderEntries();
+
+    const mCharFilter = modeOf('char-filter');
+    const mCharExcl = modeOf('char-exclusion');
+    if (mCharFilter === 'set') {
+        const text = EL_batchTextVal('batch-char-filter-val');
+        ops.push({
+            short: 'char-filter', label: 'Character Filter', valId: 'batch-char-filter-val', mode: mCharFilter,
+            compute: (entry) => {
+                let isEx = false;
+                try { isEx = !!(entry.characterFilter && entry.characterFilter.isExclude === true); } catch (e) {}
+                if (mCharExcl === 'set') isEx = EL_batchBoolVal('batch-char-exclusion-val');
+                else if (mCharExcl === 'reset') isEx = false;
+                return { characterFilter: EL_buildCharacterFilter(text, isEx, entry.characterFilter) };
+            },
+        });
+    } else if (mCharFilter === 'reset') {
+        ops.push({
+            short: 'char-filter', label: 'Character Filter', valId: 'batch-char-filter-val', mode: mCharFilter,
+            compute: () => {
+                const cf = EL_batchDefaultCharFilter();
+                if (mCharExcl === 'set') cf.isExclude = EL_batchBoolVal('batch-char-exclusion-val');
+                return { characterFilter: cf };
+            },
+        });
+    }
+    if (mCharExcl !== 'leave' && mCharFilter === 'leave') {
+        if (mCharExcl === 'set') {
+            ops.push({
+                short: 'char-exclusion', label: 'Exclude Listed Characters', valId: 'batch-char-exclusion-val', mode: mCharExcl,
+                compute: (entry) => ({ characterFilter: EL_buildCharacterFilter(EL_characterFilterToText(entry.characterFilter), EL_batchBoolVal('batch-char-exclusion-val'), entry.characterFilter) }),
+            });
+        } else {
+            ops.push({
+                short: 'char-exclusion', label: 'Exclude Listed Characters', valId: 'batch-char-exclusion-val', mode: mCharExcl,
+                compute: (entry) => ({ characterFilter: EL_buildCharacterFilter(EL_characterFilterToText(entry.characterFilter), false, entry.characterFilter) }),
+            });
+        }
+    }
+
+    const mTriggers = modeOf('triggers');
+    if (mTriggers === 'set') {
+        const raw = EL_batchTextVal('batch-triggers-val');
+        const list = [...new Set((raw ? raw.split(',').map(s => s.trim()).filter(Boolean) : []).filter(t => EL_GENERATION_TYPE_TRIGGERS.includes(t)))];
+        ops.push({ short: 'triggers', label: 'Gen Triggers', valId: 'batch-triggers-val', mode: mTriggers, compute: () => ({ triggers: EL_cloneBatchValue(list) }) });
+    } else if (mTriggers === 'reset') {
+        ops.push({ short: 'triggers', label: 'Gen Triggers', valId: 'batch-triggers-val', mode: mTriggers, compute: () => ({ triggers: def('triggers', []) }) });
+    }
+
+    const mScanDepth = modeOf('scan-depth');
+    if (mScanDepth === 'set') {
+        const raw = EL_batchTextVal('batch-scan-depth-val').trim();
+        const v = raw === '' ? null : parseInt(raw);
+        ops.push({ short: 'scan-depth', label: 'Scan Depth Override', valId: 'batch-scan-depth-val', mode: mScanDepth, compute: () => ({ scanDepth: v }) });
+    } else if (mScanDepth === 'reset') {
+        ops.push({ short: 'scan-depth', label: 'Scan Depth Override', valId: 'batch-scan-depth-val', mode: mScanDepth, compute: () => ({ scanDepth: def('scanDepth', null) }) });
+    }
+
+    const mRecLevel = modeOf('recursion-level');
+    const mDelayRec = modeOf('delay-recursion');
+    if (mRecLevel !== 'leave' || mDelayRec !== 'leave') {
+        ops.push({
+            short: 'recursion', label: 'Delay Until Recursion', valId: 'batch-recursion-level-val', mode: (mRecLevel !== 'leave' ? mRecLevel : mDelayRec),
+            compute: (entry) => {
+                let delayOn;
+                if (mDelayRec === 'set') delayOn = EL_batchBoolVal('batch-delay-recursion-val');
+                else if (mDelayRec === 'reset') delayOn = false;
+                else { try { delayOn = !!entry.delayUntilRecursion; } catch (e) { delayOn = false; } }
+                let recLvl;
+                if (mRecLevel === 'set') recLvl = EL_batchIntVal('batch-recursion-level-val');
+                else if (mRecLevel === 'reset') recLvl = def('delayUntilRecursion', 0);
+                else recLvl = (typeof entry.delayUntilRecursion === 'number') ? entry.delayUntilRecursion : NaN;
+                const v = !delayOn ? false : ((!Number.isFinite(recLvl) || recLvl <= 1) ? true : recLvl);
+                return { delayUntilRecursion: v };
+            },
+        });
+    }
+
+    const nullBoolFields = [
+        { short: 'case-sensitive', label: 'Case-Sensitive', valId: 'batch-case-sensitive-val', field: 'caseSensitive', dk: 'caseSensitive' },
+        { short: 'whole-words', label: 'Whole Words', valId: 'batch-whole-words-val', field: 'matchWholeWords', dk: 'matchWholeWords' },
+        { short: 'group-scoring', label: 'Group Scoring', valId: 'batch-group-scoring-val', field: 'useGroupScoring', dk: 'useGroupScoring' },
+    ];
+    for (const f of nullBoolFields) {
+        const m = modeOf(f.short);
+        if (m === 'leave') continue;
+        if (m === 'set') {
+            const v = EL_batchNullBoolVal(f.valId);
+            ops.push({ short: f.short, label: f.label, valId: f.valId, mode: m, compute: () => ({ [f.field]: v }) });
+        } else {
+            ops.push({ short: f.short, label: f.label, valId: f.valId, mode: m, compute: () => ({ [f.field]: def(f.dk, null) }) });
+        }
+    }
+
+    const mFolder = modeOf('folder');
+    let folderOp = null;
+    if (mFolder === 'set') folderOp = { mode: mFolder, folderId: EL_batchTextVal('batch-folder-val') };
+    else if (mFolder === 'reset') folderOp = { mode: mFolder, folderId: '' };
+
+    if (!ops.length && !folderOp) return null;
+    return { ops, folderOp, uids, uidSet: new Set(uids.map(String)) };
+}
+
+/**
+ * Describe the target of one op for the preview summary.
+ * @param {object} op
+ * @param {object|null} folderOp
+ * @returns {string}
+ */
+function EL_batchTargetDesc(op) {
+    try {
+        if (op.mode === 'reset') return 'Reset to default';
+        const el = document.getElementById(op.valId || '');
+        if (!el) return '';
+        const tag = String(el.tagName || '').toLowerCase();
+        if (tag === 'select' && el.id === 'batch-strategy-val') {
+            const o = el.selectedOptions ? el.selectedOptions[0] : null;
+            return o ? String(o.textContent || '').trim() : '';
+        }
+        if (tag === 'select') {
+            const o = el.selectedOptions ? el.selectedOptions[0] : null;
+            return o ? String(o.textContent || '').trim() : String(el.value);
+        }
+        if (el.type === 'checkbox') return el.checked ? 'Yes' : 'No';
+        return String(el.value);
+    } catch (e) { return ''; }
+}
+
+/**
+ * Build the per-entry diff for a plan without mutating anything.
+ * @param {{ops: Array, folderOp: object|null, uids: Array, uidSet: Set}} plan
+ * @returns {{rows: Array, unaffected: number, fieldStats: Array}}
+ */
+function EL_batchBuildDiff(plan) {
+    const rows = [];
+    let unaffected = 0;
+    const statMap = {};
+    for (const uid of plan.uids) {
+        const entry = currentLorebookData.entries[uid];
+        if (!entry) { unaffected++; continue; }
+        const changes = [];
+        for (const op of plan.ops) {
+            let writes = null;
+            try { writes = op.compute(entry) || null; } catch (e) { writes = null; }
+            if (!writes) continue;
+            if (op.short === 'strategy') {
+                const np = writes.position;
+                const hasRole = Object.prototype.hasOwnProperty.call(writes, 'role');
+                const nr = hasRole ? writes.role : entry.role;
+                if (!EL_batchValuesEqual(entry.position, np) || (hasRole && !EL_batchValuesEqual(entry.role, nr))) {
+                    changes.push({ field: 'position', label: op.label, from: EL_batchStrategyLabel(entry.position, entry.role), to: EL_batchStrategyLabel(np, nr) });
+                    statMap[op.label] = statMap[op.label] || { label: op.label, target: EL_batchTargetDesc(op), affected: 0 };
+                    statMap[op.label].affected++;
+                }
+                continue;
+            }
+            for (const f of Object.keys(writes)) {
+                if (EL_batchValuesEqual(entry[f], writes[f])) continue;
+                changes.push({ field: f, label: op.label, from: EL_batchDisplayValue(f, entry[f]), to: EL_batchDisplayValue(f, writes[f]) });
+                statMap[op.label] = statMap[op.label] || { label: op.label, target: EL_batchTargetDesc(op), affected: 0 };
+                statMap[op.label].affected++;
+            }
+        }
+        if (plan.folderOp) {
+            const fromFolder = EL_batchEntryFolder(uid);
+            const toFolder = plan.folderOp.folderId || '';
+            if (fromFolder !== toFolder) {
+                changes.push({ field: '__folder', label: 'Folder', from: EL_batchFolderName(fromFolder), to: EL_batchFolderName(toFolder) });
+                statMap.Folder = statMap.Folder || { label: 'Folder', target: EL_batchFolderName(toFolder), affected: 0 };
+                statMap.Folder.affected++;
+            }
+        }
+        if (!changes.length) unaffected++;
+        else rows.push({ uid: String(uid), label: EL_batchEntryLabel(uid, entry), changes });
+    }
+    return { rows, unaffected, fieldStats: Object.values(statMap) };
+}
+
+/**
+ * Render the preview diff into the preview modal and store nothing yet.
+ * @param {{ops: Array, folderOp: object|null, uids: Array, uidSet: Set}} plan
+ */
+function EL_batchRenderPreview(plan) {
+    const diff = EL_batchBuildDiff(plan);
+    plan.diff = diff;
+    const body = document.getElementById('batch-preview-body');
+    const confirmBtn = document.getElementById('btn-batch-preview-confirm');
+    const changed = diff.rows.length;
+    const total = plan.uids.length;
+    if (confirmBtn) {
+        try { confirmBtn.textContent = changed ? ('Apply Changes (' + changed + ' entr' + (changed === 1 ? 'y' : 'ies') + ')') : 'Apply Changes'; } catch (e) {}
+        try { confirmBtn.disabled = !changed; } catch (e) {}
+    }
+    if (!body) return;
+    let html = '';
+    html += '<p class="el-batch-preview-summary">Selected <strong>' + total + '</strong> entr' + (total === 1 ? 'y' : 'ies')
+        + ' &middot; <strong>' + changed + '</strong> will change'
+        + ' &middot; <strong>' + diff.unaffected + '</strong> already match (unaffected).</p>';
+    if (diff.fieldStats.length) {
+        html += '<table class="el-batch-field-table"><thead><tr><th>Field</th><th>Change to</th><th>Entries</th></tr></thead><tbody>';
+        for (const st of diff.fieldStats) {
+            html += '<tr><td>' + escapeHtml(st.label) + '</td><td>' + escapeHtml(st.target || '') + '</td><td>' + st.affected + '</td></tr>';
+        }
+        html += '</tbody></table>';
+    } else {
+        html += '<p class="el-batch-preview-empty">Nothing would change — every selected entry already matches.</p>';
+    }
+    const MAX_ROWS = 60;
+    if (diff.rows.length) {
+        html += '<div class="el-batch-entry-details">';
+        for (const row of diff.rows.slice(0, MAX_ROWS)) {
+            html += '<details class="el-batch-entry-row"><summary>' + escapeHtml(row.label) + ' <span class="el-batch-entry-count">' + row.changes.length + ' change' + (row.changes.length === 1 ? '' : 's') + '</span></summary><ul>';
+            for (const c of row.changes) {
+                html += '<li><span class="el-batch-change-field">' + escapeHtml(c.label) + ':</span> '
+                    + '<span class="el-batch-change-from">' + escapeHtml(c.from) + '</span>'
+                    + ' <span class="el-batch-change-arrow">&rarr;</span> '
+                    + '<span class="el-batch-change-to">' + escapeHtml(c.to) + '</span></li>';
+            }
+            html += '</ul></details>';
+        }
+        if (diff.rows.length > MAX_ROWS) {
+            html += '<p class="el-batch-preview-note">Showing ' + MAX_ROWS + ' of ' + diff.rows.length + ' changed entries.</p>';
+        }
+        html += '</div>';
+    }
+    if (diff.unaffected) {
+        html += '<p class="el-batch-preview-note">' + diff.unaffected + ' selected entr' + (diff.unaffected === 1 ? 'y' : 'ies') + ' would not change and ' + (diff.unaffected === 1 ? 'is' : 'are') + ' omitted above.</p>';
+    }
+    body.innerHTML = html;
+}
+
+/**
+ * Entry point for the batch modal's Apply button: collect the plan and
+ * show the confirmation preview. Nothing is written until confirmed.
+ */
+async function applyBatchOptions() {
+    try {
+        if (!selectedEntries || !selectedEntries.size) {
+            if (typeof showToast === 'function') showToast('No entries selected.');
+            return;
+        }
+        const plan = EL_batchCollectPlan();
+        if (!plan) {
+            if (typeof showToast === 'function') showToast('Nothing to apply — every field is set to "Leave unchanged".');
+            return;
+        }
+        EL_batchPendingPlan = plan;
+        EL_batchRenderPreview(plan);
+        EL_modalOpen(document.getElementById('batch-preview-modal'));
+    } catch (e) {
+        EL_error('batch preview failed', e);
+        if (typeof showToast === 'function') showToast('Could not build the batch preview.');
+    }
+}
+
+/**
+ * Commit the pending batch plan through the worldinfo guard, snapshotting
+ * the previous per-field values first so the edit can be undone.
+ */
+async function EL_batchConfirmApply() {
+    const plan = EL_batchPendingPlan;
+    const previewEl = document.getElementById('batch-preview-modal');
+    try {
+        if (!plan || !plan.uids || !plan.uids.length) {
+            try { EL_modalClose(previewEl); } catch (e) {}
+            return;
+        }
+        if (!currentLorebookData || !currentLorebookData.entries) {
+            if (typeof showToast === 'function') showToast('No lorebook open — batch edit cancelled.');
+            return;
+        }
+        const book = currentLorebookName;
+        const prev = {};
+        const foldersBefore = EL_cloneBatchValue((extensionSettings.folders && extensionSettings.folders[book]) || []);
+        const changedUids = [];
+        for (const uid of plan.uids) {
+            const entry = currentLorebookData.entries[uid];
+            if (!entry) continue;
+            const writes = {};
+            for (const op of plan.ops) {
+                let w = null;
+                try { w = op.compute(entry) || null; } catch (e) { w = null; }
+                if (w) {
+                    for (const f of Object.keys(w)) writes[f] = w[f];
+                }
+            }
+            const changedFields = Object.keys(writes).filter(f => !EL_batchValuesEqual(entry[f], writes[f]));
+            if (!changedFields.length) continue;
+            changedUids.push(String(uid));
+            const oldVals = {};
+            for (const f of changedFields) {
+                oldVals[f] = (entry[f] === undefined) ? EL_BATCH_MISSING : EL_cloneBatchValue(entry[f]);
+            }
+            prev[String(uid)] = oldVals;
+            for (const f of changedFields) entry[f] = writes[f];
+            if (Object.prototype.hasOwnProperty.call(writes, 'delayUntilRecursion')) {
+                try { delete entry.delayUntilRecursionLevel; } catch (e) {}
+                try { delete entry.delay_until_recursion; } catch (e) {}
+            }
+        }
+        let folderChanged = false;
+        if (plan.folderOp) {
+            const folders = (extensionSettings.folders && extensionSettings.folders[book]) || [];
+            const beforeSig = JSON.stringify(folders.map(f => [f.id, f.entries]));
+            folders.forEach(f => {
+                try { f.entries = (f.entries || []).filter(x => !plan.uidSet.has(String(x))); } catch (e) {}
+            });
+            if (plan.folderOp.folderId) {
+                const target = folders.find(f => f.id === plan.folderOp.folderId);
+                if (target) {
+                    try { target.entries.push(...plan.uids.map(String)); } catch (e) {}
+                }
+            }
+            try { folderChanged = JSON.stringify(folders.map(f => [f.id, f.entries])) !== beforeSig; } catch (e) { folderChanged = true; }
+        }
+        if (!changedUids.length && !folderChanged) {
+            if (typeof showToast === 'function') showToast('No changes — every selected entry already matches.');
+            try { EL_modalClose(previewEl); } catch (e) {}
+            EL_batchPendingPlan = null;
+            return;
+        }
+        const batchOk = await ELG_guardSave(currentLorebookName, currentLorebookData, { explicitDelete: false, source: 'user', note: 'Batch edit' });
+        EL_logGuardResult(batchOk, 'Batch edit', currentLorebookName);
+        if (!batchOk) {
+            EL_error('Batch edit blocked/failed');
+            try {
+                if (extensionSettings.folders) extensionSettings.folders[book] = foldersBefore;
+            } catch (e) {}
+            try { const fresh = await ELG_loadFresh(currentLorebookName); if (fresh) EL_setLorebookData(fresh, { own: true }); } catch (e) { EL_warn('reload after failed save failed', e); }
+            if (typeof showToast === 'function') showToast('Batch edit was blocked — no changes were saved.');
+            EL_batchPendingPlan = null;
+            try { EL_modalClose(previewEl); } catch (e) {}
+            renderEntries();
+            return;
+        }
+        try { saveSettings(); } catch (e) {}
+        EL_batchUndoState = { book, prev, foldersBefore: folderChanged ? foldersBefore : null, at: Date.now() };
+        EL_updateBatchUndoButton();
+        EL_batchPendingPlan = null;
+        try { EL_modalClose(previewEl); } catch (e) {}
+        EL_modalClose(els.batchModal);
+        renderEntries();
+        const n = changedUids.length;
+        if (typeof showToast === 'function') {
+            showToast('Batch edit applied to ' + n + ' entr' + (n === 1 ? 'y' : 'ies') + (folderChanged ? ' (folders updated)' : '') + '. Undo is in the toolbar.');
+        }
+    } catch (e) {
+        EL_error('batch apply failed', e);
+        if (typeof showToast === 'function') showToast('Batch edit failed.');
+    }
+}
+
+/**
+ * Restore the previous values captured by the last batch apply, through
+ * the same guard-save path, then re-render.
+ */
+async function EL_batchUndoBatch() {
+    try {
+        const s = EL_batchUndoState;
+        if (!s) {
+            if (typeof showToast === 'function') showToast('Nothing to undo.');
+            return;
+        }
+        if (s.book !== currentLorebookName || !currentLorebookData || !currentLorebookData.entries) {
+            if (typeof showToast === 'function') showToast('Undo is no longer available (lorebook changed).');
+            EL_batchClearUndo();
+            return;
+        }
+        const uids = Object.keys(s.prev || {});
+        for (const uid of uids) {
+            const entry = currentLorebookData.entries[uid];
+            if (!entry) continue;
+            const oldVals = s.prev[uid] || {};
+            for (const f of Object.keys(oldVals)) {
+                const v = oldVals[f];
+                try {
+                    if (v === EL_BATCH_MISSING) delete entry[f];
+                    else entry[f] = EL_cloneBatchValue(v);
+                } catch (e) {}
+            }
+        }
+        if (s.foldersBefore) {
+            try {
+                if (!extensionSettings.folders) extensionSettings.folders = {};
+                extensionSettings.folders[s.book] = EL_cloneBatchValue(s.foldersBefore);
+                saveSettings();
+            } catch (e) {}
+        }
+        const ok = await ELG_guardSave(s.book, currentLorebookData, { explicitDelete: false, source: 'user', note: 'Undo batch edit' });
+        EL_logGuardResult(ok, 'Undo batch edit', s.book);
+        if (!ok) {
+            EL_error('Undo batch edit blocked/failed');
+            try { const fresh = await ELG_loadFresh(s.book); if (fresh) EL_setLorebookData(fresh, { own: true }); } catch (e) {}
+            if (typeof showToast === 'function') showToast('Undo was blocked — no changes were saved.');
+            renderEntries();
+            return;
+        }
+        EL_batchClearUndo();
+        renderEntries();
+        if (typeof showToast === 'function') showToast('Batch edit undone (' + uids.length + ' entr' + (uids.length === 1 ? 'y' : 'ies') + ').');
+    } catch (e) {
+        EL_error('batch undo failed', e);
+        if (typeof showToast === 'function') showToast('Undo failed.');
+    }
+}
+
+/**
+ * Drop the pending batch undo (e.g. the user switched lorebooks) and hide
+ * the affordance so it can never be offered for a different book.
+ */
+function EL_batchClearUndo() {
+    EL_batchUndoState = null;
+    EL_updateBatchUndoButton();
+}
+
+/**
+ * Show the toolbar Undo button only while an undo exists for the open book.
+ */
+function EL_updateBatchUndoButton() {
+    try {
+        const btn = document.getElementById('btn-batch-undo');
+        if (!btn) return;
+        const show = !!(EL_batchUndoState && EL_batchUndoState.book === currentLorebookName);
+        btn.style.display = show ? '' : 'none';
+        if (show) {
+            let n = 0;
+            try { n = Object.keys(EL_batchUndoState.prev || {}).length; } catch (e) {}
+            btn.innerHTML = '<i class="fa-solid fa-rotate-left"></i> Undo (' + n + ')';
+            btn.title = 'Undo last batch edit (' + n + ' entries)';
+        }
+    } catch (e) {}
 }
 
 const EL_GENERATION_TYPE_TRIGGERS = Object.freeze(['normal', 'continue', 'impersonate', 'swipe', 'regenerate', 'quiet']);
@@ -5951,15 +6687,26 @@ function setupEventListeners() {
     document.getElementById('btn-reset-colors').addEventListener('click', () => {
         delete extensionSettings.colors;
         saveSettings();
-        document.documentElement.style.removeProperty('--bg-color');
-        document.documentElement.style.removeProperty('--panel-bg');
-        document.documentElement.style.removeProperty('--text-color');
-        document.documentElement.style.removeProperty('--primary-color');
+        applyColors();
         openSettings();
     });
 
     // Batch Edit
     document.getElementById('btn-apply-batch').addEventListener('click', applyBatchOptions);
+    document.getElementById('btn-batch-preview-confirm').addEventListener('click', EL_batchConfirmApply);
+    document.getElementById('btn-batch-preview-back').addEventListener('click', () => EL_modalClose(document.getElementById('batch-preview-modal')));
+    const btnBatchUndo = document.getElementById('btn-batch-undo');
+    if (btnBatchUndo) btnBatchUndo.addEventListener('click', EL_batchUndoBatch);
+
+    // Theme mode
+    const themeModeSelect = document.getElementById('setting-theme-mode');
+    if (themeModeSelect) {
+        themeModeSelect.addEventListener('change', () => {
+            extensionSettings.themeMode = themeModeSelect.value;
+            saveSettings();
+            applyColors();
+        });
+    }
 
     // Edit Entry
     document.getElementById('btn-save-edit-entry').addEventListener('click', saveEditedEntry);

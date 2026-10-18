@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Enhanced Lorebook UI</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link rel="stylesheet" href="style.css?v=3">
+    <link rel="stylesheet" href="style.css?v=4">
 </head>
 <body>
     <div id="app" class="glass-container">
@@ -157,6 +157,7 @@
                     <button id="btn-select-all" title="Select All" style="display:none;"><i class="fa-solid fa-check-square"></i></button>
                     <button id="btn-deselect-all" title="Deselect All" style="display:none;"><i class="fa-solid fa-minus-square"></i></button>
                     <button id="btn-batch-options" title="Batch Options" disabled><i class="fa-solid fa-layer-group"></i> Batch</button>
+                    <button id="btn-batch-undo" title="Undo last batch edit" style="display:none;"><i class="fa-solid fa-rotate-left"></i> Undo</button>
                     <button id="btn-download-selected" title="Download Selected Entries" disabled style="display:none;"><i class="fa-solid fa-download"></i> Download</button>
                     <button id="btn-backup-watch" title="Backup Watch"><i class="fa-solid fa-shield-halved"></i> Backup Watch</button>
                     <button id="btn-export-lorebook" title="Export this lorebook (.json)"><i class="fa-solid fa-download"></i> Export</button>
@@ -680,6 +681,14 @@
                     <label>Primary Accent</label>
                     <input type="color" id="color-primary" value="#6366f1">
                 </div>
+                <div class="form-group">
+                    <label for="setting-theme-mode">Theme</label>
+                    <select id="setting-theme-mode">
+                        <option value="dark">Dark</option>
+                        <option value="light">Light</option>
+                        <option value="follow">Follow SillyTavern</option>
+                    </select>
+                </div>
                 <button id="btn-reset-colors" class="btn btn-secondary mt-4">Reset to Defaults</button>
                 <hr style="border:none;border-top:1px solid var(--panel-border);margin:16px 0;">
                 <div class="form-group">
@@ -1185,13 +1194,13 @@
                 <details open style="margin-bottom: 12px; background: rgba(0,0,0,0.1); padding: 8px; border-radius: 6px;">
                     <summary style="cursor:pointer; font-weight:bold; margin-bottom: 8px;">Core Settings</summary>
                     <div class="form-group row">
-                        <input type="checkbox" id="batch-apply-order">
-                        <label for="batch-apply-order">Order:</label>
+                        <select id="batch-mode-order" class="batch-mode" title="Leave unchanged, set a value, or reset to default"><option value="leave">Leave unchanged</option><option value="set">Set to</option><option value="reset">Reset to default</option></select>
+                        <label for="batch-mode-order">Order:</label>
                         <input type="number" id="batch-order-val" value="100">
                     </div>
                     <div class="form-group row">
-                        <input type="checkbox" id="batch-apply-strategy">
-                        <label for="batch-apply-strategy">Insertion Strategy:</label>
+                        <select id="batch-mode-strategy" class="batch-mode" title="Leave unchanged, set a value, or reset to default"><option value="leave">Leave unchanged</option><option value="set">Set to</option><option value="reset">Reset to default</option></select>
+                        <label for="batch-mode-strategy">Insertion Strategy:</label>
                         <select id="batch-strategy-val">
                             <option value="0" data-role="">↑Char</option>
                             <option value="1" data-role="">↓Char</option>
@@ -1206,38 +1215,38 @@
                         </select>
                     </div>
                     <div class="form-group row">
-                        <input type="checkbox" id="batch-apply-depth">
-                        <label for="batch-apply-depth">Insertion Depth:</label>
+                        <select id="batch-mode-depth" class="batch-mode" title="Leave unchanged, set a value, or reset to default"><option value="leave">Leave unchanged</option><option value="set">Set to</option><option value="reset">Reset to default</option></select>
+                        <label for="batch-mode-depth">Insertion Depth:</label>
                         <input type="number" id="batch-depth-val" value="4">
                     </div>
                     <div class="form-group row">
-                        <input type="checkbox" id="batch-apply-probability">
-                        <label for="batch-apply-probability">Probability (%):</label>
+                        <select id="batch-mode-probability" class="batch-mode" title="Leave unchanged, set a value, or reset to default"><option value="leave">Leave unchanged</option><option value="set">Set to</option><option value="reset">Reset to default</option></select>
+                        <label for="batch-mode-probability">Probability (%):</label>
                         <input type="number" id="batch-prob-val" value="100" min="0" max="100">
                     </div>
                     <div class="form-group row">
-                        <input type="checkbox" id="batch-apply-use-probability">
-                        <label for="batch-apply-use-probability">Use Probability:</label>
+                        <select id="batch-mode-use-probability" class="batch-mode" title="Leave unchanged, set a value, or reset to default"><option value="leave">Leave unchanged</option><option value="set">Set to</option><option value="reset">Reset to default</option></select>
+                        <label for="batch-mode-use-probability">Use Probability:</label>
                         <input type="checkbox" id="batch-use-probability-val">
                     </div>
                     <div class="form-group row">
-                        <input type="checkbox" id="batch-apply-constant">
-                        <label for="batch-apply-constant">Constant:</label>
+                        <select id="batch-mode-constant" class="batch-mode" title="Leave unchanged, set a value, or reset to default"><option value="leave">Leave unchanged</option><option value="set">Set to</option><option value="reset">Reset to default</option></select>
+                        <label for="batch-mode-constant">Constant:</label>
                         <input type="checkbox" id="batch-constant-val">
                     </div>
                     <div class="form-group row">
-                        <input type="checkbox" id="batch-apply-vectorized">
-                        <label for="batch-apply-vectorized">Vectorized:</label>
+                        <select id="batch-mode-vectorized" class="batch-mode" title="Leave unchanged, set a value, or reset to default"><option value="leave">Leave unchanged</option><option value="set">Set to</option><option value="reset">Reset to default</option></select>
+                        <label for="batch-mode-vectorized">Vectorized:</label>
                         <input type="checkbox" id="batch-vectorized-val">
                     </div>
                     <div class="form-group row">
-                        <input type="checkbox" id="batch-apply-selective">
-                        <label for="batch-apply-selective">Selective:</label>
+                        <select id="batch-mode-selective" class="batch-mode" title="Leave unchanged, set a value, or reset to default"><option value="leave">Leave unchanged</option><option value="set">Set to</option><option value="reset">Reset to default</option></select>
+                        <label for="batch-mode-selective">Selective:</label>
                         <input type="checkbox" id="batch-selective-val">
                     </div>
                     <div class="form-group row">
-                        <input type="checkbox" id="batch-apply-logic">
-                        <label for="batch-apply-logic">Selective Logic:</label>
+                        <select id="batch-mode-logic" class="batch-mode" title="Leave unchanged, set a value, or reset to default"><option value="leave">Leave unchanged</option><option value="set">Set to</option><option value="reset">Reset to default</option></select>
+                        <label for="batch-mode-logic">Selective Logic:</label>
                         <select id="batch-logic-val">
                             <option value="0">AND ANY</option>
                             <option value="3">AND ALL</option>
@@ -1246,28 +1255,28 @@
                         </select>
                     </div>
                     <div class="form-group row">
-                        <input type="checkbox" id="batch-apply-disable">
-                        <label for="batch-apply-disable">Disabled:</label>
+                        <select id="batch-mode-disable" class="batch-mode" title="Leave unchanged, set a value, or reset to default"><option value="leave">Leave unchanged</option><option value="set">Set to</option><option value="reset">Reset to default</option></select>
+                        <label for="batch-mode-disable">Disabled:</label>
                         <input type="checkbox" id="batch-disable-val">
                     </div>
                     <div class="form-group row">
-                        <input type="checkbox" id="batch-apply-add-memo">
-                        <label for="batch-apply-add-memo">Add Memo:</label>
+                        <select id="batch-mode-add-memo" class="batch-mode" title="Leave unchanged, set a value, or reset to default"><option value="leave">Leave unchanged</option><option value="set">Set to</option><option value="reset">Reset to default</option></select>
+                        <label for="batch-mode-add-memo">Add Memo:</label>
                         <input type="checkbox" id="batch-add-memo-val">
                     </div>
                     <div class="form-group row">
-                        <input type="checkbox" id="batch-apply-exclude-recursion">
-                        <label for="batch-apply-exclude-recursion">Exclude Recursion:</label>
+                        <select id="batch-mode-exclude-recursion" class="batch-mode" title="Leave unchanged, set a value, or reset to default"><option value="leave">Leave unchanged</option><option value="set">Set to</option><option value="reset">Reset to default</option></select>
+                        <label for="batch-mode-exclude-recursion">Exclude Recursion:</label>
                         <input type="checkbox" id="batch-exclude-recursion-val">
                     </div>
                     <div class="form-group row">
-                        <input type="checkbox" id="batch-apply-prevent-recursion">
-                        <label for="batch-apply-prevent-recursion">Prevent Recursion:</label>
+                        <select id="batch-mode-prevent-recursion" class="batch-mode" title="Leave unchanged, set a value, or reset to default"><option value="leave">Leave unchanged</option><option value="set">Set to</option><option value="reset">Reset to default</option></select>
+                        <label for="batch-mode-prevent-recursion">Prevent Recursion:</label>
                         <input type="checkbox" id="batch-prevent-recursion-val">
                     </div>
                     <div class="form-group row">
-                        <input type="checkbox" id="batch-apply-outlet-name">
-                        <label for="batch-apply-outlet-name">Outlet Name:</label>
+                        <select id="batch-mode-outlet-name" class="batch-mode" title="Leave unchanged, set a value, or reset to default"><option value="leave">Leave unchanged</option><option value="set">Set to</option><option value="reset">Reset to default</option></select>
+                        <label for="batch-mode-outlet-name">Outlet Name:</label>
                         <input type="text" id="batch-outlet-name-val" placeholder="outlet name">
                     </div>
                 </details>
@@ -1275,33 +1284,33 @@
                 <details style="margin-bottom: 12px; background: rgba(0,0,0,0.1); padding: 8px; border-radius: 6px;">
                     <summary style="cursor:pointer; font-weight:bold; margin-bottom: 8px;">Grouping & Timers</summary>
                     <div class="form-group row">
-                        <input type="checkbox" id="batch-apply-group">
-                        <label for="batch-apply-group">Inclusion Group:</label>
+                        <select id="batch-mode-group" class="batch-mode" title="Leave unchanged, set a value, or reset to default"><option value="leave">Leave unchanged</option><option value="set">Set to</option><option value="reset">Reset to default</option></select>
+                        <label for="batch-mode-group">Inclusion Group:</label>
                         <input type="text" id="batch-group-val" placeholder="comma separated">
                     </div>
                     <div class="form-group row">
-                        <input type="checkbox" id="batch-apply-group-weight">
-                        <label for="batch-apply-group-weight">Group Weight:</label>
+                        <select id="batch-mode-group-weight" class="batch-mode" title="Leave unchanged, set a value, or reset to default"><option value="leave">Leave unchanged</option><option value="set">Set to</option><option value="reset">Reset to default</option></select>
+                        <label for="batch-mode-group-weight">Group Weight:</label>
                         <input type="number" id="batch-group-weight-val" value="100">
                     </div>
                     <div class="form-group row">
-                        <input type="checkbox" id="batch-apply-group-override">
-                        <label for="batch-apply-group-override">Group Override:</label>
+                        <select id="batch-mode-group-override" class="batch-mode" title="Leave unchanged, set a value, or reset to default"><option value="leave">Leave unchanged</option><option value="set">Set to</option><option value="reset">Reset to default</option></select>
+                        <label for="batch-mode-group-override">Group Override:</label>
                         <input type="checkbox" id="batch-group-override-val">
                     </div>
                     <div class="form-group row">
-                        <input type="checkbox" id="batch-apply-sticky">
-                        <label for="batch-apply-sticky">Sticky (Turns):</label>
+                        <select id="batch-mode-sticky" class="batch-mode" title="Leave unchanged, set a value, or reset to default"><option value="leave">Leave unchanged</option><option value="set">Set to</option><option value="reset">Reset to default</option></select>
+                        <label for="batch-mode-sticky">Sticky (Turns):</label>
                         <input type="number" id="batch-sticky-val" value="0" min="0">
                     </div>
                     <div class="form-group row">
-                        <input type="checkbox" id="batch-apply-cooldown">
-                        <label for="batch-apply-cooldown">Cooldown (Turns):</label>
+                        <select id="batch-mode-cooldown" class="batch-mode" title="Leave unchanged, set a value, or reset to default"><option value="leave">Leave unchanged</option><option value="set">Set to</option><option value="reset">Reset to default</option></select>
+                        <label for="batch-mode-cooldown">Cooldown (Turns):</label>
                         <input type="number" id="batch-cooldown-val" value="0" min="0">
                     </div>
                     <div class="form-group row">
-                        <input type="checkbox" id="batch-apply-delay">
-                        <label for="batch-apply-delay">Delay (Turns):</label>
+                        <select id="batch-mode-delay" class="batch-mode" title="Leave unchanged, set a value, or reset to default"><option value="leave">Leave unchanged</option><option value="set">Set to</option><option value="reset">Reset to default</option></select>
+                        <label for="batch-mode-delay">Delay (Turns):</label>
                         <input type="number" id="batch-delay-val" value="0" min="0">
                     </div>
                 </details>
@@ -1309,49 +1318,49 @@
                 <details style="margin-bottom: 12px; background: rgba(0,0,0,0.1); padding: 8px; border-radius: 6px;">
                     <summary style="cursor:pointer; font-weight:bold; margin-bottom: 8px;">Filters & Matching Sources</summary>
                     <div class="form-group row">
-                        <input type="checkbox" id="batch-apply-char-filter">
-                        <label for="batch-apply-char-filter">Character Filter:</label>
+                        <select id="batch-mode-char-filter" class="batch-mode" title="Leave unchanged, set a value, or reset to default"><option value="leave">Leave unchanged</option><option value="set">Set to</option><option value="reset">Reset to default</option></select>
+                        <label for="batch-mode-char-filter">Character Filter:</label>
                         <input type="text" id="batch-char-filter-val" placeholder="comma separated">
                     </div>
                     <div class="form-group row">
-                        <input type="checkbox" id="batch-apply-triggers">
-                        <label for="batch-apply-triggers">Gen Triggers:</label>
+                        <select id="batch-mode-triggers" class="batch-mode" title="Leave unchanged, set a value, or reset to default"><option value="leave">Leave unchanged</option><option value="set">Set to</option><option value="reset">Reset to default</option></select>
+                        <label for="batch-mode-triggers">Gen Triggers:</label>
                         <input type="text" id="batch-triggers-val" placeholder="normal, swipe, quiet...">
                     </div>
                     <div class="form-group row">
-                        <input type="checkbox" id="batch-apply-char-exclusion">
-                        <label for="batch-apply-char-exclusion">Exclude Listed Characters:</label>
+                        <select id="batch-mode-char-exclusion" class="batch-mode" title="Leave unchanged, set a value, or reset to default"><option value="leave">Leave unchanged</option><option value="set">Set to</option><option value="reset">Reset to default</option></select>
+                        <label for="batch-mode-char-exclusion">Exclude Listed Characters:</label>
                         <input type="checkbox" id="batch-char-exclusion-val">
                     </div>
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px;">
                         <div class="form-group row" style="margin-bottom: 0;">
-                            <input type="checkbox" id="batch-apply-match-char-desc">
-                            <label for="batch-apply-match-char-desc" style="font-size:0.85rem;">Match Char Desc</label>
+                            <select id="batch-mode-match-char-desc" class="batch-mode" title="Leave unchanged, set a value, or reset to default"><option value="leave">Leave unchanged</option><option value="set">Set to</option><option value="reset">Reset to default</option></select>
+                            <label for="batch-mode-match-char-desc" style="font-size:0.85rem;">Match Char Desc</label>
                             <input type="checkbox" id="batch-match-char-desc-val">
                         </div>
                         <div class="form-group row" style="margin-bottom: 0;">
-                            <input type="checkbox" id="batch-apply-match-char-pers">
-                            <label for="batch-apply-match-char-pers" style="font-size:0.85rem;">Match Char Pers</label>
+                            <select id="batch-mode-match-char-pers" class="batch-mode" title="Leave unchanged, set a value, or reset to default"><option value="leave">Leave unchanged</option><option value="set">Set to</option><option value="reset">Reset to default</option></select>
+                            <label for="batch-mode-match-char-pers" style="font-size:0.85rem;">Match Char Pers</label>
                             <input type="checkbox" id="batch-match-char-pers-val">
                         </div>
                         <div class="form-group row" style="margin-bottom: 0;">
-                            <input type="checkbox" id="batch-apply-match-scenario">
-                            <label for="batch-apply-match-scenario" style="font-size:0.85rem;">Match Scenario</label>
+                            <select id="batch-mode-match-scenario" class="batch-mode" title="Leave unchanged, set a value, or reset to default"><option value="leave">Leave unchanged</option><option value="set">Set to</option><option value="reset">Reset to default</option></select>
+                            <label for="batch-mode-match-scenario" style="font-size:0.85rem;">Match Scenario</label>
                             <input type="checkbox" id="batch-match-scenario-val">
                         </div>
                         <div class="form-group row" style="margin-bottom: 0;">
-                            <input type="checkbox" id="batch-apply-match-persona">
-                            <label for="batch-apply-match-persona" style="font-size:0.85rem;">Match Persona</label>
+                            <select id="batch-mode-match-persona" class="batch-mode" title="Leave unchanged, set a value, or reset to default"><option value="leave">Leave unchanged</option><option value="set">Set to</option><option value="reset">Reset to default</option></select>
+                            <label for="batch-mode-match-persona" style="font-size:0.85rem;">Match Persona</label>
                             <input type="checkbox" id="batch-match-persona-val">
                         </div>
                         <div class="form-group row" style="margin-bottom: 0;">
-                            <input type="checkbox" id="batch-apply-match-char-depth">
-                            <label for="batch-apply-match-char-depth" style="font-size:0.85rem;">Match Char Note</label>
+                            <select id="batch-mode-match-char-depth" class="batch-mode" title="Leave unchanged, set a value, or reset to default"><option value="leave">Leave unchanged</option><option value="set">Set to</option><option value="reset">Reset to default</option></select>
+                            <label for="batch-mode-match-char-depth" style="font-size:0.85rem;">Match Char Note</label>
                             <input type="checkbox" id="batch-match-char-depth-val">
                         </div>
                         <div class="form-group row" style="margin-bottom: 0;">
-                            <input type="checkbox" id="batch-apply-match-creator-notes">
-                            <label for="batch-apply-match-creator-notes" style="font-size:0.85rem;">Match Creator Notes</label>
+                            <select id="batch-mode-match-creator-notes" class="batch-mode" title="Leave unchanged, set a value, or reset to default"><option value="leave">Leave unchanged</option><option value="set">Set to</option><option value="reset">Reset to default</option></select>
+                            <label for="batch-mode-match-creator-notes" style="font-size:0.85rem;">Match Creator Notes</label>
                             <input type="checkbox" id="batch-match-creator-notes-val">
                         </div>
                     </div>
@@ -1360,18 +1369,18 @@
                 <details style="margin-bottom: 12px; background: rgba(0,0,0,0.1); padding: 8px; border-radius: 6px;">
                     <summary style="cursor:pointer; font-weight:bold; margin-bottom: 8px;">Overrides & Recursion</summary>
                     <div class="form-group row">
-                        <input type="checkbox" id="batch-apply-scan-depth">
-                        <label for="batch-apply-scan-depth">Scan Depth Override:</label>
+                        <select id="batch-mode-scan-depth" class="batch-mode" title="Leave unchanged, set a value, or reset to default"><option value="leave">Leave unchanged</option><option value="set">Set to</option><option value="reset">Reset to default</option></select>
+                        <label for="batch-mode-scan-depth">Scan Depth Override:</label>
                         <input type="number" id="batch-scan-depth-val" placeholder="Global">
                     </div>
                     <div class="form-group row">
-                        <input type="checkbox" id="batch-apply-recursion-level">
-                        <label for="batch-apply-recursion-level">Recursion Level:</label>
+                        <select id="batch-mode-recursion-level" class="batch-mode" title="Leave unchanged, set a value, or reset to default"><option value="leave">Leave unchanged</option><option value="set">Set to</option><option value="reset">Reset to default</option></select>
+                        <label for="batch-mode-recursion-level">Recursion Level:</label>
                         <input type="number" id="batch-recursion-level-val" value="1">
                     </div>
                     <div class="form-group row">
-                        <input type="checkbox" id="batch-apply-case-sensitive">
-                        <label for="batch-apply-case-sensitive">Case-Sensitive:</label>
+                        <select id="batch-mode-case-sensitive" class="batch-mode" title="Leave unchanged, set a value, or reset to default"><option value="leave">Leave unchanged</option><option value="set">Set to</option><option value="reset">Reset to default</option></select>
+                        <label for="batch-mode-case-sensitive">Case-Sensitive:</label>
                         <select id="batch-case-sensitive-val">
                             <option value="null">Use Global</option>
                             <option value="true">Yes</option>
@@ -1379,8 +1388,8 @@
                         </select>
                     </div>
                     <div class="form-group row">
-                        <input type="checkbox" id="batch-apply-whole-words">
-                        <label for="batch-apply-whole-words">Whole Words:</label>
+                        <select id="batch-mode-whole-words" class="batch-mode" title="Leave unchanged, set a value, or reset to default"><option value="leave">Leave unchanged</option><option value="set">Set to</option><option value="reset">Reset to default</option></select>
+                        <label for="batch-mode-whole-words">Whole Words:</label>
                         <select id="batch-whole-words-val">
                             <option value="null">Use Global</option>
                             <option value="true">Yes</option>
@@ -1388,8 +1397,8 @@
                         </select>
                     </div>
                     <div class="form-group row">
-                        <input type="checkbox" id="batch-apply-group-scoring">
-                        <label for="batch-apply-group-scoring">Group Scoring:</label>
+                        <select id="batch-mode-group-scoring" class="batch-mode" title="Leave unchanged, set a value, or reset to default"><option value="leave">Leave unchanged</option><option value="set">Set to</option><option value="reset">Reset to default</option></select>
+                        <label for="batch-mode-group-scoring">Group Scoring:</label>
                         <select id="batch-group-scoring-val">
                             <option value="null">Use Global</option>
                             <option value="true">Yes</option>
@@ -1397,26 +1406,26 @@
                         </select>
                     </div>
                     <div class="form-group row">
-                        <input type="checkbox" id="batch-apply-automation-id">
-                        <label for="batch-apply-automation-id">Automation ID:</label>
+                        <select id="batch-mode-automation-id" class="batch-mode" title="Leave unchanged, set a value, or reset to default"><option value="leave">Leave unchanged</option><option value="set">Set to</option><option value="reset">Reset to default</option></select>
+                        <label for="batch-mode-automation-id">Automation ID:</label>
                         <input type="text" id="batch-automation-id-val">
                     </div>
                     <div class="form-group row">
-                        <input type="checkbox" id="batch-apply-delay-recursion">
-                        <label for="batch-apply-delay-recursion">Delay Until Recursion:</label>
+                        <select id="batch-mode-delay-recursion" class="batch-mode" title="Leave unchanged, set a value, or reset to default"><option value="leave">Leave unchanged</option><option value="set">Set to</option><option value="reset">Reset to default</option></select>
+                        <label for="batch-mode-delay-recursion">Delay Until Recursion:</label>
                         <input type="checkbox" id="batch-delay-recursion-val">
                     </div>
                     <div class="form-group row">
-                        <input type="checkbox" id="batch-apply-ignore-budget">
-                        <label for="batch-apply-ignore-budget">Ignore Budget:</label>
+                        <select id="batch-mode-ignore-budget" class="batch-mode" title="Leave unchanged, set a value, or reset to default"><option value="leave">Leave unchanged</option><option value="set">Set to</option><option value="reset">Reset to default</option></select>
+                        <label for="batch-mode-ignore-budget">Ignore Budget:</label>
                         <input type="checkbox" id="batch-ignore-budget-val">
                     </div>
                 </details>
 
                 <div class="form-group" style="margin-bottom: 16px;">
                     <div class="form-group row" style="margin-bottom: 8px;">
-                        <input type="checkbox" id="batch-apply-folder">
-                        <label for="batch-apply-folder">Move to Folder:</label>
+                        <select id="batch-mode-folder" class="batch-mode" title="Leave unchanged, set a value, or reset to default"><option value="leave">Leave unchanged</option><option value="set">Set to</option><option value="reset">Reset to default</option></select>
+                        <label for="batch-mode-folder">Move to Folder:</label>
                     </div>
                     <div class="searchable-folder-picker">
                         <input type="hidden" id="batch-folder-val" value="">
@@ -1435,6 +1444,21 @@
         </div>
     </div>
 
+    <!-- Batch Preview Modal (confirmation step before a batch edit is applied) -->
+    <div id="batch-preview-modal" class="modal">
+        <div class="modal-content glass-panel" style="width: 620px; max-width: 94vw; max-height: 88vh; display: flex; flex-direction: column;">
+            <div class="modal-header">
+                <h3>Confirm Batch Edit</h3>
+                <button class="close-modal"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="modal-body" id="batch-preview-body" style="overflow-y: auto; flex: 1;">
+            </div>
+            <div class="modal-actions" style="display:flex; justify-content:flex-end; gap:12px;">
+                <button id="btn-batch-preview-back" class="btn btn-secondary">Back</button>
+                <button id="btn-batch-preview-confirm" class="btn btn-primary">Apply Changes</button>
+            </div>
+        </div>
+    </div>
     <!-- Unified Add Item Modal -->
     <div id="add-item-modal" class="modal">
         <!-- Floating Eye Toggle Button -->
@@ -1788,7 +1812,7 @@
     <script src="agent-backup.js?v=7"></script>
     <script src="worldinfo-guard.js?v=8"></script>
     <script src="folder-url.js?v=6"></script>
-    <script src="app.js?v=13"></script>
+    <script src="app.js?v=14"></script>
     <script src="agent-ui.js?v=11"></script>
     <script src="el.js?v=1"></script>
 </body>

@@ -3,7 +3,7 @@
     "loading_order": 20,
     "js": "index.js",
     "author": "SamYTTK",
-    "version": "1.7.0",
+    "version": "1.8.0",
     "auto_update": false,
     "minimum_client_version": "1.12.0",
     "description": "A fully revamped, highly responsive user interface for managing World Info/Lorebooks in SillyTavern — with Hub v2 lorebook agents (ST-RequestHub backend) for assisted entry creation, editing, and deletion."

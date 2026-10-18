@@ -7,6 +7,9 @@
     --primary-color: #6366f1;
     --primary-hover: #4f46e5;
     --danger-color: #ef4444;
+    --success-color: #10b981;
+    --info-color: #38bdf8;
+    --warning-color: #f59e0b;
     --hover-bg: rgba(255, 255, 255, 0.05);
     --active-bg: rgba(99, 102, 241, 0.15);
     
@@ -1251,15 +1254,15 @@ pre.term-detail {
 }
 
 .proposal-card.accepted {
-    border-left-color: #10b981;
+    border-left-color: var(--success-color, #10b981);
 }
 
 .proposal-card.denied {
-    border-left-color: #ef4444;
+    border-left-color: var(--danger-color, #ef4444);
 }
 
 .proposal-card.auto-accepted {
-    border-left-color: #6366f1;
+    border-left-color: var(--primary-color, #6366f1);
 }
 
 .proposal-card.status-flash {
@@ -1294,19 +1297,19 @@ pre.term-detail {
 
 .proposal-status-badge.accepted {
     background: rgba(16,185,129,0.2);
-    color: #10b981;
+    color: var(--success-color, #10b981);
     border: 1px solid rgba(16,185,129,0.3);
 }
 
 .proposal-status-badge.denied {
     background: rgba(239,68,68,0.2);
-    color: #ef4444;
+    color: var(--danger-color, #ef4444);
     border: 1px solid rgba(239,68,68,0.3);
 }
 
 .proposal-status-badge.auto-accepted {
     background: rgba(99,102,241,0.2);
-    color: #6366f1;
+    color: var(--primary-color, #6366f1);
     border: 1px solid rgba(99,102,241,0.3);
 }
 
@@ -1679,16 +1682,16 @@ pre.term-detail {
 }
 
 .agent-card-status-dot.idle {
-    background: #10b981;
+    background: var(--success-color, #10b981);
 }
 
 .agent-card-status-dot.running {
-    background: #6366f1;
+    background: var(--primary-color, #6366f1);
     animation: pulse-dot 1.2s ease-in-out infinite;
 }
 
 .agent-card-status-dot.error {
-    background: #ef4444;
+    background: var(--danger-color, #ef4444);
 }
 
 .agent-card-status-dot.disabled {
@@ -1727,17 +1730,17 @@ pre.term-detail {
 
 .agent-card-badge.manual {
     background: rgba(99, 102, 241, 0.15);
-    color: #6366f1;
+    color: var(--primary-color, #6366f1);
 }
 
 .agent-card-badge.periodic {
     background: rgba(245, 158, 11, 0.15);
-    color: #f59e0b;
+    color: var(--warning-color, #f59e0b);
 }
 
 .agent-card-badge.pending-count {
     background: rgba(239, 68, 68, 0.15);
-    color: #ef4444;
+    color: var(--danger-color, #ef4444);
 }
 
 .agent-card-task {
@@ -1800,11 +1803,11 @@ pre.term-detail {
 }
 
 .sidebar-agent-item .status-dot.idle {
-    background: #10b981;
+    background: var(--success-color, #10b981);
 }
 
 .sidebar-agent-item .status-dot.running {
-    background: #6366f1;
+    background: var(--primary-color, #6366f1);
     animation: pulse-dot 1.2s ease-in-out infinite;
 }
 
@@ -1956,7 +1959,7 @@ pre.term-detail {
     font-size: 0.72rem;
 }
 .el-msg-role.user { color: var(--primary-color); }
-.el-msg-role.assistant { color: #10b981; }
+.el-msg-role.assistant { color: var(--success-color, #10b981); }
 .el-msg-time { opacity: 0.7; }
 .el-msg-model { opacity: 0.6; font-size: 0.72rem; }
 .el-reasoning {
@@ -2095,4 +2098,312 @@ pre.term-detail {
 #entries-container.el-drop-root {
     outline: 2px dashed var(--primary-color);
     outline-offset: -2px;
+}
+
+/* ==========================================
+   Batch edit UI (three-state fields + preview)
+   ========================================== */
+.batch-mode {
+    flex: 0 0 auto;
+    max-width: 172px;
+    font-size: 0.85rem;
+}
+
+.el-batch-preview-summary {
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    margin-bottom: 12px;
+}
+
+.el-batch-field-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+    margin-bottom: 14px;
+}
+
+.el-batch-field-table th,
+.el-batch-field-table td {
+    text-align: left;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--panel-border);
+}
+
+.el-batch-field-table th {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+}
+
+.el-batch-entry-details {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.el-batch-entry-row {
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 0.85rem;
+}
+
+.el-batch-entry-row summary {
+    cursor: pointer;
+    font-weight: 600;
+}
+
+.el-batch-entry-count {
+    color: var(--text-muted);
+    font-weight: normal;
+    font-size: 0.78rem;
+}
+
+.el-batch-entry-row ul {
+    margin: 6px 0 2px 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.el-batch-change-field {
+    font-weight: 600;
+}
+
+.el-batch-change-from {
+    color: var(--text-muted);
+    text-decoration: line-through;
+}
+
+.el-batch-change-arrow {
+    color: var(--text-muted);
+}
+
+.el-batch-change-to {
+    font-weight: 600;
+}
+
+.el-batch-preview-empty,
+.el-batch-preview-note {
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+/* ==========================================
+   Light theme (body.el-theme-light overrides)
+   The default dark palette above is untouched;
+   everything here only applies in light mode.
+   ========================================== */
+body.el-theme-light {
+    --bg-color: #e9edf3;
+    --panel-bg: rgba(255, 255, 255, 0.9);
+    --panel-border: rgba(15, 23, 42, 0.16);
+    --text-color: #0f172a;
+    --text-muted: #55617a;
+    --primary-color: #4f46e5;
+    --primary-hover: #4338ca;
+    --danger-color: #dc2626;
+    --hover-bg: rgba(15, 23, 42, 0.06);
+    --active-bg: rgba(79, 70, 229, 0.12);
+}
+
+body.el-theme-light ::-webkit-scrollbar-thumb {
+    background: rgba(15, 23, 42, 0.25);
+}
+
+body.el-theme-light ::-webkit-scrollbar-thumb:hover {
+    background: rgba(15, 23, 42, 0.4);
+}
+
+body.el-theme-light .toolbar button:hover:not(:disabled) {
+    background: rgba(15, 23, 42, 0.08);
+    border-color: rgba(15, 23, 42, 0.25);
+}
+
+body.el-theme-light .btn-secondary {
+    background: rgba(15, 23, 42, 0.08);
+}
+
+body.el-theme-light .btn-secondary:hover {
+    background: rgba(15, 23, 42, 0.14);
+}
+
+body.el-theme-light .entry-card:hover {
+    border-color: rgba(15, 23, 42, 0.3);
+    box-shadow: 0 4px 12px rgba(15, 23, 42, 0.15);
+}
+
+body.el-theme-light .entry-meta {
+    color: rgba(15, 23, 42, 0.55);
+}
+
+body.el-theme-light .badge {
+    background: rgba(15, 23, 42, 0.08);
+}
+
+body.el-theme-light .folder-container {
+    background: rgba(255, 255, 255, 0.65);
+}
+
+body.el-theme-light .folder-header {
+    background: rgba(15, 23, 42, 0.03);
+}
+
+body.el-theme-light .folder-header:hover {
+    background: rgba(15, 23, 42, 0.06);
+}
+
+body.el-theme-light .modal {
+    background: rgba(15, 23, 42, 0.45);
+}
+
+body.el-theme-light .modal-header {
+    background: rgba(15, 23, 42, 0.03);
+}
+
+body.el-theme-light .form-group input[type="text"],
+body.el-theme-light .form-group input[type="number"],
+body.el-theme-light .form-group select {
+    background: rgba(255, 255, 255, 0.95);
+    border-color: rgba(15, 23, 42, 0.22);
+}
+
+body.el-theme-light .inline-edit {
+    background: rgba(255, 255, 255, 0.95);
+    border-color: rgba(15, 23, 42, 0.22);
+}
+
+body.el-theme-light .search-bar,
+body.el-theme-light .searchable-folder-picker {
+    background: rgba(255, 255, 255, 0.75);
+}
+
+body.el-theme-light .toggle-slider {
+    background: rgba(15, 23, 42, 0.25);
+}
+
+body.el-theme-light .ind-var-item {
+    background: rgba(15, 23, 42, 0.03);
+}
+
+body.el-theme-light .proposal-card:hover {
+    border-color: rgba(15, 23, 42, 0.2);
+}
+
+body.el-theme-light .el-diff-line.del {
+    color: #b91c1c;
+}
+
+body.el-theme-light .el-diff-line.add {
+    color: #047857;
+}
+
+body.el-theme-light .agent-config-section-header:hover {
+    background: rgba(15, 23, 42, 0.05);
+}
+
+/* Inline-styled dark inputs (rgba(0,0,0,0.3) in index.html) would show dark
+   boxes with dark text in light mode; this one rule re-skins them. */
+body.el-theme-light input:not([type="checkbox"]):not([type="radio"]):not([type="color"]),
+body.el-theme-light select,
+body.el-theme-light textarea {
+    background-color: #ffffff !important;
+    color: #0f172a !important;
+    border-color: rgba(15, 23, 42, 0.25) !important;
+}
+
+body.el-theme-light input::placeholder,
+body.el-theme-light textarea::placeholder {
+    color: #7a8599;
+}
+
+/* ==========================================
+   Narrow-width responsiveness (popup users
+   resize freely; the existing min-width:1333px
+   query above is left working as-is)
+   ========================================== */
+@media (max-width: 960px) {
+    .glass-container {
+        flex-direction: column;
+    }
+
+    .sidebar {
+        width: 100%;
+        max-width: none;
+        min-width: 0;
+        border-right: none;
+        border-bottom: 1px solid var(--panel-border);
+        max-height: 38vh;
+    }
+
+    .resizer {
+        display: none;
+    }
+
+    .main-content {
+        min-width: 0;
+    }
+
+    .main-header {
+        flex-wrap: wrap;
+        gap: 12px;
+    }
+
+    .toolbar {
+        flex-wrap: wrap;
+    }
+
+    .entries-container {
+        padding: 16px;
+        overflow-x: hidden;
+    }
+}
+
+@media (max-width: 640px) {
+    .sidebar {
+        max-height: 34vh;
+    }
+
+    .sidebar-panels {
+        padding: 8px;
+    }
+
+    .main-header {
+        padding: 12px 16px;
+    }
+
+    .entries-container {
+        padding: 12px;
+    }
+
+    .modal-body {
+        padding: 14px;
+    }
+
+    #batch-options-modal .modal-content,
+    #batch-preview-modal .modal-content,
+    #settings-modal .modal-content {
+        width: 94vw !important;
+    }
+
+    .form-group.row {
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
+    .batch-mode {
+        max-width: none;
+        flex: 1 1 140px;
+    }
+
+    .toolbar .search-bar {
+        margin-right: 0;
+        width: 100%;
+    }
+
+    .modal-content div[style*="1fr 1fr"] {
+        grid-template-columns: 1fr !important;
+    }
 }

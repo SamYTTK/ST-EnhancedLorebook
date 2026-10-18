@@ -72,6 +72,14 @@ downloaded as files, and deleted.
 If you select several entries at once, you can change settings on all of them
 together, or delete and download them in bulk.
 
+When you batch-edit, every setting gives you three choices: leave it alone,
+set it to a value you type, or put it back to SillyTavern's default. Before
+anything is saved, the app shows you a preview: which entries would change,
+what each change is (old value to new value), and how many entries would
+stay the same. Nothing happens until you press Apply. If you change your
+mind afterwards, the Undo button in the toolbar puts everything back the
+way it was. It covers the last batch edit; switching lorebooks clears it.
+
 ## Tidying up with folders
 
 You can group entries into named folders, and folders can hold sub-folders,
@@ -118,6 +126,18 @@ asks before overwriting, and you can rename a template from its right-click
 menu. The download/upload buttons next to "Templates" export all your
 templates to a file or merge a file back in (existing names ask before they
 are replaced).
+
+## Changing the look
+
+The app is dark by default, but you can switch it in Settings (the gear
+icon): dark, light, or "follow SillyTavern", which copies SillyTavern's own
+colours so the two match. Your custom colours still apply to the dark look;
+the light look uses its own palette, and if SillyTavern can't be reached the
+app simply stays dark.
+
+The window also copes with narrow widths: make the popup small and the
+sidebar stacks on top, the toolbar wraps instead of spilling over, and the
+entry cards and popups stay usable down to phone-ish sizes.
 
 ## If something goes wrong
 

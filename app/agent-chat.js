@@ -17,7 +17,10 @@ function EL_getChatIdForAgent() {
         const st = (typeof stContext !== 'undefined' && stContext) ? stContext : null;
         if (st) {
             const cid = st.characterId ?? 'no-char';
-            const chatFile = st.chat?.chat_id ?? st.chat?.filename ?? st.chatFile ?? 'default';
+            // `st.chat` is the message ARRAY; the chat id lives on `chatId`
+            // (see SillyTavern's st-context.js). Reading chat.chat_id yielded
+            // undefined, so every chat of a character shared one thread.
+            const chatFile = st.chatId ?? st.chat?.chat_id ?? st.chat?.filename ?? st.chatFile ?? 'default';
             return cid + '_' + chatFile;
         }
     } catch {}
@@ -26,7 +29,7 @@ function EL_getChatIdForAgent() {
         if (host?.SillyTavern?.getContext) {
             const ctx = host.SillyTavern.getContext();
             const cid = ctx?.characterId ?? 'no-char';
-            const chatFile = ctx?.chat?.chat_id ?? 'default';
+            const chatFile = ctx?.chatId ?? ctx?.chat?.chat_id ?? 'default';
             return cid + '_' + chatFile;
         }
     } catch {}
@@ -288,7 +291,17 @@ class AgentChatManager {
 
 // ── UI: forked ST-chat clone (Q6) ──────────────────────────────
 let _chatActiveAgentId = null;
-let _chatMessages = []; // current view
+// Messages keyed by `${agentId}::${chatId}`. A single shared array let an
+// in-flight reply be appended to whichever thread happened to be on screen
+// when it arrived, merging chats across characters.
+const _chatThreads = new Map();
+function _chatThreadKey(agentId, chatId) { return String(agentId) + '::' + String(chatId); }
+function _chatGetThread(agentId, chatId) {
+    const key = _chatThreadKey(agentId, chatId);
+    if (!_chatThreads.has(key)) _chatThreads.set(key, []);
+    return _chatThreads.get(key);
+}
+let _chatMessages = []; // view alias: live array for the currently displayed thread
 let _chatIsSending = false;
 
 function _chatGetActiveIds() {
@@ -339,12 +352,28 @@ async function renderAgentChat() {
         if (c) c.innerHTML = '<div class="el-chat-empty">Create an agent first.</div>';
         return;
     }
+    // Capture the thread BEFORE awaiting: the 2s poll or a quick agent switch can
+    // start another render while we are loading, repointing the view alias. Writing
+    // through the alias afterwards would then merge this thread's messages into a
+    // different thread.
+    const thread = _chatGetThread(agentId, chatId);
+    _chatMessages = thread;
     const historyEl = document.getElementById('agent-chat-history');
     const statusEl = document.getElementById('agent-chat-status');
     if (statusEl) statusEl.textContent = 'Loading…';
     let msgs = [];
     try { msgs = await window.agentChatManager.load(agentId, chatId); } catch {}
-    _chatMessages = Array.isArray(msgs) ? msgs : [];
+    // If the active thread moved on while we were loading, drop this render — it
+    // belongs to a thread the user is no longer looking at.
+    const active = _chatGetActiveIds();
+    if (active.agentId !== agentId || String(active.chatId) !== String(chatId)) return;
+    _chatMessages = thread;
+    msgs = Array.isArray(msgs) ? msgs : [];
+    if (msgs !== thread) {
+        thread.length = 0;
+        for (const m of msgs) thread.push(m);
+        try { if (window.agentChatManager && window.agentChatManager.cache) window.agentChatManager.cache.set(window.agentChatManager._key(agentId, chatId), thread); } catch {}
+    }
     // Ensure each assistant msg has swipe fields
     for (const m of _chatMessages) {
         if (m.role === 'assistant' && !Array.isArray(m.swipes)) {
@@ -412,7 +441,7 @@ async function renderAgentChat() {
                 const ta=document.createElement('textarea'); ta.value=m.content; ta.style.width='100%'; ta.style.minHeight='60px'; ta.style.background='rgba(0,0,0,0.3)'; ta.style.border='1px solid var(--panel-border)'; ta.style.color='var(--text-color)'; ta.style.padding='6px'; ta.style.borderRadius='6px';
                 textDiv.innerHTML=''; textDiv.appendChild(ta); ta.focus();
                 const save=document.createElement('button'); save.className='btn btn-primary btn-sm'; save.textContent='Save'; save.onclick=async()=>{
-                    m.content = ta.value; await window.agentChatManager.save(_chatGetActiveIds().agentId, _chatGetActiveIds().chatId, _chatMessages); renderAgentChat();
+                    m.content = ta.value; const _ids = _chatGetActiveIds(); const _thread = _chatGetThread(_ids.agentId, _ids.chatId); await window.agentChatManager.save(_ids.agentId, _ids.chatId, _thread); renderAgentChat();
                 };
                 actions.appendChild(save);
             };
@@ -421,8 +450,8 @@ async function renderAgentChat() {
         const delBtn=document.createElement('button'); delBtn.className='btn btn-secondary'; delBtn.innerHTML='<i class="fa-solid fa-trash"></i> Delete'; delBtn.style.color='#ef4444';
         delBtn.onclick=async()=>{
             if(!confirm('Delete this message?')) return;
-            _chatMessages.splice(idx,1);
-            await window.agentChatManager.save(_chatGetActiveIds().agentId, _chatGetActiveIds().chatId, _chatMessages);
+            const _ids = _chatGetActiveIds(); const _thread = _chatGetThread(_ids.agentId, _ids.chatId); _thread.splice(idx,1);
+            await window.agentChatManager.save(_ids.agentId, _ids.chatId, _thread);
             renderAgentChat();
         };
         actions.appendChild(delBtn);
@@ -448,16 +477,19 @@ async function renderAgentChat() {
 }
 
 async function handleChatSwipe(msgIdx, dir) {
-    const msg = _chatMessages[msgIdx];
+    const { agentId, chatId } = _chatGetActiveIds();
+    if (!agentId) return;
+    const thread = _chatGetThread(agentId, chatId);
+    const msg = thread[msgIdx];
     if (!msg || msg.role !== 'assistant') return;
     if (!Array.isArray(msg.swipes)) { msg.swipes=[msg.content]; msg.swipe_id=0; msg.swipe_info=[{content:msg.content, reasoning:msg.reasoning||'', ts:msg.ts}]; }
     if (dir === 'left') {
-        if (msg.swipe_id > 0) { msg.swipe_id--; msg.content = msg.swipes[msg.swipe_id]; msg.reasoning = msg.swipe_info[msg.swipe_id]?.reasoning||''; await window.agentChatManager.save(_chatGetActiveIds().agentId, _chatGetActiveIds().chatId, _chatMessages); renderAgentChat(); }
+        if (msg.swipe_id > 0) { msg.swipe_id--; msg.content = msg.swipes[msg.swipe_id]; msg.reasoning = msg.swipe_info[msg.swipe_id]?.reasoning||''; await window.agentChatManager.save(agentId, chatId, thread); renderAgentChat(); }
         return;
     }
     // Right: next swipe if exists, else reroll (ST-like)
     if (msg.swipe_id < msg.swipes.length - 1) {
-        msg.swipe_id++; msg.content = msg.swipes[msg.swipe_id]; msg.reasoning = msg.swipe_info[msg.swipe_id]?.reasoning||''; await window.agentChatManager.save(_chatGetActiveIds().agentId, _chatGetActiveIds().chatId, _chatMessages); renderAgentChat(); return;
+        msg.swipe_id++; msg.content = msg.swipes[msg.swipe_id]; msg.reasoning = msg.swipe_info[msg.swipe_id]?.reasoning||''; await window.agentChatManager.save(agentId, chatId, thread); renderAgentChat(); return;
     }
     // No next swipe → reroll (generate new variant)
     await handleChatReroll(msgIdx);
@@ -466,21 +498,22 @@ async function handleChatSwipe(msgIdx, dir) {
 async function handleChatReroll(msgIdx) {
     const { agentId, chatId } = _chatGetActiveIds();
     if (!agentId) return;
+    const thread = _chatGetThread(agentId, chatId);
     const statusEl = document.getElementById('agent-chat-status');
-    const msg = _chatMessages[msgIdx];
+    const msg = thread[msgIdx];
     if (!msg) return;
     // Find previous user message
     let userIdx = -1;
-    for (let i=msgIdx-1; i>=0; i--) if (_chatMessages[i].role==='user') { userIdx=i; break; }
-    const historyForReroll = _chatMessages.slice(0, userIdx >=0 ? userIdx : 0); // up to user msg exclusive? Keep user
+    for (let i=msgIdx-1; i>=0; i--) if (thread[i].role==='user') { userIdx=i; break; }
+    const historyForReroll = thread.slice(0, userIdx >=0 ? userIdx : 0); // up to user msg exclusive? Keep user
     // Simpler: history without the assistant msg being rerolled
-    const history = _chatMessages.slice(0, msgIdx).filter(m=>m.role!=='assistant' || true).map(m=>({role:m.role, content: m.role==='assistant' ? (Array.isArray(m.swipes)? m.swipes[m.swipe_id]||m.content : m.content) : m.content})).slice(0, -1); // remove last assistant, keep up to user
+    const history = thread.slice(0, msgIdx).filter(m=>m.role!=='assistant' || true).map(m=>({role:m.role, content: m.role==='assistant' ? (Array.isArray(m.swipes)? m.swipes[m.swipe_id]||m.content : m.content) : m.content})).slice(0, -1); // remove last assistant, keep up to user
     // Actually keep including the user
     // Easier: take all before msgIdx, ensure last is user
-    let hist = _chatMessages.slice(0, msgIdx).map(m=>({role:m.role, content: m.content}));
+    let hist = thread.slice(0, msgIdx).map(m=>({role:m.role, content: m.content}));
     // If last is not user, find user
     if (hist.length && hist[hist.length-1].role !== 'user' && userIdx>=0) {
-        hist = _chatMessages.slice(0, userIdx+1).map(m=>({role:m.role, content:m.content}));
+        hist = thread.slice(0, userIdx+1).map(m=>({role:m.role, content:m.content}));
     }
     const userText = hist.length && hist[hist.length-1].role==='user' ? hist[hist.length-1].content : '';
     const baseHistory = hist.slice(0, -1);
@@ -497,8 +530,12 @@ async function sendAgentChatMessage(historyOverride, userTextOverride, opts={}) 
     const statusEl = document.getElementById('agent-chat-status');
     const userText = userTextOverride !== undefined ? userTextOverride : (inputEl?.value || '').trim();
     if (!userText && !opts.isReroll) return;
+    // Captured once: all pushes/saves below use this thread so a chat switch
+    // mid-generation cannot redirect them into the newly visible thread.
+    const thread = _chatGetThread(agentId, chatId);
+    if (_chatMessages !== thread) _chatMessages = thread;
     // Build history to send: either provided or current
-    let history = historyOverride !== undefined ? historyOverride : _chatMessages.map(m=>({role:m.role, content: m.content}));
+    let history = historyOverride !== undefined ? historyOverride : thread.map(m=>({role:m.role, content: m.content}));
     _chatIsSending = true;
     if (sendBtn) sendBtn.style.display='none';
     if (stopBtn) stopBtn.style.display='';
@@ -507,12 +544,13 @@ async function sendAgentChatMessage(historyOverride, userTextOverride, opts={}) 
     let pushedUserIdx = -1;
     if (!opts.isReroll) {
         const userMsg = { id: 'msg_'+Date.now()+'_'+Math.random().toString(36).slice(2,6), role:'user', content: userText, ts: Date.now() };
-        _chatMessages.push(userMsg); pushedUserIdx = _chatMessages.length-1;
-        await window.agentChatManager.save(agentId, chatId, _chatMessages);
-        renderAgentChat();
+        thread.push(userMsg); pushedUserIdx = thread.length-1;
+        await window.agentChatManager.save(agentId, chatId, thread);
+        const _cur = _chatGetActiveIds();
+        if (_cur.agentId === agentId && String(_cur.chatId) === String(chatId)) renderAgentChat();
         if (inputEl) inputEl.value='';
         // Reset history for call to include the new user
-        history = _chatMessages.slice(0, -1).map(m=>({role:m.role, content: m.content}));
+        history = thread.slice(0, -1).map(m=>({role:m.role, content: m.content}));
         // userText will be sent as separate last message inside core
     } else {
         // Reroll will send existing history + userText as provided
@@ -586,7 +624,7 @@ async function sendAgentChatMessage(historyOverride, userTextOverride, opts={}) 
         } catch {}
         if (opts.isReroll) {
             // Append as new swipe variant to existing assistant msg
-            const target = _chatMessages[opts.rerollMsgIdx];
+            const target = thread[opts.rerollMsgIdx];
             if (target && target.role==='assistant') {
                 if (!Array.isArray(target.swipes)) { target.swipes=[target.content]; target.swipe_id=0; target.swipe_info=[{content:target.content, reasoning:target.reasoning||'', ts:target.ts}]; }
                 target.swipes.push(result.content||'');
@@ -613,19 +651,26 @@ async function sendAgentChatMessage(historyOverride, userTextOverride, opts={}) 
                 swipe_id: 0,
                 swipe_info: [{ content: result.content||'', reasoning: result.reasoning||'', ts: Date.now(), toolCalls: result.toolCalls||[] }],
             };
-            _chatMessages.push(assistantMsg);
+            thread.push(assistantMsg);
         }
-        await window.agentChatManager.save(agentId, chatId, _chatMessages);
-        renderAgentChat();
+        await window.agentChatManager.save(agentId, chatId, thread);
+        // The reply belongs to its originating thread: save it there regardless,
+        // but only re-render when the user is still viewing that thread. Touching
+        // the DOM otherwise would paint this reply into the wrong conversation.
+        const _after = _chatGetActiveIds();
+        const stillActive = _after.agentId === agentId && String(_after.chatId) === String(chatId);
+        if (stillActive) {
+            renderAgentChat();
+            if (statusEl) statusEl.textContent = result.reasoning ? `Reasoning ${result.reasoning.length} chars` : '';
+        }
         if (result.proposalsCreated) {
             try { if(typeof showToast==='function') showToast(`${result.proposalsCreated} proposal(s) created — see Feed`); } catch {}
             // Refresh feed badge
             try { if(typeof loadProposalsForCurrentChat==='function') loadProposalsForCurrentChat(); } catch {}
         }
-        if (statusEl) statusEl.textContent = result.reasoning ? `Reasoning ${result.reasoning.length} chars` : '';
     } catch (e) {
         try { (window.ELLogger||console).error('[EL:Chat] send failed', e); } catch {}
-        if (statusEl) statusEl.textContent = `Error: ${e.message||e}`;
+        try { const _err = _chatGetActiveIds(); if (statusEl && _err.agentId === agentId && String(_err.chatId) === String(chatId)) statusEl.textContent = `Error: ${e.message||e}`; } catch {}
         try { if(typeof showToast==='function') showToast('Chat failed: '+(e.message||e)); } catch {}
         // If we pushed user optimistically and failed, keep it (user can reroll)
     } finally {
@@ -650,8 +695,10 @@ function wireAgentChatUI() {
         if (!confirm('Clear this agent thread?')) return;
         const { agentId, chatId } = _chatGetActiveIds();
         if (!agentId) return;
+        const thread = _chatGetThread(agentId, chatId);
         await window.agentChatManager.clear(agentId, chatId);
-        _chatMessages = [];
+        thread.length = 0;
+        if (_chatMessages !== thread) _chatMessages = thread;
         renderAgentChat();
     };
     // Expose reroll via event for future hotkeys

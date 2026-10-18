@@ -38,6 +38,56 @@ const EL_PROPOSAL_CONTRACT = Object.freeze({
         'selectiveLogic', 'role', 'outletName'],
 });
 
+// ── Canonical entry field list (FIX A/B) ──
+
+// Field list mirrored from SillyTavern's newWorldInfoEntryDefinition
+// (public/scripts/world-info.js). The flat characterFilter* editor fields are
+// deliberately excluded: core stores the nested characterFilter object.
+// Note: characterFilter itself is not a definition key either — core creates
+// and reads it as the nested { isExclude, names, tags } object, so it is
+// allowlisted here as the stored shape.
+const EL_ENTRY_FIELDS = Object.freeze([
+    'key', 'keysecondary', 'comment', 'content', 'constant', 'vectorized', 'selective',
+    'selectiveLogic', 'addMemo', 'order', 'position', 'disable', 'ignoreBudget',
+    'excludeRecursion', 'preventRecursion',
+    'matchPersonaDescription', 'matchCharacterDescription', 'matchCharacterPersonality',
+    'matchCharacterDepthPrompt', 'matchScenario', 'matchCreatorNotes',
+    'delayUntilRecursion', 'probability', 'useProbability', 'depth', 'outletName',
+    'group', 'groupOverride', 'groupWeight', 'scanDepth', 'caseSensitive',
+    'matchWholeWords', 'useGroupScoring', 'automationId', 'role', 'sticky', 'cooldown',
+    'delay', 'triggers', 'characterFilter',
+]);
+
+// Template defaults mirrored from newWorldInfoEntryTemplate
+// (selectiveLogic 0 = world_info_logic.AND_ANY, depth 4 = DEFAULT_DEPTH,
+// groupWeight 100 = DEFAULT_WEIGHT). characterFilter is handled separately —
+// every created entry gets a fresh nested object, never a shared reference.
+const EL_ENTRY_DEFAULTS = Object.freeze({
+    key: [], keysecondary: [], comment: '', content: '', constant: false,
+    vectorized: false, selective: true, selectiveLogic: 0, addMemo: false,
+    order: 100, position: 0, disable: false, ignoreBudget: false,
+    excludeRecursion: false, preventRecursion: false,
+    matchPersonaDescription: false, matchCharacterDescription: false,
+    matchCharacterPersonality: false, matchCharacterDepthPrompt: false,
+    matchScenario: false, matchCreatorNotes: false,
+    delayUntilRecursion: 0, probability: 100, useProbability: true, depth: 4,
+    outletName: '', group: '', groupOverride: false, groupWeight: 100,
+    scanDepth: null, caseSensitive: null, matchWholeWords: null,
+    useGroupScoring: null, automationId: '', role: 0, sticky: null,
+    cooldown: null, delay: null, triggers: [],
+});
+
+// Core generation triggers (public/scripts/constants.js GENERATION_TYPE_TRIGGERS).
+const EL_VALID_TRIGGERS = Object.freeze(['normal', 'continue', 'impersonate', 'swipe', 'regenerate', 'quiet']);
+
+// Auto-accept confidence threshold, clamped and always finite. A non-finite value
+// (from a bad stored config) made every `confidence >= threshold` comparison false,
+// so auto-accept silently never fired.
+function EL_autoAcceptThreshold(agent) {
+    const n = Number(agent?.autoAcceptConfidence);
+    return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 0.8;
+}
+
 // ── Plugin-storage transport (moved verbatim from agent-tools.js) ──
 
 function EL_fireToast(message, toastType = 'warning') {
@@ -445,7 +495,7 @@ function EL_buildMetaBlock(agent, runCtx) {
     const tools = Array.isArray(runCtx.toolDefs) ? runCtx.toolDefs : [];
     const snapshotMode = ['static', 'ondemand', 'none'].includes(runCtx.snapshotMode) ? runCtx.snapshotMode : 'ondemand';
     const autoAccept = agent?.autoAccept === true;
-    const threshold = Number(agent?.autoAcceptConfidence ?? 0.8);
+    const threshold = EL_autoAcceptThreshold(agent);
     const agentName = String(agent?.name || 'Agent').slice(0, 80);
 
     const lines = [];
@@ -912,6 +962,11 @@ function EL_sanitizeHubProposal(raw, agent, idx) {
         }
         if (!Object.keys(p.changes).length) return null;
     }
+    if (typeof raw._baseFingerprint === 'string' && raw._baseFingerprint) p._baseFingerprint = raw._baseFingerprint.slice(0, 8192);
+    if (raw._stagedAt !== undefined && raw._stagedAt !== null && raw._stagedAt !== '') {
+        const stagedAt = Number(raw._stagedAt);
+        if (Number.isFinite(stagedAt)) p._stagedAt = stagedAt;
+    }
     return p;
 }
 
@@ -1054,7 +1109,7 @@ async function EL_commitHubProposals(proposals, chatId, agent) {
     const autoApplied = [];
     try {
         if (agent && agent.autoAccept === true) {
-            const threshold = Number(agent.autoAcceptConfidence ?? 0.8);
+            const threshold = EL_autoAcceptThreshold(agent);
             // Deletes are deliberately excluded from auto-accept because they are destructive and must stay in the review feed.
             const eligible = proposals.filter(p => p.action !== 'delete' && Number(p.confidence) >= threshold);
             if (eligible.length && typeof EL_applyProposal === 'function') {
@@ -1258,6 +1313,117 @@ async function EL_runHubAgent(agent, runOpts) {
  * Supports hub shapes ({entryData} / {changes}) and legacy {entrySnapshot}.
  * Takes a safety backup first, then saves via the worldinfo guard.
  */
+function EL_cloneHubDefault(value) {
+    if (Array.isArray(value)) return value.slice();
+    if (value && typeof value === 'object') {
+        try { return JSON.parse(JSON.stringify(value)); } catch { return {}; }
+    }
+    return value;
+}
+
+// Normalise any characterFilter-ish snapshot input to the nested stored
+// shape { isExclude, names, tags }. Accepts the nested object, the legacy
+// flat editor keys (characterFilterExclude / characterFilterNames /
+// characterFilterTags) and a plain array or string of names. Returns null
+// when the snapshot carries no characterFilter input at all. Never returns
+// a string or an array.
+function EL_normalizeHubCharacterFilter(src) {
+    const s = (src && typeof src === 'object') ? src : {};
+    const out = { isExclude: false, names: [], tags: [] };
+    let seen = false;
+    const v = s.characterFilter;
+    if (v && typeof v === 'object' && !Array.isArray(v)) {
+        seen = true;
+        out.isExclude = v.isExclude === true;
+        if (Array.isArray(v.names)) out.names = v.names.map(x => String(x ?? '').trim()).filter(Boolean);
+        if (Array.isArray(v.tags)) out.tags = v.tags.filter(x => typeof x === 'string' || typeof x === 'number');
+    } else if (Array.isArray(v)) {
+        seen = true;
+        out.names = v.map(x => String(x ?? '').trim()).filter(Boolean);
+    } else if (typeof v === 'string' && v.trim()) {
+        seen = true;
+        out.names = [v.trim()];
+    }
+    if (s.characterFilterExclude !== undefined) {
+        seen = true;
+        out.isExclude = s.characterFilterExclude === true || String(s.characterFilterExclude).toLowerCase() === 'true';
+    }
+    if (Array.isArray(s.characterFilterNames)) {
+        seen = true;
+        if (!out.names.length) out.names = s.characterFilterNames.map(x => String(x ?? '').trim()).filter(Boolean);
+    }
+    if (Array.isArray(s.characterFilterTags)) {
+        seen = true;
+        if (!out.tags.length) out.tags = s.characterFilterTags.filter(x => typeof x === 'string' || typeof x === 'number');
+    }
+    return seen ? out : null;
+}
+
+// Filter a triggers value down to core's GENERATION_TYPE_TRIGGERS set.
+// Returns an array for array/string input, null for anything else (ignored).
+function EL_normalizeHubTriggers(value) {
+    if (Array.isArray(value)) {
+        try { return value.map(x => String(x)).filter(x => EL_VALID_TRIGGERS.includes(x)); }
+        catch { return []; }
+    }
+    if (typeof value === 'string' && EL_VALID_TRIGGERS.includes(value.trim())) return [value.trim()];
+    return null;
+}
+
+// Build a full stored entry from a create snapshot: allowlisted fields only,
+// template defaults backfilled for anything missing, characterFilter and
+// triggers normalised.
+function EL_buildHubCreateEntry(snapshot) {
+    const src = (snapshot && typeof snapshot === 'object' && !Array.isArray(snapshot)) ? snapshot : {};
+    const entry = {};
+    for (const key of EL_ENTRY_FIELDS) {
+        if (key === 'characterFilter' || key === 'triggers') continue;
+        if (src[key] !== undefined) entry[key] = src[key];
+        else entry[key] = EL_cloneHubDefault(EL_ENTRY_DEFAULTS[key]);
+    }
+    const cf = EL_normalizeHubCharacterFilter(src);
+    entry.characterFilter = cf || { isExclude: false, names: [], tags: [] };
+    const t = (src.triggers !== undefined) ? EL_normalizeHubTriggers(src.triggers) : null;
+    entry.triggers = (t !== null) ? t : [];
+    return entry;
+}
+
+// Build the writes map for an edit snapshot: allowlisted fields only,
+// skipping uid/_folderPath, normalising characterFilter and triggers.
+function EL_buildHubEditWrites(snapshot) {
+    const src = (snapshot && typeof snapshot === 'object' && !Array.isArray(snapshot)) ? snapshot : {};
+    const writes = {};
+    for (const key of EL_ENTRY_FIELDS) {
+        if (key === 'uid' || key === '_folderPath') continue;
+        if (key === 'characterFilter') {
+            const cf = EL_normalizeHubCharacterFilter(src);
+            if (cf) writes.characterFilter = cf;
+            continue;
+        }
+        if (key === 'triggers') {
+            if (src.triggers !== undefined) {
+                const t = EL_normalizeHubTriggers(src.triggers);
+                if (t !== null) writes.triggers = t;
+            }
+            continue;
+        }
+        if (src[key] !== undefined) writes[key] = src[key];
+    }
+    return writes;
+}
+
+function EL_hubFieldEquals(a, b) {
+    try { return JSON.stringify(a) === JSON.stringify(b); }
+    catch { return false; }
+}
+
+function EL_warnHubApply(msg) {
+    try {
+        const L = (typeof window !== 'undefined' && window.ELLogger) ? window.ELLogger : console;
+        L.warn('[EL:Apply] ' + msg);
+    } catch {}
+}
+
 async function EL_applyProposal(proposal, opts) {
     opts = opts || {};
     const st = EL_resolveHubSt(opts.st);
@@ -1265,6 +1431,44 @@ async function EL_applyProposal(proposal, opts) {
     const data = await st.loadWorldInfo(proposal.lorebookName);
     if (!data || !data.entries) {
         throw new Error('Lorebook "' + proposal.lorebookName + '" not found');
+    }
+
+    if (proposal.action === 'edit' || proposal.action === 'delete') {
+        const uid = proposal.uid;
+        const current = data.entries[uid];
+        if (!current) {
+            // IDEMPOTENT: a failed feed-delete can deliver a proposal twice —
+            // an already-absent delete target counts as applied, not an error.
+            if (proposal.action === 'delete') return;
+            throw new Error('Entry UID ' + uid + ' not found');
+        }
+        // Staleness check: refuse when the entry changed since the agent read it.
+        // No linkage re-check here: linkage needs the full agent config
+        // (ELAgentConfigSchema.isLorebookLinked(agent, name)) and apply-time
+        // callers only pass the proposal (feed) or an agent name (auto-accept).
+        const wantFp = (typeof proposal._baseFingerprint === 'string' && proposal._baseFingerprint) ? proposal._baseFingerprint : '';
+        if (wantFp && typeof EL_entryFingerprint === 'function') {
+            let actualFp = '';
+            try { actualFp = EL_entryFingerprint(current) || ''; } catch (e) { actualFp = ''; }
+            if (actualFp && actualFp !== wantFp) {
+                throw new Error('Proposal is stale — "' + proposal.lorebookName + '" entry ' + uid + ' changed since this proposal was created. Nothing was written.');
+            }
+            if (!actualFp) EL_warnHubApply('could not recompute entry fingerprint for "' + proposal.lorebookName + '" uid ' + uid + ' — proceeding without staleness check.');
+        } else {
+            EL_warnHubApply('proposal for "' + proposal.lorebookName + '" uid ' + uid + ' carries no fingerprint (older proposal) — proceeding without staleness check.');
+        }
+        if (proposal.action === 'edit') {
+            const editWrites = EL_buildHubEditWrites(proposal.changes || proposal.entrySnapshot || {});
+            // IDEMPOTENT: the entry already equals the intended result — a
+            // retried accept after a successful apply is a no-op success.
+            let alreadyApplied = true;
+            for (const k of Object.keys(editWrites)) {
+                let cur = current[k];
+                if (k === 'characterFilter') cur = EL_normalizeHubCharacterFilter({ characterFilter: cur }) || { isExclude: false, names: [], tags: [] };
+                if (!EL_hubFieldEquals(cur, editWrites[k])) { alreadyApplied = false; break; }
+            }
+            if (alreadyApplied) return;
+        }
     }
 
     // Safety backup before mutating (server-side, 24h expiry).
@@ -1275,21 +1479,22 @@ async function EL_applyProposal(proposal, opts) {
         }
     } catch {}
 
-    const ENTRY_FIELDS = ['key', 'keysecondary', 'comment', 'content', 'order', 'position', 'depth',
-        'probability', 'constant', 'vectorized', 'selective', 'disable', 'excludeRecursion',
-        'preventRecursion', 'group', 'groupWeight', 'groupOverride', 'sticky', 'cooldown', 'delay',
-        'triggers', 'characterFilter', 'characterFilterExclude', 'selectiveLogic', 'role', 'outletName'];
-
     if (proposal.action === 'create') {
         const snapshot = proposal.entryData || proposal.entrySnapshot || {};
         const folderPathFromProposal = proposal._folderPath || snapshot._folderPath || '';
+        const newEntry = EL_buildHubCreateEntry(snapshot);
+        // IDEMPOTENT: a retried accept must not create a second copy. Compares the
+        // FULL allowlisted entry, not just comment+content, so a legitimate second
+        // entry that merely happens to share a comment and content is not swallowed.
+        const intendedFp = (typeof EL_entryFingerprint === 'function') ? EL_entryFingerprint(newEntry) : '';
+        if (intendedFp) {
+            for (const existing of Object.values(data.entries)) {
+                if (existing && EL_entryFingerprint(existing) === intendedFp) return;
+            }
+        }
         let nextUid = null;
         for (let uid = 0; uid < 1000000; uid++) if (!(uid in data.entries)) { nextUid = uid; break; }
         if (nextUid === null) throw new Error('No free UID available');
-        const newEntry = {};
-        for (const key of ENTRY_FIELDS) {
-            if (snapshot[key] !== undefined) newEntry[key] = snapshot[key];
-        }
         newEntry.uid = nextUid;
         data.entries[nextUid] = newEntry;
 
@@ -1314,9 +1519,9 @@ async function EL_applyProposal(proposal, opts) {
         const entry = data.entries[uid];
         if (!entry) throw new Error('Entry UID ' + uid + ' not found');
         const snapshot = proposal.changes || proposal.entrySnapshot || {};
-        for (const key of Object.keys(snapshot)) {
-            if (key === 'uid' || key === '_folderPath') continue;
-            entry[key] = snapshot[key];
+        const writes = EL_buildHubEditWrites(snapshot);
+        for (const key of Object.keys(writes)) {
+            entry[key] = writes[key];
         }
         const moveFolderPath = proposal._folderPath || snapshot._folderPath;
         if (moveFolderPath !== undefined && moveFolderPath !== null && typeof window !== 'undefined' && window.ELFolderUrl) {
@@ -1441,6 +1646,9 @@ if (typeof window !== 'undefined') {
     window.EL_recoverStagedHubProposals = EL_recoverStagedHubProposals;
     window.EL_sanitizeHubProposal = EL_sanitizeHubProposal;
     window.EL_PROPOSAL_CONTRACT = EL_PROPOSAL_CONTRACT;
+    window.EL_ENTRY_FIELDS = EL_ENTRY_FIELDS;
+    window.EL_ENTRY_DEFAULTS = EL_ENTRY_DEFAULTS;
+    window.EL_VALID_TRIGGERS = EL_VALID_TRIGGERS;
     window.EL_postToHost = EL_postToHost;
     window.EL_bridgeRequest = EL_bridgeRequest;
     window.EL_requestChatBooks = EL_requestChatBooks;

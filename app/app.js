@@ -517,14 +517,17 @@ function refreshActiveGlobalsFrom(globals) {
 }
 
 function applyEntriesData(name, data) {
-    const newData = (data && data.entries) ? data : { entries: {} };
+    const loadFailed = !data || !data.entries;
+    const newData = loadFailed ? { entries: {} } : data;
     currentLorebookData = newData;
     const sig = entriesSignature(newData);
     sync.poll.entriesSig = sig;
     sync.poll.entriesBook = name;
     sync.signatures.entries = sig;
     if (!document.hidden && currentViewMode === 'lorebook' && currentLorebookName && !isEntryEditorOpen()) {
-        ensureFoldersStructure(currentLorebookName);
+        // Never prune folder membership against an empty fallback: a failed read
+        // would otherwise wipe the folder layout, which the next saveSettings() persists.
+        ensureFoldersStructure(currentLorebookName, { prune: !loadFailed });
         renderEntries();
     }
 }
@@ -771,7 +774,7 @@ function setupSyncSubscriptions() {
 // ==========================================
 // Sidebar Panels (collapsible / resizable)
 // ==========================================
-function clamp(val, min, max) {
+function EL_clamp(val, min, max) {
     return Math.min(Math.max(val, min), max);
 }
 
@@ -840,7 +843,7 @@ function wirePanelControls() {
 
             const onMove = (ev) => {
                 const delta = ev.clientY - startY;
-                setPanelHeight(key, clamp(startH + delta, PANEL_MIN_H, maxH));
+                setPanelHeight(key, EL_clamp(startH + delta, PANEL_MIN_H, maxH));
             };
             const onUp = () => {
                 window.removeEventListener('mousemove', onMove);
@@ -871,7 +874,7 @@ function renderLorebookList(container, names, onClick, showToggle = false, showR
         div.className = 'list-item';
         if (name === currentLorebookName) div.classList.add('active');
 
-        div.innerHTML = `<i class="fa-solid fa-book"></i><span>${name}</span>`;
+        div.innerHTML = `<i class="fa-solid fa-book"></i><span>${escapeHtml(name)}</span>`;
 
         if (showToggle) {
             const stSelect = ST_Window.document.getElementById('world_info');
@@ -938,7 +941,7 @@ function renderTemplatesList() {
         const div = document.createElement('div');
         div.className = 'list-item';
         div.title = safeJoin(extensionSettings.templates[tName], ', ');
-        div.innerHTML = `<i class="fa-solid fa-bookmark"></i><span>${tName}</span>`;
+        div.innerHTML = `<i class="fa-solid fa-bookmark"></i><span>${escapeHtml(tName)}</span>`;
 
         // Double click to load template
         div.addEventListener('dblclick', () => {
@@ -1005,12 +1008,13 @@ async function openLorebook(name) {
     document.querySelectorAll('.agent-sidebar-item').forEach(i => i.classList.remove('active'));
     hideAgentPanels();
 
-    currentLorebookData = await stContext.loadWorldInfo(name);
-    if (!currentLorebookData || !currentLorebookData.entries) {
-        currentLorebookData = { entries: {} }; // Fallback
+    const loaded = await stContext.loadWorldInfo(name);
+    const loadFailed = !loaded || !loaded.entries;
+    currentLorebookData = loadFailed ? { entries: {} } : loaded;
+    if (loadFailed) {
+        if (typeof showToast === 'function') showToast('Could not load "' + name + '" — showing an empty view. Folder layout left untouched.');
     }
-
-    ensureFoldersStructure(name);
+    ensureFoldersStructure(name, { prune: !loadFailed });
     renderEntries();
 }
 
@@ -1031,9 +1035,12 @@ function showLorebookView() {
     }
 }
 
-function ensureFoldersStructure(lbName) {
+function ensureFoldersStructure(lbName, { prune = true } = {}) {
     if (!extensionSettings.folders[lbName]) {
         extensionSettings.folders[lbName] = [];
+    }
+    if (!prune) {
+        return;
     }
     // Cleanup: Remove references to non-existent entries from folders
     const existingUids = new Set(Object.keys(currentLorebookData.entries));
@@ -1305,8 +1312,8 @@ function createFolderElement(folder, filteredUids, isRoot = false) {
     header.className = 'folder-header';
 
     const totalCount = getFolderRecursiveCount(folder.id);
-    let titleHtml = isRoot ? `<i></i><span class="folder-title">${folder.name} <span style="font-size: 0.8rem; color: var(--text-muted); font-weight: normal;">(${totalCount})</span></span>` :
-        `<i class="fa-solid fa-chevron-down folder-toggle"></i><span class="folder-title">${folder.name} <span style="font-size: 0.8rem; color: var(--text-muted); font-weight: normal;">(${totalCount})</span></span>`;
+    let titleHtml = isRoot ? `<i></i><span class="folder-title">${escapeHtml(folder.name)} <span style="font-size: 0.8rem; color: var(--text-muted); font-weight: normal;">(${totalCount})</span></span>` :
+        `<i class="fa-solid fa-chevron-down folder-toggle"></i><span class="folder-title">${escapeHtml(folder.name)} <span style="font-size: 0.8rem; color: var(--text-muted); font-weight: normal;">(${totalCount})</span></span>`;
 
     if (!isRoot) {
         titleHtml += `<div style="margin-left: 12px; display:flex; align-items:center; gap: 4px; font-size: 0.8rem; color: var(--text-muted);">
@@ -2490,19 +2497,26 @@ function parseXmlEntries(text) {
                 currentEntry.overrides.automationId = t.value;
                 break;
             case 'delay_until_recursion':
-            case 'delayuntilrecursion':
-                currentEntry.overrides.delay_until_recursion = t.value.toLowerCase() === 'true';
+            case 'delayuntilrecursion': {
+                const delayOn = t.value.toLowerCase() === 'true';
+                const curDelay = currentEntry.overrides.delayUntilRecursion;
+                currentEntry.overrides.delayUntilRecursion = !delayOn ? false
+                    : (typeof curDelay === 'number' && curDelay > 1 ? curDelay : true);
                 break;
-            case 'delayuntilrecursionlevel':
-                currentEntry.overrides.delayUntilRecursionLevel = parseInt(t.value);
-                if (isNaN(currentEntry.overrides.delayUntilRecursionLevel)) delete currentEntry.overrides.delayUntilRecursionLevel;
+            }
+            case 'delayuntilrecursionlevel': {
+                const recLevel = parseInt(t.value);
+                if (!Number.isFinite(recLevel)) break;
+                if (recLevel > 1) currentEntry.overrides.delayUntilRecursion = recLevel;
+                else if (currentEntry.overrides.delayUntilRecursion !== false) currentEntry.overrides.delayUntilRecursion = true;
                 break;
+            }
             case 'useprobability':
                 currentEntry.overrides.useProbability = t.value.toLowerCase() === 'true';
                 break;
             case 'characterfilterexclude':
             case 'character_exclusion':
-                currentEntry.overrides.character_exclusion = t.value.toLowerCase() === 'true';
+                currentEntry.overrides.characterFilter = { isExclude: t.value.toLowerCase() === 'true', names: [], tags: [] };
                 break;
             case 'matchcharacterdescription':
                 currentEntry.overrides.matchCharacterDescription = t.value.toLowerCase() === 'true';
@@ -2821,12 +2835,11 @@ async function createItems() {
                 matchWholeWords: ov.matchWholeWords ?? null,
                 useGroupScoring: ov.useGroupScoring ?? null,
                 automationId: ov.automationId ?? '',
-                delayUntilRecursionLevel: ov.delayUntilRecursionLevel ?? 1,
-                delay_until_recursion: ov.delay_until_recursion ?? false,
+                delayUntilRecursion: ov.delayUntilRecursion ?? false,
                 ignoreBudget: ov.ignoreBudget ?? false,
                 addMemo: ov.addMemo ?? false,
                 useProbability: ov.useProbability ?? true,
-                character_exclusion: ov.character_exclusion ?? false,
+                characterFilter: ov.characterFilter ?? { isExclude: false, names: [], tags: [] },
                 matchCharacterDescription: ov.matchCharacterDescription ?? false,
                 matchCharacterPersonality: ov.matchCharacterPersonality ?? false,
                 matchScenario: ov.matchScenario ?? false,
@@ -2936,6 +2949,9 @@ async function applyBatchOptions() {
     const applyProb = document.getElementById('batch-apply-probability').checked;
     const probVal = parseInt(document.getElementById('batch-prob-val').value);
 
+    const applyUseProbability = document.getElementById('batch-apply-use-probability').checked;
+    const useProbabilityVal = document.getElementById('batch-use-probability-val').checked;
+
     const applyConstant = document.getElementById('batch-apply-constant').checked;
     const constantVal = document.getElementById('batch-constant-val').checked;
 
@@ -3034,6 +3050,8 @@ async function applyBatchOptions() {
     const applyIgnoreBudget = document.getElementById('batch-apply-ignore-budget').checked;
     const ignoreBudgetVal = document.getElementById('batch-ignore-budget-val').checked;
 
+    const foldersBefore = JSON.parse(JSON.stringify(extensionSettings.folders[currentLorebookName] || []));
+
     selectedEntries.forEach(uid => {
         const entry = currentLorebookData.entries[uid];
         if (!entry) return;
@@ -3045,6 +3063,7 @@ async function applyBatchOptions() {
         }
         if (applyDepth && !isNaN(depthVal)) entry.depth = depthVal;
         if (applyProb && !isNaN(probVal)) entry.probability = probVal;
+        if (applyUseProbability) entry.useProbability = useProbabilityVal;
         if (applyConstant) { entry.constant = constantVal; if (constantVal) entry.vectorized = false; }
         if (applyVectorized) { entry.vectorized = vectorizedVal; if (vectorizedVal) entry.constant = false; }
         if (applySelective) entry.selective = selectiveVal;
@@ -3060,9 +3079,9 @@ async function applyBatchOptions() {
         if (applySticky && !isNaN(stickyVal)) entry.sticky = stickyVal;
         if (applyCooldown && !isNaN(cooldownVal)) entry.cooldown = cooldownVal;
         if (applyDelay && !isNaN(delayVal)) entry.delay = delayVal;
-        if (applyCharFilter) entry.characterFilter = charFilterVal ? charFilterVal.split(',').map(s => s.trim()).filter(Boolean) : [];
-        if (applyTriggers) entry.triggers = triggersVal ? triggersVal.split(',').map(s => s.trim()).filter(Boolean) : [];
-        if (applyCharExclusion) entry.character_exclusion = charExclusionVal;
+        if (applyCharFilter) entry.characterFilter = EL_buildCharacterFilter(charFilterVal, applyCharExclusion ? charExclusionVal : (entry.characterFilter?.isExclude === true), entry.characterFilter);
+        if (applyTriggers) entry.triggers = [...new Set((triggersVal ? triggersVal.split(',').map(s => s.trim()).filter(Boolean) : []).filter(t => EL_GENERATION_TYPE_TRIGGERS.includes(t)))];
+        if (applyCharExclusion && !applyCharFilter) entry.characterFilter = EL_buildCharacterFilter(EL_characterFilterToText(entry.characterFilter), charExclusionVal, entry.characterFilter);
         if (applyMatchCharDesc) entry.matchCharacterDescription = matchCharDescVal;
         if (applyMatchCharPers) entry.matchCharacterPersonality = matchCharPersVal;
         if (applyMatchScenario) entry.matchScenario = matchScenarioVal;
@@ -3070,12 +3089,20 @@ async function applyBatchOptions() {
         if (applyMatchCharDepth) entry.matchCharacterDepthPrompt = matchCharDepthVal;
         if (applyMatchCreatorNotes) entry.matchCreatorNotes = matchCreatorNotesVal;
         if (applyScanDepth) entry.scanDepth = scanDepthRaw === '' ? null : parseInt(scanDepthRaw);
-        if (applyRecursionLevel && !isNaN(recursionLevelVal)) entry.delayUntilRecursionLevel = recursionLevelVal;
+        if (applyRecursionLevel || applyDelayRecursion) {
+            const delayOn = applyDelayRecursion ? delayRecursionVal : !!entry.delayUntilRecursion;
+            const recLvl = applyRecursionLevel ? recursionLevelVal
+                : (typeof entry.delayUntilRecursion === 'number' ? entry.delayUntilRecursion : NaN);
+            entry.delayUntilRecursion = !delayOn ? false
+                : (!Number.isFinite(recLvl) || recLvl <= 1) ? true
+                    : recLvl;
+            delete entry.delayUntilRecursionLevel;
+            delete entry.delay_until_recursion;
+        }
         if (applyCaseSensitive) entry.caseSensitive = caseSensitiveVal;
         if (applyWholeWords) entry.matchWholeWords = wholeWordsVal;
         if (applyGroupScoring) entry.useGroupScoring = groupScoringVal;
         if (applyAutomationId) entry.automationId = automationIdVal;
-        if (applyDelayRecursion) entry.delay_until_recursion = delayRecursionVal;
         if (applyIgnoreBudget) entry.ignoreBudget = ignoreBudgetVal;
     });
 
@@ -3093,12 +3120,68 @@ async function applyBatchOptions() {
                 target.entries.push(...Array.from(selectedEntries).map(String));
             }
         }
-        saveSettings();
     }
 
-    { const _batchOk = await ELG_guardSave(currentLorebookName, currentLorebookData, { explicitDelete: false, source: 'user', note: 'Batch edit' }); EL_logGuardResult(_batchOk,'Batch edit',currentLorebookName); if(!_batchOk) EL_error('Batch edit blocked/failed'); }
+    const batchOk = await ELG_guardSave(currentLorebookName, currentLorebookData, { explicitDelete: false, source: 'user', note: 'Batch edit' });
+    EL_logGuardResult(batchOk, 'Batch edit', currentLorebookName);
+    if (!batchOk) {
+        EL_error('Batch edit blocked/failed');
+        extensionSettings.folders[currentLorebookName] = foldersBefore;
+        try { const fresh = await ELG_loadFresh(currentLorebookName); if (fresh) currentLorebookData = fresh; } catch (e) { EL_warn('reload after failed save failed', e); }
+        if (typeof showToast === 'function') showToast('Batch edit was blocked — no changes were saved.');
+    } else {
+        saveSettings();
+    }
     els.batchModal.classList.remove('active');
     renderEntries();
+}
+
+const EL_GENERATION_TYPE_TRIGGERS = Object.freeze(['normal', 'continue', 'impersonate', 'swipe', 'regenerate', 'quiet']);
+
+// SillyTavern stores characterFilter as { isExclude, names (avatar keys), tags (tag ids) }.
+// The edit field shows character names; we translate names <-> avatar keys so a value
+// typed here behaves the same as one typed in the native editor. Tags have no UI and are
+// always preserved untouched.
+function EL_characterFilterMaps() {
+    const nameToAvatar = new Map();
+    const avatarToLabel = new Map();
+    try {
+        const ctx = (typeof stContext !== 'undefined' && stContext) ? stContext : null;
+        const chars = Array.isArray(ctx?.characters) ? ctx.characters : [];
+        for (const c of chars) {
+            if (!c || !c.avatar) continue;
+            const avatar = String(c.avatar);
+            avatarToLabel.set(avatar, String(c.name || avatar));
+            const nm = String(c.name || '').trim().toLowerCase();
+            if (nm && !nameToAvatar.has(nm)) nameToAvatar.set(nm, avatar);
+        }
+    } catch (e) { /* no character list available — fall back to raw values */ }
+    return { nameToAvatar, avatarToLabel };
+}
+
+function EL_characterFilterToText(filter) {
+    try {
+        const names = (filter && typeof filter === 'object' && !Array.isArray(filter) && Array.isArray(filter.names)) ? filter.names : [];
+        if (!names.length) return '';
+        const { avatarToLabel } = EL_characterFilterMaps();
+        return names.map(n => avatarToLabel.get(String(n)) || String(n)).join(', ');
+    } catch (e) { return ''; }
+}
+
+function EL_buildCharacterFilter(text, isExclude, previous) {
+    const prev = (previous && typeof previous === 'object' && !Array.isArray(previous)) ? previous : {};
+    const tags = Array.isArray(prev.tags) ? prev.tags.slice() : [];
+    const { nameToAvatar } = EL_characterFilterMaps();
+    const names = [];
+    for (const raw of String(text || '').split(',')) {
+        const token = raw.trim();
+        if (!token) continue;
+        // Prefer an avatar key: typed character name -> avatar, else assume the
+        // token already IS an avatar key. Never drop what the user typed.
+        const key = nameToAvatar.get(token.toLowerCase()) || token;
+        if (!names.includes(key)) names.push(key);
+    }
+    return { isExclude: isExclude === true, names, tags };
 }
 
 // ==========================================
@@ -3142,6 +3225,7 @@ function openEditEntryModal(uid) {
         document.getElementById('edit-depth').value = entry.depth ?? 4;
         document.getElementById('edit-probability').value = entry.probability ?? 100;
         document.getElementById('edit-delay').value = entry.delay ?? 0;
+        document.getElementById('edit-use-probability').checked = entry.useProbability !== false;
 
         document.getElementById('edit-constant').checked = !!entry.constant;
         document.getElementById('edit-vectorized').checked = !!entry.vectorized;
@@ -3157,9 +3241,9 @@ function openEditEntryModal(uid) {
         document.getElementById('edit-group-override').checked = !!entry.groupOverride;
         document.getElementById('edit-sticky').value = entry.sticky ?? 0;
         document.getElementById('edit-cooldown').value = entry.cooldown ?? 0;
-        document.getElementById('edit-character-filter').value = safeJoin(entry.characterFilter, ', ');
+        document.getElementById('edit-character-filter').value = EL_characterFilterToText(entry.characterFilter);
         document.getElementById('edit-triggers').value = safeJoin(entry.triggers, ', ');
-        document.getElementById('edit-character-exclusion').checked = !!entry.character_exclusion;
+        document.getElementById('edit-character-exclusion').checked = entry.characterFilter?.isExclude === true;
 
         document.getElementById('edit-match-char-desc').checked = !!entry.matchCharacterDescription;
         document.getElementById('edit-match-char-pers').checked = !!entry.matchCharacterPersonality;
@@ -3169,14 +3253,14 @@ function openEditEntryModal(uid) {
         document.getElementById('edit-match-creator-notes').checked = !!entry.matchCreatorNotes;
 
         document.getElementById('edit-scan-depth').value = entry.scanDepth !== undefined && entry.scanDepth !== null ? entry.scanDepth : '';
-        document.getElementById('edit-recursion-level').value = entry.delayUntilRecursionLevel ?? 1;
+        document.getElementById('edit-recursion-level').value = (typeof entry.delayUntilRecursion === 'number' && entry.delayUntilRecursion > 1) ? entry.delayUntilRecursion : '';
 
         document.getElementById('edit-case-sensitive').value = entry.caseSensitive === true ? 'true' : (entry.caseSensitive === false ? 'false' : 'null');
         document.getElementById('edit-whole-words').value = entry.matchWholeWords === true ? 'true' : (entry.matchWholeWords === false ? 'false' : 'null');
         document.getElementById('edit-use-group-scoring').value = entry.useGroupScoring === true ? 'true' : (entry.useGroupScoring === false ? 'false' : 'null');
 
         document.getElementById('edit-automation-id').value = entry.automationId || '';
-        document.getElementById('edit-delay-recursion').checked = !!entry.delay_until_recursion;
+        document.getElementById('edit-delay-recursion').checked = !!entry.delayUntilRecursion;
         document.getElementById('edit-ignore-budget').checked = !!entry.ignoreBudget;
 
         document.getElementById('edit-entry-modal').classList.add('active');
@@ -3195,6 +3279,7 @@ async function saveEditedEntry() {
 
     // Change folder mapping
     const newFolderId = document.getElementById('edit-entry-folder').value;
+    const foldersBefore = JSON.parse(JSON.stringify(extensionSettings.folders[currentLorebookName] || []));
     const folders = extensionSettings.folders[currentLorebookName] || [];
     folders.forEach(f => {
         f.entries = f.entries.filter(e => String(e) !== String(uid));
@@ -3205,7 +3290,6 @@ async function saveEditedEntry() {
             target.entries.push(String(uid));
         }
     }
-    saveSettings();
 
     entry.comment = document.getElementById('edit-comment').value;
 
@@ -3231,11 +3315,15 @@ async function saveEditedEntry() {
 
     entry.probability = parseInt(document.getElementById('edit-probability').value);
     if (isNaN(entry.probability)) entry.probability = 100;
+    entry.useProbability = document.getElementById('edit-use-probability').checked;
 
     entry.delay = parseInt(document.getElementById('edit-delay').value) || 0;
 
+    // constant and vectorized are mutually exclusive in SillyTavern (tri-state).
     entry.constant = document.getElementById('edit-constant').checked;
+    if (entry.constant) entry.vectorized = false;
     entry.vectorized = document.getElementById('edit-vectorized').checked;
+    if (entry.vectorized) entry.constant = false;
     entry.disable = document.getElementById('edit-disable').checked;
     entry.addMemo = document.getElementById('edit-add-memo').checked;
     entry.excludeRecursion = document.getElementById('edit-exclude').checked;
@@ -3250,13 +3338,22 @@ async function saveEditedEntry() {
     entry.sticky = parseInt(document.getElementById('edit-sticky').value) || 0;
     entry.cooldown = parseInt(document.getElementById('edit-cooldown').value) || 0;
 
-    const charFilterStr = document.getElementById('edit-character-filter').value;
-    entry.characterFilter = charFilterStr ? charFilterStr.split(',').map(s => s.trim()).filter(Boolean) : [];
+    entry.characterFilter = EL_buildCharacterFilter(
+        document.getElementById('edit-character-filter').value,
+        document.getElementById('edit-character-exclusion').checked,
+        entry.characterFilter,
+    );
+    delete entry.character_exclusion;
 
     const triggerStr = document.getElementById('edit-triggers').value;
-    entry.triggers = triggerStr ? triggerStr.split(',').map(s => s.trim()).filter(Boolean) : [];
-
-    entry.character_exclusion = document.getElementById('edit-character-exclusion').checked;
+    const parsedTriggers = triggerStr ? triggerStr.split(',').map(s => s.trim()).filter(Boolean) : [];
+    const storedTriggers = Array.isArray(entry.triggers) ? entry.triggers : [];
+    // Only filter to core's known trigger values when the user actually changed the
+    // field. Filtering unconditionally would silently drop a non-standard token an
+    // entry carried (e.g. from an imported card) during an unrelated edit.
+    if (JSON.stringify(parsedTriggers) !== JSON.stringify(storedTriggers)) {
+        entry.triggers = [...new Set(parsedTriggers.filter(t => EL_GENERATION_TYPE_TRIGGERS.includes(t)))];
+    }
 
     entry.matchCharacterDescription = document.getElementById('edit-match-char-desc').checked;
     entry.matchCharacterPersonality = document.getElementById('edit-match-char-pers').checked;
@@ -3268,8 +3365,14 @@ async function saveEditedEntry() {
     const scanDepthVal = document.getElementById('edit-scan-depth').value;
     entry.scanDepth = scanDepthVal === '' ? null : parseInt(scanDepthVal);
 
-    entry.delayUntilRecursionLevel = parseInt(document.getElementById('edit-recursion-level').value);
-    if (isNaN(entry.delayUntilRecursionLevel)) entry.delayUntilRecursionLevel = 1;
+    // ST stores one field: delayUntilRecursion = false | true | number(>1).
+    const delayRecursionOn = document.getElementById('edit-delay-recursion').checked;
+    const recursionLevel = parseInt(document.getElementById('edit-recursion-level').value);
+    entry.delayUntilRecursion = !delayRecursionOn ? false
+        : (!Number.isFinite(recursionLevel) || recursionLevel <= 1) ? true
+            : recursionLevel;
+    delete entry.delayUntilRecursionLevel;
+    delete entry.delay_until_recursion;
 
     const parseNullBool = (v) => v === 'true' ? true : (v === 'false' ? false : null);
     entry.caseSensitive = parseNullBool(document.getElementById('edit-case-sensitive').value);
@@ -3277,13 +3380,12 @@ async function saveEditedEntry() {
     entry.useGroupScoring = parseNullBool(document.getElementById('edit-use-group-scoring').value);
 
     entry.automationId = document.getElementById('edit-automation-id').value;
-    entry.delay_until_recursion = document.getElementById('edit-delay-recursion').checked;
     entry.ignoreBudget = document.getElementById('edit-ignore-budget').checked;
 
     if (EL_isGenerating()) EL_warn(`saveEditedEntry: generation running (agent=${agentEngine?.state}) — save may race with agent`, { uid: entry.uid, book: currentLorebookName });
     const _guardOk = await ELG_guardSave(currentLorebookName, currentLorebookData, { explicitDelete: false, source: 'user', note: 'Save edited entry' });
     EL_logGuardResult(_guardOk, 'saveEditedEntry', currentLorebookName, { uid: entry.uid });
-    if (!_guardOk) { EL_error('saveEditedEntry blocked/failed — entry not persisted, will reload from server'); try { const fresh = await ELG_loadFresh(currentLorebookName); if(fresh){ currentLorebookData=fresh; } } catch(e){ EL_warn('reload after failed save failed', e);} }
+    if (!_guardOk) { EL_error('saveEditedEntry blocked/failed — entry not persisted, will reload from server'); extensionSettings.folders[currentLorebookName] = foldersBefore; try { const fresh = await ELG_loadFresh(currentLorebookName); if(fresh){ currentLorebookData=fresh; } } catch(e){ EL_warn('reload after failed save failed', e);} } else { saveSettings(); }
     document.getElementById('edit-entry-modal').classList.remove('active');
     renderEntries();
 }
@@ -3324,8 +3426,8 @@ function duplicateWorldInfoEntry(data, uid) {
     try { EL_info(`duplicateWorldInfoEntry uid=${uid} → newUid=${newUid} book="${currentLorebookName}"`); } catch {}
 
     const newEntry = {
-        uid: newUid,
         ...structuredClone(data.entries[uid]),
+        uid: newUid,
     };
     const maxDisplayIndex = Object.values(data.entries).reduce((max, entry) => Math.max(max, entry.displayIndex ?? -1), -1);
     newEntry.displayIndex = maxDisplayIndex + 1;
@@ -3434,9 +3536,15 @@ async function EL_pasteEntries(targetFolderId = null, targetBook = null) {
         return;
     }
     if (!currentLorebookData || currentLorebookName !== book) {
-        // If pasting into a different book than copied, we still respect URLs but ensure targetData is fresh
+        // Pasting into a different book: the TARGET book's data must be loaded first.
+        // Continuing with the previously-open book's entries in currentLorebookData
+        // would make the save below write them into the target and destroy it.
         const fresh = await ELG_loadFresh(book);
-        if (fresh && fresh.entries) currentLorebookData = fresh;
+        if (!fresh || !fresh.entries) {
+            if (typeof showToast === 'function') showToast('Could not load "' + book + '" — paste cancelled, nothing was written.');
+            return;
+        }
+        currentLorebookData = fresh;
         currentLorebookName = book;
     }
     // Ensure target folder exists; if targetFolderId provided (paste into folder), use its path, else use each item's URL path
@@ -3466,7 +3574,10 @@ async function EL_pasteEntries(targetFolderId = null, targetBook = null) {
             console.error('Enhanced Lorebook: Couldn\'t assign UID for paste');
             continue;
         }
-        const newEntry = { uid: newUid, ...structuredClone(origEntry) };
+        const newEntry = {
+            ...structuredClone(origEntry),
+            uid: newUid,
+        };
         // Fix displayIndex to append
         try {
             const maxIdx = Object.values(currentLorebookData.entries).reduce((m, e) => Math.max(m, e.displayIndex ?? -1), -1);
@@ -3537,8 +3648,8 @@ async function sendFolderToLorebookHelper(folderId, targetBook, targetData, targ
     }
     const folders = extensionSettings.folders[currentLorebookName] || [];
     const f = folders.find(x => x.id === folderId);
-    if (!f) return null;
-    
+    if (!f) return { folderId: null, movedCount: 0 };
+
     const newFolderId = 'folder_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5);
     const newFolder = {
         id: newFolderId,
@@ -3547,13 +3658,24 @@ async function sendFolderToLorebookHelper(folderId, targetBook, targetData, targ
         order: f.order ?? 100,
         entries: []
     };
-    
+
+    let movedCount = 0;
     for (const entryUid of f.entries) {
         if (!currentLorebookData.entries[entryUid]) {
             continue;
         }
         const beforeKeys = new Set(Object.keys(targetData.entries));
-        await moveWorldInfoEntry(currentLorebookName, targetBook, entryUid, { deleteOriginal: isMove });
+        let moved = false;
+        try {
+            moved = await moveWorldInfoEntry(currentLorebookName, targetBook, entryUid, { deleteOriginal: isMove });
+        } catch (e) {
+            EL_error('sendFolderToLorebookHelper move failed', { entryUid, targetBook, error: e && e.message });
+            continue;
+        }
+        if (!moved) {
+            continue;
+        }
+        movedCount += 1;
         const updatedTargetData = await stContext.loadWorldInfo(targetBook);
         Object.assign(targetData.entries, updatedTargetData.entries);
         const newUid = Object.keys(targetData.entries).find(uid => !beforeKeys.has(uid));
@@ -3561,21 +3683,31 @@ async function sendFolderToLorebookHelper(folderId, targetBook, targetData, targ
             newFolder.entries.push(String(newUid));
         }
     }
-    
+
     extensionSettings.folders[targetBook].push(newFolder);
-    
+
     const subfolders = folders.filter(x => x.parentId === folderId);
     for (const sub of subfolders) {
-        await sendFolderToLorebookHelper(sub.id, targetBook, targetData, newFolderId, isMove);
+        try {
+            const subResult = await sendFolderToLorebookHelper(sub.id, targetBook, targetData, newFolderId, isMove);
+            if (subResult && typeof subResult.movedCount === 'number') {
+                movedCount += subResult.movedCount;
+            }
+        } catch (e) {
+            EL_error('sendFolderToLorebookHelper subfolder failed', { subId: sub.id, error: e && e.message });
+        }
     }
-    
-    if (isMove) {
+
+    if (isMove && movedCount > 0) {
         const updatedSourceData = await stContext.loadWorldInfo(currentLorebookName);
         currentLorebookData.entries = updatedSourceData.entries;
-        extensionSettings.folders[currentLorebookName] = folders.filter(x => x.id !== folderId);
+        // Re-read the array: a recursive child call may already have removed its own
+        // folder from it, and assigning the array captured at the top would undo that.
+        const currentSourceFolders = extensionSettings.folders[currentLorebookName] || [];
+        extensionSettings.folders[currentLorebookName] = currentSourceFolders.filter(x => x.id !== folderId);
     }
-    
-    return newFolderId;
+
+    return { folderId: newFolderId, movedCount };
 }
 
 function createContextMenu() {
@@ -3928,6 +4060,9 @@ function showSendToLorebookMenu(_x, _y, type, targetIds) {
     async function executeSend(targetBook) {
         const actionRadio = content.querySelector('input[name="send-lorebook-action"]:checked');
         const isMove = actionRadio && actionRadio.value === 'move';
+        const verb = isMove ? 'Moved' : 'Copied';
+        let transferMoved = 0;
+        let transferFailed = 0;
 
         if (type === 'entry') {
             // Capture URLs before move so target respects folder path (extension-only)
@@ -3942,7 +4077,19 @@ function showSendToLorebookMenu(_x, _y, type, targetIds) {
             for (const uid of targetIds) {
                 const beforeData = await ELG_loadFresh(targetBook);
                 const beforeKeys = new Set(Object.keys(beforeData?.entries || {}));
-                await moveWorldInfoEntry(currentLorebookName, targetBook, uid, { deleteOriginal: isMove });
+                let moved = false;
+                try {
+                    moved = await moveWorldInfoEntry(currentLorebookName, targetBook, uid, { deleteOriginal: isMove });
+                } catch (e) {
+                    EL_error('executeSend move failed', { uid, targetBook, error: e && e.message });
+                    transferFailed += 1;
+                    continue;
+                }
+                if (!moved) {
+                    transferFailed += 1;
+                    continue;
+                }
+                transferMoved += 1;
                 // Find new UID in target
                 let newUid = null;
                 try {
@@ -3981,13 +4128,29 @@ function showSendToLorebookMenu(_x, _y, type, targetIds) {
         } else if (type === 'folder') {
             const targetData = await stContext.loadWorldInfo(targetBook);
             for (const folderId of targetIds) {
-                await sendFolderToLorebookHelper(folderId, targetBook, targetData, null, isMove);
+                try {
+                    const sendResult = await sendFolderToLorebookHelper(folderId, targetBook, targetData, null, isMove);
+                    if (sendResult && typeof sendResult.movedCount === 'number') {
+                        transferMoved += sendResult.movedCount;
+                    }
+                } catch (e) {
+                    EL_error('executeSend folder failed', { folderId, targetBook, error: e && e.message });
+                    transferFailed += 1;
+                }
             }
+            saveSettings();
             if (isMove) {
-                saveSettings();
                 const updatedSourceData = await stContext.loadWorldInfo(currentLorebookName);
                 currentLorebookData.entries = updatedSourceData.entries;
             }
+        }
+
+        if (typeof showToast === 'function') {
+            let summary = verb + ' ' + transferMoved + ' entr' + (transferMoved === 1 ? 'y' : 'ies') + ' to "' + targetBook + '"';
+            if (transferFailed > 0) {
+                summary += ' (' + transferFailed + ' failed)';
+            }
+            showToast(summary);
         }
 
         selectedEntries.clear();

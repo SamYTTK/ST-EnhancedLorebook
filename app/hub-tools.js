@@ -156,6 +156,44 @@ function EL_formatCharCard(st, found, maxChars) {
     };
 }
 
+// Deterministic JSON with sorted object keys, so two deep-equal values always
+// serialise identically regardless of key insertion order.
+function EL_canonicalJson(v) {
+    if (v === null || typeof v !== 'object') return JSON.stringify(v === undefined ? null : v);
+    if (Array.isArray(v)) return '[' + v.map(EL_canonicalJson).join(',') + ']';
+    return '{' + Object.keys(v).sort().map(k => JSON.stringify(k) + ':' + EL_canonicalJson(v[k])).join(',') + '}';
+}
+
+// Two independent 32-bit mixing passes -> ~64 bits, plenty for a staleness check.
+function EL_fingerprintHash(str) {
+    let h1 = 0x811c9dc5, h2 = 0x01000193;
+    for (let i = 0; i < str.length; i++) {
+        const c = str.charCodeAt(i);
+        h1 ^= c; h1 = Math.imul(h1, 0x01000193) >>> 0;
+        h2 = (Math.imul(h2 ^ c, 0x85ebca6b) + i) >>> 0;
+    }
+    return (h1 >>> 0).toString(16).padStart(8, '0') + (h2 >>> 0).toString(16).padStart(8, '0');
+}
+
+// Stable fingerprint of the entry fields a proposal depends on, so a stale
+// proposal cannot be applied on top of data the agent never saw.
+// HASHED, not raw: the raw JSON of a 40-field entry (including content) runs to
+// many kilobytes. It travels to the model as a tool result and must come back
+// verbatim, so a long string both bloats the request and gets truncated on the
+// return trip — which would make every fingerprint comparison fail. A short
+// hash keeps the round trip exact and small.
+function EL_entryFingerprint(entry) {
+    try {
+        const keys = (typeof EL_ENTRY_FIELDS !== 'undefined' && Array.isArray(EL_ENTRY_FIELDS)) ? EL_ENTRY_FIELDS : Object.keys(entry || {});
+        const picked = {};
+        for (const k of keys.slice().sort()) {
+            if (entry && entry[k] !== undefined) picked[k] = entry[k];
+        }
+        const json = EL_canonicalJson(picked);
+        return 'v1:' + json.length + ':' + EL_fingerprintHash(json);
+    } catch (e) { return ''; }
+}
+
 /**
  * Build the inline extra-tools array for one hub agent-mode request.
  * @param {object} agent - v2 config
@@ -464,6 +502,26 @@ function EL_buildHubTools(agent, st, opts) {
                     if (!changes && !fallback) return JSON.stringify({ ok: false, error: 'edit requires changes{...} or content.' });
                     proposal.changes = changes || fallback;
                 }
+                if ((action === 'edit' || action === 'delete') && Number.isInteger(uid)) {
+                    // Capture a fingerprint of the entry the agent was told to
+                    // read, so EL_applyProposal can refuse a stale proposal
+                    // applied on top of data the agent never saw.
+                    try {
+                        const ctx = EL_hubToolsResolveSt(st);
+                        if (ctx && typeof ctx.loadWorldInfo === 'function') {
+                            const entries = await EL_hubToolsLoadBook(ctx, name);
+                            const current = entries ? entries[String(uid)] : null;
+                            if (current && typeof current === 'object') {
+                                proposal._baseFingerprint = EL_entryFingerprint(current);
+                            }
+                        }
+                    } catch (e) {
+                        // Do not fail the proposal, but do not hide the reason the
+                        // staleness guard will be inert for it either.
+                        try { (window.ELLogger || console).warn('[EL:Fingerprint] capture failed for ' + name + ' uid ' + uid, e); } catch {}
+                    }
+                }
+                proposal._stagedAt = Date.now();
                 return JSON.stringify({ ok: true, proposal, note: 'Staged only — paste this "proposal" object VERBATIM into your final {"proposals":[...]} JSON answer. Nothing was written.' });
             },
         });
@@ -475,4 +533,5 @@ function EL_buildHubTools(agent, st, opts) {
 if (typeof window !== 'undefined') {
     window.EL_buildHubTools = EL_buildHubTools;
     window.EL_parseFsPath = EL_parseFsPath;
+    window.EL_entryFingerprint = EL_entryFingerprint;
 }

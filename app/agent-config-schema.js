@@ -152,8 +152,10 @@ function cloneDeep(obj) {
 }
 
 function clamp(n, min, max, fallback) {
+    // A missing/NaN fallback must never leak NaN into the stored config.
+    const fb = Number.isFinite(Number(fallback)) ? Math.min(max, Math.max(min, Number(fallback))) : min;
     const v = Number(n);
-    return Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : fallback;
+    return Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : fb;
 }
 
 function sanitizeSamplers(src) {
@@ -179,7 +181,9 @@ function sanitizeSamplers(src) {
         if (Number.isFinite(v)) out[k] = v;
     }
     if (out.temperature === undefined) out.temperature = 0.7;
-    out.temperature = clamp(out.temperature, 0, 2, 0.7);
+    out.temperature = Number.isFinite(Number(out.temperature))
+        ? clamp(out.temperature, 0, 2, 0.7)
+        : 0.7;
     return out;
 }
 
@@ -214,20 +218,26 @@ function sanitizeContextMessages(m, fallbackQm) {
     const src = (m && typeof m === 'object') ? m : null;
     const q = (fallbackQm && typeof fallbackQm === 'object') ? fallbackQm : {};
     const qr = (q.range && typeof q.range === 'object') ? q.range : {};
+    // Guarded numeric overlay: invalid input falls back to the default
+    // without calling clamp (safe even if clamp is shadowed elsewhere).
+    const num = (v, min, max, def) => {
+        const n = Number(v);
+        return Number.isFinite(n) ? clamp(n, min, max, def) : def;
+    };
     // Legacy quickDefaults type 'first' maps to a head range.
     let mode = src ? src.mode : undefined;
     if (mode === undefined && q.type) mode = q.type === 'first' ? 'range' : q.type;
     if (!['none', 'all', 'last', 'range'].includes(mode)) mode = 'last';
-    let start = src ? clamp(src.start, 0, 100000, 0) : clamp(qr.start, 0, 100000, 0);
-    let end = src ? clamp(src.end, 0, 100000, 10) : clamp(qr.end, 0, 100000, 10);
+    let start = src ? num(src.start, 0, 100000, 0) : num(qr.start, 0, 100000, 0);
+    let end = src ? num(src.end, 0, 100000, 10) : num(qr.end, 0, 100000, 10);
     if (mode === 'range' && q.type === 'first' && !src) {
         start = 0;
-        end = clamp(q.first, 1, 1000, 10);
+        end = num(q.first, 1, 1000, 10);
     }
     if (end < start) end = start;
     return {
         mode,
-        last: src ? clamp(src.last, 1, 1000, 10) : clamp(q.last, 1, 1000, 10),
+        last: src ? num(src.last, 1, 1000, 10) : num(q.last, 1, 1000, 10),
         start,
         end,
         excludeIds: sanitizeExcludeIds(src ? src.excludeIds : undefined),
@@ -250,28 +260,36 @@ function sanitizeContextConfig(ctx, qd) {
     const srcCC = s(srcSources.charCard);
     const srcAN = s(srcSources.authorNote);
     const srcInj = s(srcSources.injected);
-    const num = (v, min, max, fb) => clamp(v, min, max, fb);
+    // Guarded numeric overlay: invalid input resolves to the schema default
+    // without calling clamp (safe even if clamp is shadowed elsewhere).
+    // Defaults are read from DEFAULT_AGENT_CONFIG so the schema stays the
+    // single source of truth.
+    const DCTX = DEFAULT_AGENT_CONFIG.context;
+    const num = (v, min, max, fb) => {
+        const n = Number(v);
+        return Number.isFinite(n) ? clamp(n, min, max, fb) : fb;
+    };
     return {
         messages: sanitizeContextMessages(src && src.messages, q.messages),
         previousMemories: {
             enabled: src ? srcPrev.enabled !== false : true,
-            count: num(srcPrev.count, 0, 7, 3),
+            count: num(srcPrev.count, 0, 7, DCTX.previousMemories.count),
             lorebookName: typeof srcPrev.lorebookName === 'string' ? srcPrev.lorebookName.trim().slice(0, 256) : '',
             includePriorEntry: srcPrev.includePriorEntry === true,
         },
         sources: {
             charCard: {
                 enabled: src ? srcCC.enabled !== false : q.includeCharCard !== false,
-                maxChars: num(srcCC.maxChars, 100, 20000, 2000),
+                maxChars: num(srcCC.maxChars, 100, 20000, DCTX.sources.charCard.maxChars),
             },
             authorNote: {
                 enabled: src ? srcAN.enabled !== false : q.includeAuthorNote !== false,
-                maxChars: num(srcAN.maxChars, 100, 10000, 1500),
+                maxChars: num(srcAN.maxChars, 100, 10000, DCTX.sources.authorNote.maxChars),
             },
             worldInfo: {
                 enabled: src ? srcWI.enabled !== false : q.includeWorldInfo !== false,
                 mode: ['names', 'full', 'pins'].includes(srcWI.mode) ? srcWI.mode : 'names',
-                maxCharsPerEntry: num(srcWI.maxCharsPerEntry, 100, 20000, 2000),
+                maxCharsPerEntry: num(srcWI.maxCharsPerEntry, 100, 20000, DCTX.sources.worldInfo.maxCharsPerEntry),
             },
             injected: {
                 enabled: src ? srcInj.enabled !== false : q.includeInjected !== false,
@@ -282,7 +300,7 @@ function sanitizeContextConfig(ctx, qd) {
             custom: typeof srcPrompt.custom === 'string' ? srcPrompt.custom.slice(0, 8000) : '',
             useRegex: srcPrompt.useRegex === true,
         },
-        tokenWarningThreshold: src ? num(src.tokenWarningThreshold, 0, 1000000, 50000) : 50000,
+        tokenWarningThreshold: src ? num(src.tokenWarningThreshold, 0, 1000000, DCTX.tokenWarningThreshold) : DCTX.tokenWarningThreshold,
     };
 }
 
@@ -368,11 +386,24 @@ function sanitizeAgentConfig(input) {
         migrated = migrateAgentToHubV2(src);
     }
     const base = migrated ? Object.assign({}, src, migrated.config) : src;
-    const out = {};
-    out.name = typeof base.name === 'string' && base.name.trim() ? base.name.trim().slice(0, 120) : DEFAULT_AGENT_CONFIG.name;
+    // Start from a deep clone of the schema defaults as the BASE object,
+    // then overlay only the fields present in the incoming source. Every
+    // numeric overlay below resolves a missing/non-finite input to the base
+    // (default) value directly — never NaN, never undefined — without
+    // depending on clamp's fallback argument (see sanitizeSamplers pattern).
+    const out = cloneDeep(DEFAULT_AGENT_CONFIG);
+    // Guarded numeric overlay: invalid input returns the base default
+    // without calling clamp, so correctness never depends on clamp's
+    // fallback parameter (safe even if clamp is shadowed elsewhere).
+    // For valid input clamp's fallback is unused (in-range clamp only).
+    const num = (v, min, max, def) => {
+        const n = Number(v);
+        return Number.isFinite(n) ? clamp(n, min, max, def) : def;
+    };
+    out.name = typeof base.name === 'string' && base.name.trim() ? base.name.trim().slice(0, 120) : out.name;
     out.enabled = base.enabled !== false;
     out.mode = base.mode === 'periodic' ? 'periodic' : 'manual';
-    out.interval = clamp(base.interval ?? base.periodicInterval ?? 10, 1, 1000, 10);
+    out.interval = num(base.interval ?? base.periodicInterval ?? out.interval, 1, 1000, out.interval);
     out.periodicInterval = out.interval;
     out.taskDescription = typeof base.taskDescription === 'string' ? base.taskDescription.slice(0, 4000) : '';
     out.customInstructions = typeof base.customInstructions === 'string' ? base.customInstructions.slice(0, 8000) : '';
@@ -389,12 +420,12 @@ function sanitizeAgentConfig(input) {
     out.preset = typeof base.preset === 'string' ? base.preset.trim().slice(0, 256) : '';
     out.useOwnConfig = base.useOwnConfig === true;
     out.samplers = sanitizeSamplers(base.samplers);
-    out.maxTokens = clamp(base.maxTokens, 1, 128000, 1024);
-    out.timeoutMs = clamp(base.timeoutMs, 0, 3600000, 90000);
+    out.maxTokens = num(base.maxTokens, 1, 128000, out.maxTokens);
+    out.timeoutMs = num(base.timeoutMs, 0, 3600000, out.timeoutMs);
     if (base.timeoutMs === 0) out.timeoutMs = 0;
-    out.retries = clamp(base.retries, 0, 5, 1);
-    out.maxSteps = clamp(base.maxSteps, 1, 100, 10);
-    out.totalTimeoutMs = clamp(base.totalTimeoutMs, 0, 3600000, 600000);
+    out.retries = num(base.retries, 0, 5, out.retries);
+    out.maxSteps = num(base.maxSteps, 1, 100, out.maxSteps);
+    out.totalTimeoutMs = num(base.totalTimeoutMs, 0, 3600000, out.totalTimeoutMs);
     if (base.totalTimeoutMs === 0) out.totalTimeoutMs = 0;
 
     const ts = (base.toolScope && typeof base.toolScope === 'object') ? base.toolScope : {};
@@ -406,12 +437,12 @@ function sanitizeAgentConfig(input) {
     };
 
     out.autoAccept = base.autoAccept === true;
-    out.autoAcceptConfidence = clamp(base.autoAcceptConfidence, 0, 1, 0.8);
-    out.maxEntriesPerRun = clamp(base.maxEntriesPerRun, 1, 100, 5);
+    out.autoAcceptConfidence = num(base.autoAcceptConfidence, 0, 1, out.autoAcceptConfidence);
+    out.maxEntriesPerRun = num(base.maxEntriesPerRun, 1, 100, out.maxEntriesPerRun);
     out.requireKeyConfidence = ['low', 'medium', 'high'].includes(base.requireKeyConfidence) ? base.requireKeyConfidence : 'low';
-    out.maxPendingProposals = clamp(base.maxPendingProposals, 1, 100, 20);
+    out.maxPendingProposals = num(base.maxPendingProposals, 1, 100, out.maxPendingProposals);
     out.requireConfirmation = base.requireConfirmation !== false;
-    out.maxCharsPerEntry = clamp(base.maxCharsPerEntry, 100, 50000, 8000);
+    out.maxCharsPerEntry = num(base.maxCharsPerEntry, 100, 50000, out.maxCharsPerEntry);
     out.scope = base.scope === 'local' ? 'local' : 'global';
     out.boundCharacterId = base.boundCharacterId ?? null;
     out.boundChatId = base.boundChatId ?? null;
@@ -425,16 +456,17 @@ function sanitizeAgentConfig(input) {
     const qd = base.quickDefaults && typeof base.quickDefaults === 'object' ? base.quickDefaults : {};
     const qm = qd.messages && typeof qd.messages === 'object' ? qd.messages : {};
     const qr = qm.range && typeof qm.range === 'object' ? qm.range : {};
-    const qRangeStart = clamp(qr.start, 0, 100000, 0);
-    let qRangeEnd = clamp(qr.end, 0, 100000, 10);
+    const DQD = DEFAULT_AGENT_CONFIG.quickDefaults;
+    const qRangeStart = num(qr.start, 0, 100000, DQD.messages.range.start);
+    let qRangeEnd = num(qr.end, 0, 100000, DQD.messages.range.end);
     if (qRangeEnd < qRangeStart) qRangeEnd = qRangeStart;
     out.quickDefaults = {
         // v1 CM profile ids are dropped on migration (see migrateAgentToHubV2).
         profileId: (migrated && qd.profileId) ? '' : (typeof qd.profileId === 'string' ? qd.profileId.trim().slice(0, 256) : ''),
         messages: {
             type: ['none', 'all', 'first', 'last', 'range'].includes(qm.type) ? qm.type : 'last',
-            first: clamp(qm.first, 1, 1000, 10),
-            last: clamp(qm.last, 1, 1000, 10),
+            first: num(qm.first, 1, 1000, DQD.messages.first),
+            last: num(qm.last, 1, 1000, DQD.messages.last),
             range: { start: qRangeStart, end: qRangeEnd },
         },
         includeCharCard: qd.includeCharCard !== false,

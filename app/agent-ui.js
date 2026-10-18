@@ -1235,6 +1235,16 @@ function loadContextToConfig(agent) {
 // Read the Context section into a (sanitized-by-schema-on-save) context object.
 function readContextSettings() {
     const msgType = strVal('agent-quick-msg-type', 'last');
+    // Preserved rather than reset: no form control edits this yet, so keep
+    // the stored agent's value (false for new agents).
+    let includePriorEntry = false;
+    try {
+        const priorCfgId = document.getElementById('agent-config-id')?.value || activeAgentId || null;
+        const priorStored = (typeof agentManager !== 'undefined' && agentManager && priorCfgId) ? agentManager.getAgent(priorCfgId) : null;
+        const priorPrevMem = (priorStored && priorStored.context && priorStored.context.previousMemories) ? priorStored.context.previousMemories : null;
+        if (priorPrevMem && priorPrevMem.includePriorEntry === true) includePriorEntry = true;
+        else if (priorStored && priorStored.includePriorEntry === true) includePriorEntry = true;
+    } catch {}
     return {
         messages: {
             mode: ['none', 'all', 'last', 'range'].includes(msgType) ? msgType : 'last',
@@ -1247,7 +1257,7 @@ function readContextSettings() {
             enabled: document.getElementById('agent-ctx-prevmem-enabled')?.checked !== false,
             count: intVal('agent-ctx-prevmem-count', 3),
             lorebookName: strVal('agent-ctx-prevmem-book'),
-            includePriorEntry: false,
+            includePriorEntry: includePriorEntry,
         },
         sources: {
             charCard: { enabled: document.getElementById('agent-quick-inc-char')?.checked !== false, maxChars: intVal('agent-ctx-cc-maxchars', 2000) },
@@ -1426,18 +1436,27 @@ function readAgentSettings() {
     const hubRadio = document.querySelector('input[name="agent-hubmode"]:checked');
     const intervalVal = intVal('agent-periodic-interval', 10);
 
+    // Look up the stored agent the same way the rest of the file does, so
+    // form-exposed fields overlay (rather than wipe) its sampler keys.
+    const existingAgentId = strVal('agent-config-id') || activeAgentId || '';
+    const existingAgent = (typeof agentManager !== 'undefined' && agentManager && existingAgentId)
+        ? agentManager.getAgent(existingAgentId) : null;
+    const existingResearch = (existingAgent && existingAgent.toolScope) ? existingAgent.toolScope.allowResearch : undefined;
+
     const toolScope = {
         allowCreate: document.getElementById('agent-scope-create')?.checked !== false,
         allowEdit: document.getElementById('agent-scope-edit')?.checked !== false,
         allowDelete: document.getElementById('agent-scope-delete')?.checked === true,
-        allowResearch: false,
+        // Preserved rather than reset: no form control edits this yet.
+        allowResearch: existingResearch === true,
     };
 
-    const samplers = { temperature: floatVal('agent-hub-temperature', 0.7) };
+    const samplers = Object.assign({}, (existingAgent && existingAgent.samplers) ? existingAgent.samplers : {});
+    samplers.temperature = floatVal('agent-hub-temperature', 0.7);
     const topP = readHubSamplerFloat('agent-hub-top-p');
-    if (topP !== undefined) samplers.top_p = topP;
+    if (topP !== undefined) samplers.top_p = topP; else delete samplers.top_p;
     const seedRaw = String(document.getElementById('agent-hub-seed')?.value ?? '').trim();
-    if (seedRaw && Number.isInteger(Number(seedRaw))) samplers.seed = Number(seedRaw);
+    if (seedRaw && Number.isInteger(Number(seedRaw))) samplers.seed = Number(seedRaw); else delete samplers.seed;
 
     return {
         id: strVal('agent-config-id') || undefined,
@@ -1523,6 +1542,9 @@ function strVal(id, def) {
 
 async function loadProposalsForCurrentChat() {
     currentChatId = getChatId();
+    // Captured AFTER currentChatId is set: the module-global may change if
+    // the user switches chats while a request is in flight.
+    const loadedForChatId = currentChatId;
     const chatIdEl = document.getElementById('agent-chat-id');
     if (chatIdEl) chatIdEl.textContent = feedScope === 'all' ? 'All chats' : 'Chat: ' + currentChatId;
 
@@ -1542,8 +1564,11 @@ async function loadProposalsForCurrentChat() {
             }
             proposals = flat;
         } else {
-            const result = await EL_apiFetch('GET', '/proposals/list?chatId=' + encodeURIComponent(currentChatId));
-            proposals = result?.proposals || [];
+            const result = await EL_apiFetch('GET', '/proposals/list?chatId=' + encodeURIComponent(loadedForChatId));
+            proposals = (result?.proposals || []).map(p => {
+                if (p && typeof p === 'object' && !p._chatId) { try { p._chatId = loadedForChatId; } catch {} }
+                return p;
+            });
         }
     } catch (e) {
         const msg = String(e?.message || e || '');
@@ -2352,6 +2377,10 @@ function shouldConfirmAgentAction() {
 async function handleAcceptProposal(id) {
     const p = findProposal(id);
     if (!p) return;
+    if (p.applied) {
+        if (typeof showToast === 'function') showToast('This proposal was already applied.');
+        return;
+    }
 
     if (shouldConfirmAgentAction()) {
         if (!confirm('Accept and apply this proposal to the lorebook? It will be removed from the feed.')) return;
@@ -2363,7 +2392,16 @@ async function handleAcceptProposal(id) {
         try {
             await EL_deleteDecidedProposals([p]);
         } catch (delErr) {
-            if (typeof showToast === 'function') showToast('Applied, but could not remove from feed: ' + (delErr?.message || delErr));
+            // The server record is still pending: keep the card but mark it
+            // decided so a reload cannot apply it a second time.
+            p.applied = true;
+            p.status = 'applied';
+            try {
+                await EL_apiFetch('POST', '/proposals/update-status', { chatId: proposalChatId(p), proposalId: p.id, newStatus: 'applied' });
+            } catch {}
+            renderProposalsFeed(proposals, activeFilter);
+            if (typeof showToast === 'function') showToast('Applied, but the feed entry could not be removed — it is marked applied and cannot be applied again.');
+            return;
         }
         proposals = proposals.filter(x => x.id !== p.id);
         renderProposalsFeed(proposals, activeFilter);
@@ -2391,55 +2429,61 @@ async function handleFeedback(id, text) {
     const p = findProposal(id);
     if (!p) return;
 
+    let feedbackOk = false;
     try {
         await EL_apiFetch('POST', '/proposals/update-status', {
             chatId: proposalChatId(p),
             proposalId: p.id,
-            status: p.status,
+            newStatus: p.status,
             userFeedback: text,
         });
+        feedbackOk = true;
+    } catch (fbErr) {
+        if (typeof showToast === 'function') showToast('Could not record feedback: ' + (fbErr?.message || fbErr));
+    }
 
-        try {
-            if (typeof EL_reviseHubProposal === 'function') {
-                const cfgId = document.getElementById('agent-config-id')?.value || activeAgentId || null;
-                const agent = (typeof agentManager !== 'undefined' && agentManager && cfgId)
-                    ? agentManager.getAgent(cfgId)
-                    : (typeof agentManager !== 'undefined' && agentManager ? agentManager.getAgent(p.agentId) : null);
-                const revised = await EL_reviseHubProposal(agent || {}, p, text);
-                if (revised && typeof revised === 'object') {
-                    // Replace (don't duplicate): the revised copy gets a fresh id.
-                    // Save-then-delete: if the save fails the original is
-                    // untouched; if the trailing delete fails the worst case
-                    // is two visible copies (deny one).
-                    const oldId = p.id;
-                    const newId = (typeof EL_proposalId === 'function') ? EL_proposalId() : ('prop_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8));
-                    Object.assign(p, revised);
-                    p.id = newId;
-                    p.status = 'pending';
-                    delete p.applied;
-                    try {
-                        await EL_apiFetch('POST', '/proposals/save', { chatId: proposalChatId(p), proposal: p });
-                        try { await EL_deleteDecidedProposals([{ ...p, id: oldId, _chatId: proposalChatId(p) }]); } catch {}
-                    } catch (saveErr) {
-                        p.id = oldId;
-                        throw saveErr;
-                    }
+    try {
+        if (typeof EL_reviseHubProposal === 'function') {
+            const cfgId = document.getElementById('agent-config-id')?.value || activeAgentId || null;
+            const agent = (typeof agentManager !== 'undefined' && agentManager && cfgId)
+                ? agentManager.getAgent(cfgId)
+                : (typeof agentManager !== 'undefined' && agentManager ? agentManager.getAgent(p.agentId) : null);
+            const revised = await EL_reviseHubProposal(agent || {}, p, text);
+            if (revised && typeof revised === 'object') {
+                // Replace (don't duplicate): the revised copy gets a fresh id.
+                // Save-then-delete: if the save fails the original is
+                // untouched; if the trailing delete fails the worst case
+                // is two visible copies (deny one).
+                const oldId = p.id;
+                const newId = (typeof EL_proposalId === 'function') ? EL_proposalId() : ('prop_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8));
+                Object.assign(p, revised);
+                p.id = newId;
+                p.status = 'pending';
+                delete p.applied;
+                try {
+                    await EL_apiFetch('POST', '/proposals/save', { chatId: proposalChatId(p), proposal: p });
+                    try { await EL_deleteDecidedProposals([{ ...p, id: oldId, _chatId: proposalChatId(p) }]); } catch {}
+                } catch (saveErr) {
+                    p.id = oldId;
+                    throw saveErr;
                 }
             }
-        } catch (revErr) {
-            if (typeof showToast === 'function') showToast('Revise failed: ' + (revErr?.message || revErr));
         }
-
-        renderProposalsFeed(proposals, activeFilter);
-        if (typeof showToast === 'function') showToast('Feedback recorded');
-    } catch (e) {
-        if (typeof showToast === 'function') showToast('Failed: ' + e.message);
+    } catch (revErr) {
+        if (typeof showToast === 'function') showToast('Revise failed: ' + (revErr?.message || revErr));
     }
+
+    renderProposalsFeed(proposals, activeFilter);
+    if (feedbackOk && typeof showToast === 'function') showToast('Feedback recorded');
 }
 
 async function handleApplyProposal(id) {
     const p = findProposal(id);
-    if (!p || p.applied) return;
+    if (!p) return;
+    if (p.applied) {
+        if (typeof showToast === 'function') showToast('This proposal was already applied.');
+        return;
+    }
 
     if (shouldConfirmAgentAction()) {
         if (!confirm('Apply this proposal to the lorebook? It will be removed from the feed.')) return;
@@ -2450,9 +2494,15 @@ async function handleApplyProposal(id) {
         try {
             await EL_deleteDecidedProposals([p]);
         } catch (delErr) {
+            // The server record is still pending: keep the card but mark it
+            // decided so a reload cannot apply it a second time.
             p.applied = true;
+            p.status = 'applied';
+            try {
+                await EL_apiFetch('POST', '/proposals/update-status', { chatId: proposalChatId(p), proposalId: p.id, newStatus: 'applied' });
+            } catch {}
             renderProposalsFeed(proposals, activeFilter);
-            if (typeof showToast === 'function') showToast('Applied, but could not remove from feed: ' + (delErr?.message || delErr));
+            if (typeof showToast === 'function') showToast('Applied, but the feed entry could not be removed — it is marked applied and cannot be applied again.');
             return;
         }
         proposals = proposals.filter(x => x.id !== p.id);
@@ -2464,7 +2514,7 @@ async function handleApplyProposal(id) {
 }
 
 async function handleAcceptAll() {
-    const pending = proposals.filter(p => p.status === 'pending');
+    const pending = proposals.filter(p => p.status === 'pending' && !p.applied);
     if (pending.length === 0) return;
     if (!confirm('Accept and apply all ' + pending.length + ' pending proposals? Decided proposals are removed from the feed.')) return;
 
@@ -2477,11 +2527,27 @@ async function handleAcceptAll() {
             applied.push(p);
         } catch (_) {}
     }
+    // Only drop a card from memory when its server-side delete actually
+    // succeeded; otherwise keep it marked applied so it cannot be applied
+    // again. Batched first (existing behaviour); per-card fallback on failure.
+    const removedAcceptIds = new Set();
     try {
         if (applied.length) await EL_deleteDecidedProposals(applied);
-    } catch (_) {}
-    const appliedIds = new Set(applied.map(p => p.id));
-    proposals = proposals.filter(x => !appliedIds.has(x.id));
+        for (const p of applied) removedAcceptIds.add(p.id);
+    } catch (_) {
+        for (const p of applied) {
+            try {
+                await EL_deleteDecidedProposals([p]);
+                removedAcceptIds.add(p.id);
+            } catch (_) {
+                p.status = 'applied';
+                try {
+                    await EL_apiFetch('POST', '/proposals/update-status', { chatId: proposalChatId(p), proposalId: p.id, newStatus: 'applied' });
+                } catch {}
+            }
+        }
+    }
+    proposals = proposals.filter(x => !removedAcceptIds.has(x.id));
     renderProposalsFeed(proposals, activeFilter);
     if (typeof showToast === 'function') showToast('Accepted ' + applied.length + '/' + pending.length + ' proposals');
 }
@@ -2518,11 +2584,27 @@ async function handleApplyAllAccepted() {
             applied.push(p);
         } catch (_) {}
     }
+    // Only drop a card from memory when its server-side delete actually
+    // succeeded; otherwise keep it marked applied so it cannot be applied
+    // again. Batched first (existing behaviour); per-card fallback on failure.
+    const removedApplyIds = new Set();
     try {
         if (applied.length) await EL_deleteDecidedProposals(applied);
-    } catch (_) {}
-    const appliedIds = new Set(applied.map(p => p.id));
-    proposals = proposals.filter(x => !appliedIds.has(x.id));
+        for (const p of applied) removedApplyIds.add(p.id);
+    } catch (_) {
+        for (const p of applied) {
+            try {
+                await EL_deleteDecidedProposals([p]);
+                removedApplyIds.add(p.id);
+            } catch (_) {
+                p.status = 'applied';
+                try {
+                    await EL_apiFetch('POST', '/proposals/update-status', { chatId: proposalChatId(p), proposalId: p.id, newStatus: 'applied' });
+                } catch {}
+            }
+        }
+    }
+    proposals = proposals.filter(x => !removedApplyIds.has(x.id));
     renderProposalsFeed(proposals, activeFilter);
     if (typeof showToast === 'function') showToast('Applied ' + applied.length + '/' + accepted.length + ' proposals');
 }

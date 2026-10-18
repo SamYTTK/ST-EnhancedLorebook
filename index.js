@@ -69,7 +69,7 @@ function openStandaloneApp(tab = '') {
 function sendPeriodicTriggerToApp(agentIds) {
     if (appWindow && !appWindow.closed) {
         const context = SillyTavern.getContext();
-        const chatInfo = { characterId: context.characterId, chatId: context.chat?.chat_id };
+        const chatInfo = { characterId: context.characterId, chatId: context.chatId ?? context.chat?.chat_id };
         appWindow.postMessage({
             source: 'enhanced-lorebook',
             type: 'el-agent-periodic-trigger',
@@ -83,7 +83,7 @@ function sendPeriodicTriggerToApp(agentIds) {
 function sendChatChangedToApp() {
     if (appWindow && !appWindow.closed) {
         const context = SillyTavern.getContext();
-        appWindow.postMessage({ source: 'enhanced-lorebook', type: 'el-agent-chat-changed', characterId: context.characterId, chatId: context.chat?.chat_id }, window.location.origin);
+        appWindow.postMessage({ source: 'enhanced-lorebook', type: 'el-agent-chat-changed', characterId: context.characterId, chatId: context.chatId ?? context.chat?.chat_id }, window.location.origin);
     }
 }
 
@@ -104,7 +104,7 @@ function sendAgentsSyncToApp() {
 function isAgentActiveForChat(agent, context) {
     if (!agent || agent.scope !== 'local') return true;
     const charId = context?.characterId ?? 'no-char';
-    const chatFile = context?.chat?.chat_id ?? 'default';
+    const chatFile = context?.chatId ?? context?.chat?.chat_id ?? 'default';
     const chatId = charId + '_' + chatFile;
     if (agent.boundCharacterId && String(agent.boundCharacterId) !== String(charId)) return false;
     if (agent.boundChatId && String(agent.boundChatId) !== String(chatId)) return false;
@@ -261,7 +261,7 @@ function setupPostMessageBridge() {
                 const ctx2 = SillyTavern.getContext();
                 if (e.source) {
                     const agents = ctx2.extensionSettings?.SillyTavernEnhancedLorebook?.agents || [];
-                    e.source.postMessage({ source: 'enhanced-lorebook', type: 'el-agent-chat-info', characterId: ctx2.characterId, chatId: ctx2.chat?.chat_id, agents }, window.location.origin);
+                    e.source.postMessage({ source: 'enhanced-lorebook', type: 'el-agent-chat-info', characterId: ctx2.characterId, chatId: ctx2.chatId ?? ctx2.chat?.chat_id, agents }, window.location.origin);
                 }
                 break;
             }
@@ -619,7 +619,7 @@ async function elRefreshQuickTaskBadge() {
     try {
         const context = SillyTavern.getContext();
         const charId = context?.characterId ?? 'no-char';
-        const chatFile = context?.chat?.chat_id ?? context?.chatId ?? 'default';
+        const chatFile = context?.chatId ?? context?.chat?.chat_id ?? 'default';
         const chatId = charId + '_' + chatFile;
         const headers = (typeof context?.getRequestHeaders === 'function') ? context.getRequestHeaders() : { 'Content-Type': 'application/json' };
         const resp = await fetch('/api/plugins/enhanced-lorebook-agent/proposals/list?chatId=' + encodeURIComponent(chatId), { headers });

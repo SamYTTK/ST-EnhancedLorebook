@@ -1007,6 +1007,10 @@
                             <input type="checkbox" id="edit-prevent">
                             <label for="edit-prevent">Prevent Recursion</label>
                         </div>
+                        <div class="form-group row" style="margin-bottom: 0;">
+                            <input type="checkbox" id="edit-use-probability">
+                            <label for="edit-use-probability">Use Probability</label>
+                        </div>
                     </div>
                 </details>
 
@@ -1182,6 +1186,11 @@
                         <input type="checkbox" id="batch-apply-probability">
                         <label for="batch-apply-probability">Probability (%):</label>
                         <input type="number" id="batch-prob-val" value="100" min="0" max="100">
+                    </div>
+                    <div class="form-group row">
+                        <input type="checkbox" id="batch-apply-use-probability">
+                        <label for="batch-apply-use-probability">Use Probability:</label>
+                        <input type="checkbox" id="batch-use-probability-val">
                     </div>
                     <div class="form-group row">
                         <input type="checkbox" id="batch-apply-constant">
@@ -1742,16 +1751,16 @@
     <div id="xml-copy-toast" class="toast-notification">Template copied to clipboard!</div>
 
     <script src="logger.js?v=6"></script>
-    <script src="agent-config-schema.js?v=8"></script>
+    <script src="agent-config-schema.js?v=9"></script>
     <script src="context-builder.js?v=1"></script>
-    <script src="hub-client.js?v=2"></script>
-    <script src="hub-tools.js?v=1"></script>
-    <script src="agent-chat.js?v=7"></script>
-    <script src="agent-manager.js?v=8"></script>
+    <script src="hub-client.js?v=3"></script>
+    <script src="hub-tools.js?v=2"></script>
+    <script src="agent-chat.js?v=8"></script>
+    <script src="agent-manager.js?v=9"></script>
     <script src="agent-backup.js?v=7"></script>
     <script src="worldinfo-guard.js?v=7"></script>
     <script src="folder-url.js?v=6"></script>
-    <script src="app.js?v=8"></script>
-    <script src="agent-ui.js?v=9"></script>
+    <script src="app.js?v=9"></script>
+    <script src="agent-ui.js?v=10"></script>
 </body>
 </html>

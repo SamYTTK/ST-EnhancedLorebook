@@ -1,6 +1,6 @@
 {
     "name":  "enhanced-lorebook-agent",
-    "version":  "1.4.0",
+    "version":  "1.4.1",
     "description":  "Storage backend for ST-EnhancedLorebook Hub v2 agents: proposals, agent chats, backups, snapshots, trash, audit. (LLM execution moved to ST-RequestHub.)",
     "main":  "index.js",
     "type":  "module",

@@ -6,7 +6,7 @@ import sanitize from 'sanitize-filename';
 import { getAllUserHandles, getUserDirectories } from '../../src/users.js';
 
 const PLUGIN_NAME = 'enhanced-lorebook-agent';
-const PLUGIN_VERSION = '1.4.0';
+const PLUGIN_VERSION = '1.4.1';
 
 // Hub v2: LLM execution moved to ST-RequestHub. This plugin keeps STORAGE ONLY
 // (proposals, agent chats, backups, snapshots, trash, audit, logs).
@@ -1277,6 +1277,11 @@ async function clearAgentChat(req, res) {
 const PROPOSAL_REQUIRED_FIELDS = ['id', 'action', 'lorebookName', 'status'];
 const MAX_PENDING_PROPOSALS = 100;
 
+// Statuses the client actually uses (creation, accept-all, legacy auto-accept
+// records, and the Denied filter pill). Unknown values are rejected so a typo
+// can never write a status the feed's filters will not match.
+const PROPOSAL_STATUSES = Object.freeze(new Set(['pending', 'accepted', 'auto-accepted', 'denied', 'applied']));
+
 /**
  * Read the proposals file for a given chatId.
  * Returns the parsed object or null if it doesn't exist or is corrupt.
@@ -1458,7 +1463,9 @@ async function listAllProposals(req, res) {
  * Update the status (and optionally userFeedback) of a single proposal.
  */
 async function updateProposalStatus(req, res) {
-    const { chatId, proposalId, newStatus, userFeedback } = req.body || {};
+    const { chatId, proposalId, userFeedback } = req.body || {};
+    // `status` is accepted as a legacy alias: a client previously sent the wrong key.
+    const newStatus = req.body?.newStatus ?? req.body?.status;
 
     const sanitizedChatId = sanitizeString(chatId);
     const sanitizedProposalId = sanitizeString(proposalId);
@@ -1473,6 +1480,9 @@ async function updateProposalStatus(req, res) {
     }
     if (!sanitizedStatus) {
         return res.status(400).json({ error: 'newStatus is required' });
+    }
+    if (!PROPOSAL_STATUSES.has(sanitizedStatus)) {
+        return res.status(400).json({ error: `newStatus must be one of: ${[...PROPOSAL_STATUSES].join(', ')}` });
     }
     if (!isValidPathComponent(sanitizedChatId)) {
         return res.status(400).json({ error: 'chatId contains invalid characters' });
@@ -1507,7 +1517,9 @@ async function updateProposalStatus(req, res) {
  * Update the status of multiple proposals at once (Accept All / Deny All).
  */
 async function batchUpdateProposalStatus(req, res) {
-    const { chatId, proposalIds, newStatus } = req.body || {};
+    const { chatId, proposalIds } = req.body || {};
+    // `status` is accepted as a legacy alias: a client previously sent the wrong key.
+    const newStatus = req.body?.newStatus ?? req.body?.status;
 
     const sanitizedChatId = sanitizeString(chatId);
     const sanitizedStatus = sanitizeString(newStatus);
@@ -1520,6 +1532,9 @@ async function batchUpdateProposalStatus(req, res) {
     }
     if (!sanitizedStatus) {
         return res.status(400).json({ error: 'newStatus is required' });
+    }
+    if (!PROPOSAL_STATUSES.has(sanitizedStatus)) {
+        return res.status(400).json({ error: `newStatus must be one of: ${[...PROPOSAL_STATUSES].join(', ')}` });
     }
     if (!isValidPathComponent(sanitizedChatId)) {
         return res.status(400).json({ error: 'chatId contains invalid characters' });
@@ -1551,6 +1566,7 @@ async function batchUpdateProposalStatus(req, res) {
  * POST /api/plugins/enhanced-lorebook-agent/proposals/delete
  *
  * Delete specific proposals from a chat's file.
+ * Idempotent: deleting an id that is already gone is a harmless no-op.
  */
 async function deleteProposals(req, res) {
     const { chatId, proposalIds } = req.body || {};
@@ -1570,8 +1586,10 @@ async function deleteProposals(req, res) {
     const filePath = path.join(getStorageRoot(), 'proposals', `${sanitizedChatId}.json`);
     return withFileLock(filePath, async () => {
         const existing = readProposalsFile(sanitizedChatId);
+        // Idempotent: a retry after a partial delete (or an already-empty
+        // feed) is a harmless no-op, never a failure that leaves a record stuck.
         if (!existing) {
-            return res.status(404).json({ error: 'No proposals found for this chat' });
+            return res.json({ success: true, removedCount: 0 });
         }
 
         const idSet = new Set(proposalIds);

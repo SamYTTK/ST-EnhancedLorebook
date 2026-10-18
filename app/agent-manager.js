@@ -183,7 +183,7 @@ class AgentManager {
 
     _getChatId(st) {
         const charId = st?.characterId ?? 'no-char';
-        const chatFile = st?.chat?.chat_id ?? 'default';
+        const chatFile = st?.chatId ?? st?.chat?.chat_id ?? 'default';
         return charId + '_' + chatFile;
     }
 

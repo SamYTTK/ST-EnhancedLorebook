@@ -7,6 +7,13 @@ let currentLorebookName = null;
 let currentLorebookData = null;
 let selectedEntries = new Set();
 let lastClickedEntryUid = null;
+// Re-entrancy guard with a staleness escape: a request that never answers must not
+// wedge polling forever. The token stops a stale tick's finally from releasing a
+// newer tick's lock.
+const SYNC_POLL_STUCK_MS = 60000;
+let _syncPollSeq = 0;
+let _syncPollActive = null;   // { id, startedAt }
+let _elRenderCtx = null;
 let extensionSettings = {};
 let expandedFolders = new Set();
 let agentEngine = null;
@@ -111,6 +118,8 @@ const sync = {
         charLoreSig: '',
         entriesSig: '',
         entriesBook: null,
+        revision: { settings: null, book: null, worldsDir: null },
+        revisionBook: null,
     },
     lastSave: {},
     timer: null,
@@ -484,12 +493,32 @@ function namesSignature(names) {
     return (names || []).slice().sort().join('\n');
 }
 
+/**
+ * Signature of the open book's entries, used to decide whether a server-side change
+ * needs re-rendering.
+ *
+ * Built on EL_entryFingerprint (hub-tools.js) so it covers EVERY field in
+ * EL_ENTRY_FIELDS, including the full content/key/comment text and the flag fields
+ * an agent actually edits (order, position, role, depth, probability, disable,
+ * constant, ...). The previous version hashed only content LENGTH, the joined keys
+ * and comment LENGTH, so it was blind to every same-length edit and to every one of
+ * those flags — which made the UI show stale state indefinitely after a run.
+ *
+ * uids are sorted so an equivalent book serialised in a different key order does not
+ * read as a change and trigger a spurious re-render.
+ */
 function entriesSignature(book) {
     if (!book || !book.entries) return '';
     const parts = [];
-    for (const uid of Object.keys(book.entries)) {
+    const uids = Object.keys(book.entries).sort();
+    for (const uid of uids) {
         const e = book.entries[uid] || {};
-        parts.push(uid + ':' + (e.content ? e.content.length : 0) + ':' + safeJoin(e.key) + ':' + (e.comment || '').length);
+        const fp = (typeof EL_entryFingerprint === 'function')
+            ? EL_entryFingerprint(e)
+            // Degrade to the previous length-based hash rather than to '' — a missing
+            // helper must not make the signature weaker than it was before.
+            : (String(e.content || '').length + ':' + safeJoin(e.key) + ':' + String(e.comment || '').length);
+        parts.push(uid + ':' + fp);
     }
     return parts.join('|');
 }
@@ -515,6 +544,47 @@ async function fetchSettingsData() {
     } catch (e) {
         console.error('Enhanced Lorebook: settings poll failed', e);
         return null;
+    }
+}
+
+/**
+ * Cheap server probe: mtimeMs/size of settings.json, mtimeMs of the worlds
+ * directory, and mtimeMs/size of the named book's file.
+ * Returns the parsed `{ ok, settings, book, worldsDir }` object, or null on ANY
+ * failure (non-2xx, network error, parse error, timeout). Never throws. A null
+ * return means the probe is unavailable (old plugin / server not restarted /
+ * plugin down) and the caller must fall back to the unconditional fetches.
+ */
+async function EL_fetchRevision(book) {
+    let timeoutId = null;
+    let controller = null;
+    try {
+        let headers = { 'Content-Type': 'application/json' };
+        try {
+            if (typeof stContext !== 'undefined' && stContext && typeof stContext.getRequestHeaders === 'function') {
+                headers = stContext.getRequestHeaders();
+            }
+        } catch (e) {}
+        const url = '/api/plugins/enhanced-lorebook-agent/revision' + (book ? '?book=' + encodeURIComponent(book) : '');
+        try {
+            if (typeof AbortController !== 'undefined') {
+                controller = new AbortController();
+                timeoutId = setTimeout(() => { try { controller.abort(); } catch (e) {} }, 8000);
+            }
+        } catch (e) {
+            controller = null;
+            timeoutId = null;
+        }
+        const opts = { method: 'GET', headers: headers, cache: 'no-cache' };
+        if (controller) opts.signal = controller.signal;
+        const resp = await fetch(url, opts);
+        if (!resp || !resp.ok) return null;
+        const data = await resp.json();
+        return data;
+    } catch (e) {
+        return null;
+    } finally {
+        try { if (timeoutId !== null) clearTimeout(timeoutId); } catch (e) {}
     }
 }
 
@@ -589,62 +659,132 @@ function applyEntriesData(name, data) {
 
 async function syncPollTick() {
     if (document.hidden || !sync.enabled) return;
-
-    const settingsData = await fetchSettingsData();
-    if (!settingsData) return;
-    sync.settingsData = settingsData;
-
-    // LIST: external creates/deletes emit no events, so reconcile the parent's
-    // world_names against the authoritative server list.
-    if (Array.isArray(settingsData.world_names)) {
-        const authSig = namesSignature(settingsData.world_names);
-        const parentNames = stContext.getWorldInfoNames();
-        const parentSig = namesSignature(parentNames);
-        if (authSig !== parentSig) {
-            const authNames = settingsData.world_names;
-            const added = authNames.filter(n => !parentNames.includes(n));
-            try {
-                if (typeof stContext.updateWorldInfoList === 'function') {
-                    await stContext.updateWorldInfoList();
-                }
-            } catch (e) {
-                console.error('Enhanced Lorebook: failed to re-sync world info list', e);
-            }
-            scheduleRegion(SYNC_REGIONS.LIST);
-            // Lorebook duplication with URL-aware folder clone (extension-only, no ST pollution)
-            if (added.length) {
-                // Defer a tick so ST has the new file on disk
-                setTimeout(() => {
-                    for (const nb of added) EL_checkAndPromptLorebookFolderClone(nb).catch(() => {});
-                }, 800);
-            }
-        }
-    }
-
-    // ACTIVE: globalSelect / charLore bindings changed.
-    const wi = settingsData?.world_info_settings?.world_info;
-    const gsSig = namesSignature(wi?.globalSelect || []);
-    if (gsSig !== sync.poll.globalSelectSig) {
-        sync.poll.globalSelectSig = gsSig;
-        refreshActiveGlobalsFrom(wi?.globalSelect || []);
-    }
-    const charSig = JSON.stringify(wi?.charLore || []);
-    if (charSig !== sync.poll.charLoreSig) {
-        sync.poll.charLoreSig = charSig;
-        scheduleRegion(SYNC_REGIONS.ACTIVE_CHAR);
-    }
-
-    // ENTRIES: the open book changed on the server without an event.
-    if (currentLorebookName && currentViewMode === 'lorebook' && !isEntryEditorOpen()) {
+    const now = Date.now();
+    if (_syncPollActive && (now - _syncPollActive.startedAt) < SYNC_POLL_STUCK_MS) return;
+    const _myPollId = ++_syncPollSeq;
+    _syncPollActive = { id: _myPollId, startedAt: now };
+    try {
+        // Cheap probe first: mtimeMs/size of settings.json, mtimeMs of the worlds
+        // directory, and mtimeMs/size of the open book. world_names is NOT stored in
+        // settings.json — SillyTavern derives it from a live readdirSync of the
+        // user's worlds directory — so adding or deleting a lorebook file leaves
+        // settings.json untouched and the cached snapshot would never refresh.
+        // That is why the directory mtime is part of the settings signal.
+        // rev === null means the probe is unavailable (old plugin / server not
+        // restarted / plugin down) — fall back to EXACTLY today's behaviour: fetch
+        // settings and the book unconditionally, so a user who has not restarted
+        // sees no behaviour change and no errors. The probe is fail-open.
         const book = currentLorebookName;
-        const savedBefore = sync.lastSave[book] || 0;
-        const serverData = await ELG_fetchServerState(book);
-        if (serverData && serverData.entries && (sync.lastSave[book] || 0) === savedBefore) {
-            const serverSig = entriesSignature(serverData);
-            if (serverSig !== sync.poll.entriesSig || sync.poll.entriesBook !== book) {
-                applyEntriesData(book, serverData);
+        const rev = await EL_fetchRevision(book);
+
+        let settingsData = null;
+        if (rev === null) {
+            settingsData = await fetchSettingsData();
+            if (!settingsData) return;
+            sync.settingsData = settingsData;
+        } else {
+            if (!sync.poll.revision) sync.poll.revision = { settings: null, book: null, worldsDir: null };
+            const lastSettings = sync.poll.revision.settings || null;
+            const curSettings = rev.settings || null;
+            const lastWorlds = sync.poll.revision.worldsDir || null;
+            const curWorlds = rev.worldsDir || null;
+            const settingsJsonChanged = !curSettings || !lastSettings || curSettings.mtimeMs !== lastSettings.mtimeMs || curSettings.size !== lastSettings.size;
+            // Fail-open: a null directory stat (unresolvable) or no prior observation
+            // means "unknown", so refetch rather than skip. Compare mtimeMs ONLY —
+            // a directory's size is 0 on Windows and its mtime only moves on
+            // add/remove (not on modify), which is exactly the create/delete signal.
+            const worldsChanged = !curWorlds || !lastWorlds || curWorlds.mtimeMs !== lastWorlds.mtimeMs;
+            const settingsChanged = settingsJsonChanged || worldsChanged;
+            if (settingsChanged) {
+                settingsData = await fetchSettingsData();
+                if (!settingsData) return;
+                sync.settingsData = settingsData;
+                sync.poll.revision.settings = curSettings ? { mtimeMs: curSettings.mtimeMs, size: curSettings.size } : null;
+                sync.poll.revision.worldsDir = curWorlds ? { mtimeMs: curWorlds.mtimeMs } : null;
+            } else {
+                settingsData = sync.settingsData;
+                if (!settingsData) return;
             }
         }
+
+        // LIST: external creates/deletes emit no events, so reconcile the parent's
+        // world_names against the authoritative server list.
+        if (settingsData && Array.isArray(settingsData.world_names)) {
+            const authSig = namesSignature(settingsData.world_names);
+            const parentNames = stContext.getWorldInfoNames();
+            const parentSig = namesSignature(parentNames);
+            if (authSig !== parentSig) {
+                const authNames = settingsData.world_names;
+                const added = authNames.filter(n => !parentNames.includes(n));
+                try {
+                    if (typeof stContext.updateWorldInfoList === 'function') {
+                        await stContext.updateWorldInfoList();
+                    }
+                } catch (e) {
+                    console.error('Enhanced Lorebook: failed to re-sync world info list', e);
+                }
+                scheduleRegion(SYNC_REGIONS.LIST);
+                // Lorebook duplication with URL-aware folder clone (extension-only, no ST pollution)
+                if (added.length) {
+                    // Defer a tick so ST has the new file on disk
+                    setTimeout(() => {
+                        for (const nb of added) EL_checkAndPromptLorebookFolderClone(nb).catch(() => {});
+                    }, 800);
+                }
+            }
+        }
+
+        // ACTIVE: globalSelect / charLore bindings changed.
+        if (settingsData) {
+            const wi = settingsData?.world_info_settings?.world_info;
+            const gsSig = namesSignature(wi?.globalSelect || []);
+            if (gsSig !== sync.poll.globalSelectSig) {
+                sync.poll.globalSelectSig = gsSig;
+                refreshActiveGlobalsFrom(wi?.globalSelect || []);
+            }
+            const charSig = JSON.stringify(wi?.charLore || []);
+            if (charSig !== sync.poll.charLoreSig) {
+                sync.poll.charLoreSig = charSig;
+                scheduleRegion(SYNC_REGIONS.ACTIVE_CHAR);
+            }
+        }
+
+        // ENTRIES: the open book changed on the server without an event.
+        if (currentLorebookName && currentViewMode === 'lorebook' && !isEntryEditorOpen()) {
+            const bookNow = currentLorebookName;
+            const savedBefore = sync.lastSave[bookNow] || 0;
+            if (rev === null) {
+                const serverData = await ELG_fetchServerState(bookNow);
+                if (serverData && serverData.entries && (sync.lastSave[bookNow] || 0) === savedBefore) {
+                    const serverSig = entriesSignature(serverData);
+                    if (serverSig !== sync.poll.entriesSig || sync.poll.entriesBook !== bookNow) {
+                        applyEntriesData(bookNow, serverData);
+                    }
+                }
+            } else {
+                if (!sync.poll.revision) sync.poll.revision = { settings: null, book: null, worldsDir: null };
+                const lastBook = sync.poll.revision.book || null;
+                const curBook = rev.book || null;
+                const bookChanged = sync.poll.revisionBook !== bookNow || !curBook || !lastBook || curBook.mtimeMs !== lastBook.mtimeMs || curBook.size !== lastBook.size;
+                if (!bookChanged) {
+                    // Unchanged: skip the whole-book fetch AND the signature
+                    // computation entirely (entriesSignature reads every entry).
+                    // sync.lastSave and sync.poll.entriesSig are left untouched.
+                } else {
+                    const serverData = await ELG_fetchServerState(bookNow);
+                    if (serverData && serverData.entries && (sync.lastSave[bookNow] || 0) === savedBefore) {
+                        sync.poll.revision.book = curBook ? { mtimeMs: curBook.mtimeMs, size: curBook.size } : null;
+                        sync.poll.revisionBook = bookNow;
+                        const serverSig = entriesSignature(serverData);
+                        if (serverSig !== sync.poll.entriesSig || sync.poll.entriesBook !== bookNow) {
+                            applyEntriesData(bookNow, serverData);
+                        }
+                    }
+                }
+            }
+        }
+    } finally {
+        if (_syncPollActive && _syncPollActive.id === _myPollId) _syncPollActive = null;
     }
 }
 
@@ -1104,6 +1244,106 @@ function ensureFoldersStructure(lbName, { prune = true } = {}) {
     });
 }
 
+/**
+ * Per-render memoisation context. renderEntries builds ONE context per render so
+ * the per-item hot spots below run in O(1) instead of re-walking the tree.
+ * Every helper falls back to its direct computation when no context is active,
+ * so calls from outside a render stay correct.
+ */
+function EL_buildRenderContext(query) {
+    const term = (query || '').toLowerCase();
+    let startsWithRegex = null;
+    let containsRegex = null;
+    if (term) {
+        const escaped = escapeRegex(term);
+        startsWithRegex = new RegExp('^\\b' + escaped + '\\b', 'i');
+        containsRegex = new RegExp('\\b' + escaped + '\\b', 'i');
+    }
+    const folders = (typeof extensionSettings !== 'undefined' && extensionSettings && extensionSettings.folders && currentLorebookName) ? (extensionSettings.folders[currentLorebookName] || []) : [];
+    const folderById = new Map();
+    const childrenMap = new Map();
+    for (const f of folders) {
+        if (!f || f.id === undefined || f.id === null) continue;
+        if (!folderById.has(f.id)) folderById.set(f.id, f);
+        if (f.parentId) {
+            if (!childrenMap.has(f.parentId)) childrenMap.set(f.parentId, []);
+            childrenMap.get(f.parentId).push(f);
+        }
+    }
+    return {
+        query: term,
+        startsWithRegex: startsWithRegex,
+        containsRegex: containsRegex,
+        folderById: folderById,
+        childrenMap: childrenMap,
+        scoreMap: new Map(),
+        entryScoreMap: new Map(),
+        countMap: new Map(),
+    };
+}
+
+function EL_fillFolderCounts(ctx) {
+    const visiting = new Set();
+    function count(id) {
+        if (ctx.countMap.has(id)) return ctx.countMap.get(id);
+        if (visiting.has(id)) {
+            ctx.countMap.set(id, 0);
+            return 0;
+        }
+        const f = ctx.folderById.get(id);
+        if (!f) {
+            ctx.countMap.set(id, 0);
+            return 0;
+        }
+        visiting.add(id);
+        let c = Array.isArray(f.entries) ? f.entries.length : 0;
+        const kids = ctx.childrenMap.get(id) || [];
+        for (const k of kids) c += count(k.id);
+        visiting.delete(id);
+        ctx.countMap.set(id, c);
+        return c;
+    }
+    for (const id of ctx.folderById.keys()) count(id);
+}
+
+function EL_renderEntryScore(ctx, uid) {
+    const key = String(uid);
+    if (ctx.entryScoreMap.has(key)) return ctx.entryScoreMap.get(key);
+    const s = getMatchScore({ type: 'entry', uid: key }, ctx.query);
+    ctx.entryScoreMap.set(key, s);
+    return s;
+}
+
+function EL_renderFolderScore(ctx, folderId) {
+    if (ctx.scoreMap.has(folderId)) return ctx.scoreMap.get(folderId);
+    const visiting = ctx._scoreVisiting || (ctx._scoreVisiting = new Set());
+    if (visiting.has(folderId)) {
+        ctx.scoreMap.set(folderId, 0);
+        return 0;
+    }
+    const f = ctx.folderById.get(folderId);
+    if (!f) {
+        ctx.scoreMap.set(folderId, 0);
+        return 0;
+    }
+    visiting.add(folderId);
+    let max = getMatchScore({ type: 'folder', data: f }, ctx.query);
+    const kids = ctx.childrenMap.get(folderId) || [];
+    for (const k of kids) {
+        const s = EL_renderFolderScore(ctx, k.id);
+        if (s > max) max = s;
+    }
+    if (Array.isArray(f.entries)) {
+        for (const uid of f.entries) {
+            const s = EL_renderEntryScore(ctx, uid);
+            if (s > max) max = s;
+        }
+    }
+    visiting.delete(folderId);
+    ctx.scoreMap.set(folderId, max);
+    return max;
+}
+
 function getFolderPathName(folderId) {
     const folders = extensionSettings.folders[currentLorebookName] || [];
     const path = [];
@@ -1120,6 +1360,9 @@ function getFolderPathName(folderId) {
 }
 
 function getFolderRecursiveCount(folderId) {
+    if (_elRenderCtx && _elRenderCtx.countMap && _elRenderCtx.countMap.has(folderId)) {
+        return _elRenderCtx.countMap.get(folderId);
+    }
     const folders = extensionSettings.folders[currentLorebookName] || [];
     const currentFolder = folders.find(f => f.id === folderId);
     if (!currentFolder) return 0;
@@ -1227,13 +1470,20 @@ function getMatchScore(item, query) {
     if (!query) return 0;
     const term = query.toLowerCase();
 
+    let startsWithRegex = null;
+    let containsRegex = null;
+    if (_elRenderCtx && _elRenderCtx.query === term && _elRenderCtx.startsWithRegex && _elRenderCtx.containsRegex) {
+        startsWithRegex = _elRenderCtx.startsWithRegex;
+        containsRegex = _elRenderCtx.containsRegex;
+    } else {
+        const escapedFresh = escapeRegex(term);
+        startsWithRegex = new RegExp('^\\b' + escapedFresh + '\\b', 'i');
+        containsRegex = new RegExp('\\b' + escapedFresh + '\\b', 'i');
+    }
+
     if (item.type === 'folder') {
         const name = (item.data.name || '').toLowerCase();
         if (name === term) return 10000;
-        
-        const escaped = escapeRegex(term);
-        const startsWithRegex = new RegExp('^\\b' + escaped + '\\b', 'i');
-        const containsRegex = new RegExp('\\b' + escaped + '\\b', 'i');
         
         if (startsWithRegex.test(name)) return 5000;
         if (containsRegex.test(name)) return 2000;
@@ -1246,10 +1496,6 @@ function getMatchScore(item, query) {
         const keys = (Array.isArray(entry.key) ? entry.key : []).map(k => String(k).toLowerCase());
         
         if (comment === term || keys.includes(term)) return 10000;
-        
-        const escaped = escapeRegex(term);
-        const startsWithRegex = new RegExp('^\\b' + escaped + '\\b', 'i');
-        const containsRegex = new RegExp('\\b' + escaped + '\\b', 'i');
         
         if (startsWithRegex.test(comment) || keys.some(k => startsWithRegex.test(k))) return 5000;
         if (containsRegex.test(comment) || keys.some(k => containsRegex.test(k))) return 2000;
@@ -1266,6 +1512,18 @@ function getMatchScore(item, query) {
 
 function getItemMaxScore(item, query) {
     if (!query) return 0;
+    const term = (query || '').toLowerCase();
+    if (_elRenderCtx && _elRenderCtx.query === term) {
+        if (item.type === 'entry') {
+            return EL_renderEntryScore(_elRenderCtx, item.uid);
+        }
+        const fid = item && item.data ? item.data.id : undefined;
+        if (fid !== undefined && fid !== null) {
+            if (_elRenderCtx.folderById && _elRenderCtx.folderById.has(fid)) {
+                return EL_renderFolderScore(_elRenderCtx, fid);
+            }
+        }
+    }
     if (item.type === 'entry') {
         return getMatchScore(item, query);
     }
@@ -1290,60 +1548,79 @@ function renderEntries() {
     els.entriesContainer.innerHTML = '';
     if (!currentLorebookName) return;
 
-    selectedEntries.clear();
-    lastClickedEntryUid = null;
+    // Preserve the selection across re-renders (bulk workflows were destroyed by any
+    // sync tick or keystroke). Only drop uids that no longer exist in the book — prune
+    // against the book itself, not the filtered view, since a search-hidden entry is
+    // still selected.
+    if (selectedEntries.size) {
+        const live = currentLorebookData && currentLorebookData.entries ? currentLorebookData.entries : {};
+        for (const uid of Array.from(selectedEntries)) {
+            if (!live[uid]) selectedEntries.delete(uid);
+        }
+    }
     updateBatchButton();
     const sortSelect = document.getElementById('sort-entries');
     const sortMode = sortSelect ? sortSelect.value : 'order_desc';
     const query = els.searchEntries ? els.searchEntries.value.trim().toLowerCase() : '';
 
-    const sortFn = (a, b) => {
-        if (sortMode === 'search') {
-            const scoreA = getItemMaxScore(a, query);
-            const scoreB = getItemMaxScore(b, query);
-            if (scoreA !== scoreB) {
-                return scoreB - scoreA;
-            }
-            return (b.order ?? 100) - (a.order ?? 100);
-        } else if (sortMode === 'order_desc') {
-            return (b.order ?? 100) - (a.order ?? 100);
-        } else if (sortMode === 'order_asc') {
-            return (a.order ?? 100) - (b.order ?? 100);
-        } else if (sortMode === 'alpha_asc' || sortMode === 'alpha_desc') {
-            let nameA = '', nameB = '';
-            if (a.type === 'folder') nameA = a.data.name;
-            else {
-                const entryA = currentLorebookData.entries[a.uid];
-                nameA = entryA ? safeJoin(entryA.key, ', ') : '';
-            }
-            if (b.type === 'folder') nameB = b.data.name;
-            else {
-                const entryB = currentLorebookData.entries[b.uid];
-                nameB = entryB ? safeJoin(entryB.key, ', ') : '';
-            }
-            const cmp = nameA.localeCompare(nameB);
-            return sortMode === 'alpha_asc' ? cmp : -cmp;
-        }
-        return 0;
-    };
-
-    let rootItems = getRootItems();
-    if (sortMode === 'search' && query) {
-        rootItems = rootItems.filter(item => {
-            return getItemMaxScore(item, query) > 0;
-        });
+    _elRenderCtx = null;
+    try {
+        _elRenderCtx = EL_buildRenderContext(query);
+        EL_fillFolderCounts(_elRenderCtx);
+    } catch (e) {
+        _elRenderCtx = null;
     }
-    rootItems.sort(sortFn);
+    try {
+        const sortFn = (a, b) => {
+            if (sortMode === 'search') {
+                const scoreA = getItemMaxScore(a, query);
+                const scoreB = getItemMaxScore(b, query);
+                if (scoreA !== scoreB) {
+                    return scoreB - scoreA;
+                }
+                return (b.order ?? 100) - (a.order ?? 100);
+            } else if (sortMode === 'order_desc') {
+                return (b.order ?? 100) - (a.order ?? 100);
+            } else if (sortMode === 'order_asc') {
+                return (a.order ?? 100) - (b.order ?? 100);
+            } else if (sortMode === 'alpha_asc' || sortMode === 'alpha_desc') {
+                let nameA = '', nameB = '';
+                if (a.type === 'folder') nameA = a.data.name;
+                else {
+                    const entryA = currentLorebookData.entries[a.uid];
+                    nameA = entryA ? safeJoin(entryA.key, ', ') : '';
+                }
+                if (b.type === 'folder') nameB = b.data.name;
+                else {
+                    const entryB = currentLorebookData.entries[b.uid];
+                    nameB = entryB ? safeJoin(entryB.key, ', ') : '';
+                }
+                const cmp = nameA.localeCompare(nameB);
+                return sortMode === 'alpha_asc' ? cmp : -cmp;
+            }
+            return 0;
+        };
 
-    rootItems.forEach(item => {
-        if (item.type === 'folder') {
-            const fDiv = createFolderElement(item.data, item.uids);
-            els.entriesContainer.appendChild(fDiv);
-        } else {
-            const card = createEntryCard(item.uid);
-            if (card) els.entriesContainer.appendChild(card);
+        let rootItems = getRootItems();
+        if (sortMode === 'search' && query) {
+            rootItems = rootItems.filter(item => {
+                return getItemMaxScore(item, query) > 0;
+            });
         }
-    });
+        rootItems.sort(sortFn);
+
+        rootItems.forEach(item => {
+            if (item.type === 'folder') {
+                const fDiv = createFolderElement(item.data, item.uids);
+                els.entriesContainer.appendChild(fDiv);
+            } else {
+                const card = createEntryCard(item.uid);
+                if (card) els.entriesContainer.appendChild(card);
+            }
+        });
+    } finally {
+        _elRenderCtx = null;
+    }
 }
 
 /* eslint-disable-next-line no-unused-vars */
@@ -1681,7 +1958,7 @@ function createEntryCard(uid) {
                 updateBatchButton();
             }
             lastClickedEntryUid = uid;
-        } else if (selectedEntries.size > 0) {
+        } else if (e.ctrlKey || e.metaKey) {
             if (selectedEntries.has(uid)) {
                 selectedEntries.delete(uid);
                 card.classList.remove('selected');
@@ -4518,6 +4795,10 @@ function setupEventListeners() {
 
     // Search Entries - Auto-toggle Sort mode to Relevance
     let previousSortMode = 'order_desc';
+    // Debounce only the render: the sort-mode switch stays immediate, and rendering
+    // the whole tree on every keystroke was both slow and selection-destroying.
+    let _searchRenderTimer = null;
+    const _searchRenderNow = () => { renderEntries(); };
     els.searchEntries.addEventListener('input', (e) => {
         const query = e.target.value.trim().toLowerCase();
         const sortSelect = document.getElementById('sort-entries');
@@ -4531,7 +4812,11 @@ function setupEventListeners() {
                 sortSelect.value = previousSortMode;
             }
         }
-        renderEntries();
+        if (_searchRenderTimer) clearTimeout(_searchRenderTimer);
+        _searchRenderTimer = setTimeout(() => {
+            _searchRenderTimer = null;
+            _searchRenderNow();
+        }, 150);
     });
 
     const sortEntriesSelect = document.getElementById('sort-entries');

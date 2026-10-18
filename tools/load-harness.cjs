@@ -191,6 +191,69 @@ if (elKeys === 'ABSENT') { console.log('  FAIL: window.EL namespace not assemble
 console.log('\n===== RESULT: ' + (failed === 0 ? 'ALL SCRIPTS LOADED CLEANLY' : failed + ' FAILURE(S)') + ' =====');
 
 // ─────────────────────────────────────────────────────────────────────────────
+// SIGNATURE REGRESSION TESTS (Phase 4.1)
+// entriesSignature is what decides whether the UI re-renders after a server-side
+// change. The old version hashed only content LENGTH, joined keys and comment
+// LENGTH, so it was blind to every flag an agent edits and to same-length edits —
+// which is exactly the "UI shows stale state indefinitely" bug. These assert the
+// new signature is sensitive to each of those fields, stable when nothing changed,
+// and independent of the entries object's key order.
+// ─────────────────────────────────────────────────────────────────────────────
+const SIG_TEST = `
+(function () {
+    const out = [];
+    function book() {
+        return { entries: { '0': {
+            key: ['alpha'], keysecondary: [], comment: 'c0', content: 'content zero',
+            order: 100, position: 0, role: 0, depth: 4, probability: 100,
+            useProbability: true, disable: false, constant: false, selective: true,
+        } } };
+    }
+    const base = entriesSignature(book());
+    function differs(label, mutate) {
+        const b = book();
+        mutate(b.entries['0']);
+        out.push([label, entriesSignature(b) !== base]);
+    }
+    differs('order',           e => { e.order = 50; });
+    differs('position',        e => { e.position = 1; });
+    differs('role',            e => { e.role = 2; });
+    differs('depth',           e => { e.depth = 9; });
+    differs('probability',     e => { e.probability = 40; });
+    differs('disable',         e => { e.disable = true; });
+    differs('constant',        e => { e.constant = true; });
+    differs('useProbability',  e => { e.useProbability = false; });
+    differs('selective',       e => { e.selective = false; });
+    // same length as 'content zero' / 'c0' — the exact case the old hash missed
+    differs('same-length content edit', e => { e.content = 'content ONE!'; });
+    differs('same-length comment edit', e => { e.comment = 'c1'; });
+    out.push(['identical book is stable', entriesSignature(book()) === base]);
+    const two = { entries: { '0': { key:['a'], content:'x', order: 100 }, '1': { key:['b'], content:'y', order: 100 } } };
+    const rev = { entries: { '1': { key:['b'], content:'y', order: 100 }, '0': { key:['a'], content:'x', order: 100 } } };
+    out.push(['entries key-order independent', entriesSignature(two) === entriesSignature(rev)]);
+    return out;
+})()
+`;
+
+console.log('\n===== SIGNATURE REGRESSION TESTS (4.1) =====');
+try {
+  const sigResults = new vm.Script(SIG_TEST).runInContext(sandbox);
+  const bad = sigResults.filter(([, ok]) => !ok);
+  for (const [label, ok] of sigResults) {
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${label}`);
+  }
+  if (bad.length) {
+    failed += bad.length;
+    console.log(`  -> ${bad.length} signature test(s) FAILED`);
+  } else {
+    console.log(`  all ${sigResults.length} signature assertions passed`);
+  }
+} catch (e) {
+  failed++;
+  console.log('  FAIL  signature tests threw: ' + e.message);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // STATIC SURFACE CHECK
 // Guards the bug class that the `clamp` collision belonged to: two scripts in the
 // shared global scope declaring the same top-level name, so the later one silently

@@ -6,7 +6,7 @@ import sanitize from 'sanitize-filename';
 import { getAllUserHandles, getUserDirectories } from '../../src/users.js';
 
 const PLUGIN_NAME = 'enhanced-lorebook-agent';
-const PLUGIN_VERSION = '1.4.1';
+const PLUGIN_VERSION = '1.5.0';
 
 // Hub v2: LLM execution moved to ST-RequestHub. This plugin keeps STORAGE ONLY
 // (proposals, agent chats, backups, snapshots, trash, audit, logs).
@@ -1777,6 +1777,130 @@ async function tailExtensionLog(req, res) {
     }
 }
 
+// ── Revision probe ────────────────────────────────────────────────────
+// Cheap stat-based probe the client polls every few seconds to decide
+// whether the expensive whole-book / whole-settings fetches can be
+// skipped. A `null` resource means "cannot tell — fetch it as before".
+// `worldsDir` stats the requesting user's worlds/ directory: the book
+// list (`world_names`) is derived from a live readdir, not settings.json,
+// so an outside create/delete only moves the directory mtime.
+
+const REVISION_PATH_CACHE_TTL_MS = 30 * 1000;
+const REVISION_PATH_CACHE_MAX = 200;
+const _revisionPathCache = new Map();
+
+function statRevision(filePath) {
+    try {
+        if (!filePath || !fs.existsSync(filePath)) return null;
+        const stat = fs.statSync(filePath);
+        const mtimeMs = Number(stat && stat.mtimeMs);
+        const size = Number(stat && stat.size);
+        if (!Number.isFinite(mtimeMs) || !Number.isFinite(size)) return null;
+        return { mtimeMs, size };
+    } catch {
+        return null;
+    }
+}
+
+async function resolveActiveSettingsPath(req) {
+    try {
+        const root = req && req.user && req.user.directories && req.user.directories.root;
+        if (typeof root === 'string' && root.length) return path.join(root, 'settings.json');
+    } catch {}
+    try {
+        const handles = await getAllUserHandles();
+        if (Array.isArray(handles) && handles.length) {
+            const dirs = getUserDirectories(handles[0]);
+            if (dirs && typeof dirs.root === 'string' && dirs.root.length) return path.join(dirs.root, 'settings.json');
+        }
+    } catch {}
+    return null;
+}
+
+async function resolveActiveWorldsDir(req) {
+    try {
+        const worlds = req && req.user && req.user.directories && req.user.directories.worlds;
+        if (typeof worlds === 'string' && worlds.length) return worlds;
+    } catch {}
+    try {
+        const handles = await getAllUserHandles();
+        if (Array.isArray(handles) && handles.length) {
+            const dirs = getUserDirectories(handles[0]);
+            if (dirs && typeof dirs.worlds === 'string' && dirs.worlds.length) return dirs.worlds;
+        }
+    } catch {}
+    return null;
+}
+
+async function resolveWorldInfoPathCached(req, lorebookName) {
+    const now = Date.now();
+    let worldsDir = null;
+    try {
+        const dirs = req && req.user && req.user.directories;
+        if (dirs && typeof dirs.worlds === 'string' && dirs.worlds.length) worldsDir = dirs.worlds;
+    } catch {}
+    if (worldsDir) {
+        // Per-requesting-user resolution, mirroring /api/worldinfo/get:
+        // join the sanitised `<name>.json` (same `sanitize` call as
+        // `findWorldInfoFile`) under this user's worlds directory, and only
+        // use it when the file actually exists there. Never resolves to
+        // another account's file, even for duplicate book names.
+        let scope = worldsDir;
+        try {
+            const handle = req.user.profile && req.user.profile.handle;
+            if (typeof handle === 'string' && handle.length) scope = handle;
+        } catch {}
+        const key = `${scope}\u0000${lorebookName}`;
+        const cached = _revisionPathCache.get(key);
+        if (cached && (now - cached.at) < REVISION_PATH_CACHE_TTL_MS) return cached.path;
+        let found = null;
+        try {
+            const candidate = path.join(worldsDir, `${sanitize(lorebookName)}.json`);
+            if (fs.existsSync(candidate)) found = candidate;
+        } catch {}
+        if (_revisionPathCache.size >= REVISION_PATH_CACHE_MAX && !_revisionPathCache.has(key)) {
+            const oldest = _revisionPathCache.keys().next();
+            if (!oldest.done) _revisionPathCache.delete(oldest.value);
+        }
+        _revisionPathCache.set(key, { path: found, at: now });
+        return found;
+    }
+    // req.user (or its directories.worlds) unavailable: fall back to the
+    // cross-user search. Uncached, so one account's path is never served
+    // to another through a name-only key.
+    return await findWorldInfoFile(lorebookName);
+}
+
+async function getRevisionProbe(req, res) {
+    try {
+        const rawBook = req.query && typeof req.query.book === 'string' ? req.query.book : '';
+        const bookName = sanitizeString(rawBook);
+        let book = null;
+        if (bookName) {
+            try {
+                book = statRevision(await resolveWorldInfoPathCached(req, bookName));
+            } catch {
+                book = null;
+            }
+        }
+        let settings = null;
+        try {
+            settings = statRevision(await resolveActiveSettingsPath(req));
+        } catch {
+            settings = null;
+        }
+        let worldsDir = null;
+        try {
+            worldsDir = statRevision(await resolveActiveWorldsDir(req));
+        } catch {
+            worldsDir = null;
+        }
+        return res.json({ ok: true, settings, book, worldsDir });
+    } catch {
+        return res.json({ ok: false, settings: null, book: null, worldsDir: null });
+    }
+}
+
 // ── Init ──────────────────────────────────────────────────────────────
 
 export async function init(router) {
@@ -1889,6 +2013,7 @@ export async function init(router) {
     router.get('/health', (req, res) => {
         res.json({ status: 'ok', version: PLUGIN_VERSION, storage: getStorageRoot() });
     });
+    router.get('/revision', asyncHandler(getRevisionProbe));
 
     // (Hub v2: secrets vault routes removed — connections live in ST-RequestHub.)
 

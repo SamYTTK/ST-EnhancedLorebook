@@ -40,45 +40,19 @@ const EL_PROPOSAL_CONTRACT = Object.freeze({
 
 // ── Canonical entry field list (FIX A/B) ──
 
-// Field list mirrored from SillyTavern's newWorldInfoEntryDefinition
-// (public/scripts/world-info.js). The flat characterFilter* editor fields are
-// deliberately excluded: core stores the nested characterFilter object.
-// Note: characterFilter itself is not a definition key either — core creates
-// and reads it as the nested { isExclude, names, tags } object, so it is
-// allowlisted here as the stored shape.
-const EL_ENTRY_FIELDS = Object.freeze([
-    'key', 'keysecondary', 'comment', 'content', 'constant', 'vectorized', 'selective',
-    'selectiveLogic', 'addMemo', 'order', 'position', 'disable', 'ignoreBudget',
-    'excludeRecursion', 'preventRecursion',
-    'matchPersonaDescription', 'matchCharacterDescription', 'matchCharacterPersonality',
-    'matchCharacterDepthPrompt', 'matchScenario', 'matchCreatorNotes',
-    'delayUntilRecursion', 'probability', 'useProbability', 'depth', 'outletName',
-    'group', 'groupOverride', 'groupWeight', 'scanDepth', 'caseSensitive',
-    'matchWholeWords', 'useGroupScoring', 'automationId', 'role', 'sticky', 'cooldown',
-    'delay', 'triggers', 'characterFilter',
-]);
-
-// Template defaults mirrored from newWorldInfoEntryTemplate
-// (selectiveLogic 0 = world_info_logic.AND_ANY, depth 4 = DEFAULT_DEPTH,
-// groupWeight 100 = DEFAULT_WEIGHT). characterFilter is handled separately —
-// every created entry gets a fresh nested object, never a shared reference.
-const EL_ENTRY_DEFAULTS = Object.freeze({
-    key: [], keysecondary: [], comment: '', content: '', constant: false,
-    vectorized: false, selective: true, selectiveLogic: 0, addMemo: false,
-    order: 100, position: 0, disable: false, ignoreBudget: false,
-    excludeRecursion: false, preventRecursion: false,
-    matchPersonaDescription: false, matchCharacterDescription: false,
-    matchCharacterPersonality: false, matchCharacterDepthPrompt: false,
-    matchScenario: false, matchCreatorNotes: false,
-    delayUntilRecursion: 0, probability: 100, useProbability: true, depth: 4,
-    outletName: '', group: '', groupOverride: false, groupWeight: 100,
-    scanDepth: null, caseSensitive: null, matchWholeWords: null,
-    useGroupScoring: null, automationId: '', role: 0, sticky: null,
-    cooldown: null, delay: null, triggers: [],
-});
+// The contract itself (field allowlist, template defaults, valid triggers)
+// lives in the shared core (lib/apply-core.js) so the HOST window applies
+// proposals with exactly the same rules as this window. The core is loaded
+// before this file (see app/index.html); if it is missing the extension is
+// broken and we say so loudly instead of writing half an entry.
+if (typeof ELApplyCore === 'undefined') {
+    console.error('[EL:Hub] lib/apply-core.js is not loaded — proposals cannot be applied.');
+}
+const EL_ENTRY_FIELDS = (typeof ELApplyCore !== 'undefined' && ELApplyCore.ENTRY_FIELDS) ? ELApplyCore.ENTRY_FIELDS : Object.freeze([]);
+const EL_ENTRY_DEFAULTS = (typeof ELApplyCore !== 'undefined' && ELApplyCore.ENTRY_DEFAULTS) ? ELApplyCore.ENTRY_DEFAULTS : Object.freeze({});
 
 // Core generation triggers (public/scripts/constants.js GENERATION_TYPE_TRIGGERS).
-const EL_VALID_TRIGGERS = Object.freeze(['normal', 'continue', 'impersonate', 'swipe', 'regenerate', 'quiet']);
+const EL_VALID_TRIGGERS = (typeof ELApplyCore !== 'undefined' && ELApplyCore.VALID_TRIGGERS) ? ELApplyCore.VALID_TRIGGERS : Object.freeze([]);
 
 // Auto-accept confidence threshold, clamped and always finite. A non-finite value
 // (from a bad stored config) made every `confidence >= threshold` comparison false,
@@ -189,7 +163,7 @@ function EL_installBridgeListener() {
     if (_elBridgeListenerInstalled) return;
     _elBridgeListenerInstalled = true;
     try {
-        window.addEventListener('message', (e) => {
+        window.addEventListener('message', async (e) => {
             try {
                 if (e.origin !== window.location.origin) return;
                 // Source binding: only the host window may drive this popup. e.source is the
@@ -203,6 +177,14 @@ function EL_installBridgeListener() {
                 } else if (!_elBridgeNonceWarned) {
                     _elBridgeNonceWarned = true;
                     try { console.warn('[EL:Bridge] host message without nonce — accepted (older host build?)'); } catch (e) {}
+                }
+                if (msg.type === 'el-proposals-refresh') {
+                    // The host window applied a proposal (or the list changed):
+                    // reload the feed so the card disappears here as well.
+                    try {
+                        if (typeof loadProposalsForCurrentChat === 'function') await loadProposalsForCurrentChat();
+                    } catch (err) { console.error('Enhanced Lorebook: proposal refresh failed', err); }
+                    return;
                 }
                 if ((msg.type === 'el-agent-dynamic-scan-result' || msg.type === 'el-agent-chat-books') && msg.requestId != null) {
                     const pending = _elBridgePending.get(msg.requestId);
@@ -1137,6 +1119,11 @@ async function EL_commitHubProposals(proposals, chatId, agent) {
         if (typeof loadProposalsForCurrentChat === 'function') await loadProposalsForCurrentChat();
     } catch {}
     try {
+        // New proposals landed — tell the rest of SillyTavern (other
+        // extensions and the host window) that the list changed.
+        if (typeof EL_emitProposalsChanged === 'function') EL_emitProposalsChanged('created', chatId);
+    } catch {}
+    try {
         const pending = proposals.length;
         if (typeof sendPendingCount === 'function') sendPendingCount(pending);
         else if (typeof updatePendingBadge === 'function') updatePendingBadge();
@@ -1325,11 +1312,8 @@ async function EL_runHubAgent(agent, runOpts) {
  * Takes a safety backup first, then saves via the worldinfo guard.
  */
 function EL_cloneHubDefault(value) {
-    if (Array.isArray(value)) return value.slice();
-    if (value && typeof value === 'object') {
-        try { return JSON.parse(JSON.stringify(value)); } catch { return {}; }
-    }
-    return value;
+    if (typeof ELApplyCore === 'undefined') return value;
+    return ELApplyCore.cloneDefault(value);
 }
 
 // Normalise any characterFilter-ish snapshot input to the nested stored
@@ -1339,249 +1323,92 @@ function EL_cloneHubDefault(value) {
 // when the snapshot carries no characterFilter input at all. Never returns
 // a string or an array.
 function EL_normalizeHubCharacterFilter(src) {
-    const s = (src && typeof src === 'object') ? src : {};
-    const out = { isExclude: false, names: [], tags: [] };
-    let seen = false;
-    const v = s.characterFilter;
-    if (v && typeof v === 'object' && !Array.isArray(v)) {
-        seen = true;
-        out.isExclude = v.isExclude === true;
-        if (Array.isArray(v.names)) out.names = v.names.map(x => String(x ?? '').trim()).filter(Boolean);
-        if (Array.isArray(v.tags)) out.tags = v.tags.filter(x => typeof x === 'string' || typeof x === 'number');
-    } else if (Array.isArray(v)) {
-        seen = true;
-        out.names = v.map(x => String(x ?? '').trim()).filter(Boolean);
-    } else if (typeof v === 'string' && v.trim()) {
-        seen = true;
-        out.names = [v.trim()];
-    }
-    if (s.characterFilterExclude !== undefined) {
-        seen = true;
-        out.isExclude = s.characterFilterExclude === true || String(s.characterFilterExclude).toLowerCase() === 'true';
-    }
-    if (Array.isArray(s.characterFilterNames)) {
-        seen = true;
-        if (!out.names.length) out.names = s.characterFilterNames.map(x => String(x ?? '').trim()).filter(Boolean);
-    }
-    if (Array.isArray(s.characterFilterTags)) {
-        seen = true;
-        if (!out.tags.length) out.tags = s.characterFilterTags.filter(x => typeof x === 'string' || typeof x === 'number');
-    }
-    return seen ? out : null;
+    if (typeof ELApplyCore === 'undefined') return null;
+    return ELApplyCore.normalizeCharacterFilter(src);
 }
 
 // Filter a triggers value down to core's GENERATION_TYPE_TRIGGERS set.
 // Returns an array for array/string input, null for anything else (ignored).
 function EL_normalizeHubTriggers(value) {
-    if (Array.isArray(value)) {
-        try { return value.map(x => String(x)).filter(x => EL_VALID_TRIGGERS.includes(x)); }
-        catch { return []; }
-    }
-    if (typeof value === 'string' && EL_VALID_TRIGGERS.includes(value.trim())) return [value.trim()];
-    return null;
+    if (typeof ELApplyCore === 'undefined') return null;
+    return ELApplyCore.normalizeTriggers(value);
 }
 
 // Build a full stored entry from a create snapshot: allowlisted fields only,
 // template defaults backfilled for anything missing, characterFilter and
 // triggers normalised.
 function EL_buildHubCreateEntry(snapshot) {
-    const src = (snapshot && typeof snapshot === 'object' && !Array.isArray(snapshot)) ? snapshot : {};
-    const entry = {};
-    for (const key of EL_ENTRY_FIELDS) {
-        if (key === 'characterFilter' || key === 'triggers') continue;
-        if (src[key] !== undefined) entry[key] = src[key];
-        else entry[key] = EL_cloneHubDefault(EL_ENTRY_DEFAULTS[key]);
-    }
-    const cf = EL_normalizeHubCharacterFilter(src);
-    entry.characterFilter = cf || { isExclude: false, names: [], tags: [] };
-    const t = (src.triggers !== undefined) ? EL_normalizeHubTriggers(src.triggers) : null;
-    entry.triggers = (t !== null) ? t : [];
-    return entry;
+    if (typeof ELApplyCore === 'undefined') throw new Error('apply core is not loaded');
+    return ELApplyCore.buildCreateEntry(snapshot);
 }
 
 // Build the writes map for an edit snapshot: allowlisted fields only,
 // skipping uid/_folderPath, normalising characterFilter and triggers.
 function EL_buildHubEditWrites(snapshot) {
-    const src = (snapshot && typeof snapshot === 'object' && !Array.isArray(snapshot)) ? snapshot : {};
-    const writes = {};
-    for (const key of EL_ENTRY_FIELDS) {
-        if (key === 'uid' || key === '_folderPath') continue;
-        if (key === 'characterFilter') {
-            const cf = EL_normalizeHubCharacterFilter(src);
-            if (cf) writes.characterFilter = cf;
-            continue;
-        }
-        if (key === 'triggers') {
-            if (src.triggers !== undefined) {
-                const t = EL_normalizeHubTriggers(src.triggers);
-                if (t !== null) writes.triggers = t;
-            }
-            continue;
-        }
-        if (src[key] !== undefined) writes[key] = src[key];
-    }
-    return writes;
+    if (typeof ELApplyCore === 'undefined') throw new Error('apply core is not loaded');
+    return ELApplyCore.buildEditWrites(snapshot);
 }
 
 function EL_hubFieldEquals(a, b) {
-    try { return JSON.stringify(a) === JSON.stringify(b); }
-    catch { return false; }
+    if (typeof ELApplyCore === 'undefined') {
+        try { return JSON.stringify(a) === JSON.stringify(b); }
+        catch { return false; }
+    }
+    return ELApplyCore.fieldEquals(a, b);
 }
 
-function EL_warnHubApply(msg) {
-    try {
-        const L = (typeof window !== 'undefined' && window.ELLogger) ? window.ELLogger : console;
-        L.warn('[EL:Apply] ' + msg);
-    } catch {}
-}
-
-async function EL_applyProposal(proposal, opts) {
-    opts = opts || {};
-    const st = EL_resolveHubSt(opts.st);
-    if (!st) throw new Error('No SillyTavern context available');
-    const data = await st.loadWorldInfo(proposal.lorebookName);
-    if (!data || !data.entries) {
-        throw new Error('Lorebook "' + proposal.lorebookName + '" not found');
-    }
-
-    if (proposal.action === 'edit' || proposal.action === 'delete') {
-        const uid = proposal.uid;
-        const current = data.entries[uid];
-        if (!current) {
-            // IDEMPOTENT: a failed feed-delete can deliver a proposal twice —
-            // an already-absent delete target counts as applied, not an error.
-            if (proposal.action === 'delete') return;
-            throw new Error('Entry UID ' + uid + ' not found');
-        }
-        // Staleness check: refuse when the entry changed since the agent read it.
-        // No linkage re-check here: linkage needs the full agent config
-        // (ELAgentConfigSchema.isLorebookLinked(agent, name)) and apply-time
-        // callers only pass the proposal (feed) or an agent name (auto-accept).
-        const wantFp = (typeof proposal._baseFingerprint === 'string' && proposal._baseFingerprint) ? proposal._baseFingerprint : '';
-        if (wantFp && typeof EL_entryFingerprint === 'function') {
-            let actualFp = '';
-            try { actualFp = EL_entryFingerprint(current) || ''; } catch (e) { actualFp = ''; }
-            if (actualFp && actualFp !== wantFp) {
-                throw new Error('Proposal is stale — "' + proposal.lorebookName + '" entry ' + uid + ' changed since this proposal was created. Nothing was written.');
+// The apply algorithm itself lives in the shared core (lib/apply-core.js) so
+// the host window applies proposals exactly like this window does. Only the
+// window-specific pieces (SillyTavern context, guard, backup, folders) are
+// injected here.
+function EL_applyCoreDeps() {
+    return {
+        resolveSt: (st) => EL_resolveHubSt(st),
+        guardSave: (bookName, data, options) => {
+            if (typeof window === 'undefined' || typeof window.ELG_guardSave !== 'function') {
+                throw new Error('Refusing to write "' + bookName + '": the lorebook guard (worldinfo-guard.js) is not loaded. Nothing was written.');
             }
-            if (!actualFp) EL_warnHubApply('could not recompute entry fingerprint for "' + proposal.lorebookName + '" uid ' + uid + ' — proceeding without staleness check.');
-        } else {
-            EL_warnHubApply('proposal for "' + proposal.lorebookName + '" uid ' + uid + ' carries no fingerprint (older proposal) — proceeding without staleness check.');
-        }
-        if (proposal.action === 'edit') {
-            const editWrites = EL_buildHubEditWrites(proposal.changes || proposal.entrySnapshot || {});
-            // IDEMPOTENT: the entry already equals the intended result — a
-            // retried accept after a successful apply is a no-op success.
-            let alreadyApplied = true;
-            for (const k of Object.keys(editWrites)) {
-                let cur = current[k];
-                if (k === 'characterFilter') cur = EL_normalizeHubCharacterFilter({ characterFilter: cur }) || { isExclude: false, names: [], tags: [] };
-                if (!EL_hubFieldEquals(cur, editWrites[k])) { alreadyApplied = false; break; }
-            }
-            if (alreadyApplied) return;
-        }
-    }
-
-    // Safety backup before mutating (server-side, 24h expiry).
-    try {
-        if (typeof BackupClient !== 'undefined') {
+            return window.ELG_guardSave(bookName, data, options);
+        },
+        createBackup: async (lorebookName) => {
+            if (typeof BackupClient === 'undefined') return;
             const bc = new BackupClient({});
-            if (typeof bc.createAgentBackup === 'function') await bc.createAgentBackup(proposal.lorebookName);
-        }
-    } catch {}
-
-    if (proposal.action === 'create') {
-        const snapshot = proposal.entryData || proposal.entrySnapshot || {};
-        const folderPathFromProposal = proposal._folderPath || snapshot._folderPath || '';
-        const newEntry = EL_buildHubCreateEntry(snapshot);
-        // IDEMPOTENT: a retried accept must not create a second copy. Compares the
-        // FULL allowlisted entry, not just comment+content, so a legitimate second
-        // entry that merely happens to share a comment and content is not swallowed.
-        const intendedFp = (typeof EL_entryFingerprint === 'function') ? EL_entryFingerprint(newEntry) : '';
-        if (intendedFp) {
-            for (const existing of Object.values(data.entries)) {
-                if (existing && EL_entryFingerprint(existing) === intendedFp) return;
-            }
-        }
-        let nextUid = null;
-        for (let uid = 0; uid < 1000000; uid++) if (!(uid in data.entries)) { nextUid = uid; break; }
-        if (nextUid === null) throw new Error('No free UID available');
-        newEntry.uid = nextUid;
-        data.entries[nextUid] = newEntry;
-
-        let folderAssigned = false;
-        if (folderPathFromProposal && typeof window !== 'undefined' && window.ELFolderUrl) {
-            try { folderAssigned = window.ELFolderUrl.assignEntryToUrl(nextUid, window.ELFolderUrl.buildUrl(proposal.lorebookName, folderPathFromProposal, nextUid), proposal.lorebookName); } catch {}
-        }
-        if (!folderAssigned && snapshot.folderId) {
+            if (typeof bc.createAgentBackup === 'function') await bc.createAgentBackup(lorebookName);
+        },
+        fingerprint: (entry) => (typeof EL_entryFingerprint === 'function' ? EL_entryFingerprint(entry) : ''),
+        folderOps: () => (typeof window !== 'undefined' ? window.ELFolderUrl : null),
+        getFolders: (bookName) => {
             try {
-                const folders = (typeof extensionSettings !== 'undefined' ? extensionSettings?.folders?.[proposal.lorebookName] : null);
-                if (folders) {
-                    const folder = folders.find(f => f.id === snapshot.folderId);
-                    if (folder) { folder.entries.push(String(nextUid)); folderAssigned = true; }
-                }
-            } catch (_) {}
-        }
-        if (!folderAssigned && proposal.url && typeof window !== 'undefined' && window.ELFolderUrl) {
-            try { window.ELFolderUrl.assignEntryToUrl(nextUid, window.ELFolderUrl.buildUrlForNewUid(proposal.url, nextUid), proposal.lorebookName); } catch {}
-        }
-    } else if (proposal.action === 'edit') {
-        const uid = proposal.uid;
-        const entry = data.entries[uid];
-        if (!entry) throw new Error('Entry UID ' + uid + ' not found');
-        const snapshot = proposal.changes || proposal.entrySnapshot || {};
-        const writes = EL_buildHubEditWrites(snapshot);
-        for (const key of Object.keys(writes)) {
-            entry[key] = writes[key];
-        }
-        const moveFolderPath = proposal._folderPath || snapshot._folderPath;
-        if (moveFolderPath !== undefined && moveFolderPath !== null && typeof window !== 'undefined' && window.ELFolderUrl) {
-            try {
-                const targetUrl = window.ELFolderUrl.buildUrl(proposal.lorebookName, moveFolderPath || '', uid);
-                window.ELFolderUrl.assignEntryToUrl(uid, targetUrl, proposal.lorebookName);
-            } catch {}
-        }
-    } else if (proposal.action === 'delete') {
-        const uid = proposal.uid;
-        if (!data.entries[uid]) throw new Error('Entry UID ' + uid + ' not found');
-        delete data.entries[uid];
-    } else {
-        throw new Error('Unknown proposal action: ' + proposal.action);
-    }
-
-    if (typeof window === 'undefined' || typeof window.ELG_guardSave !== 'function') {
-        throw new Error('Refusing to write "' + proposal.lorebookName + '": the lorebook guard (worldinfo-guard.js) is not loaded. Nothing was written.');
-    }
-    const saved = await window.ELG_guardSave(proposal.lorebookName, data, {
-        explicitDelete: proposal.action === 'delete',
-        source: 'agent',
-        note: (proposal.action === 'delete' ? 'Hub delete' : 'Hub apply') + ' - ' + (opts.agentName || 'hub'),
-    });
-    if (!saved) {
-        throw new Error('Apply blocked or failed — nothing was written to "' + proposal.lorebookName + '".');
-    }
-    if (proposal.action === 'delete') {
-        try {
-            const folders = (typeof extensionSettings !== 'undefined' ? extensionSettings?.folders?.[proposal.lorebookName] : null);
-            if (folders) {
-                for (const folder of folders) {
-                    folder.entries = folder.entries.filter(e => String(e) !== String(proposal.uid));
-                }
-            }
-        } catch (_) {}
-        try {
+                const folders = (typeof extensionSettings !== 'undefined' ? extensionSettings?.folders?.[bookName] : null);
+                return folders || null;
+            } catch (e) { return null; }
+        },
+        saveSettings: () => {
             if (typeof saveSettings === 'function') saveSettings();
-        } catch {}
-    }
-
-    try {
-        const currName = (typeof currentLorebookName !== 'undefined' ? currentLorebookName : null);
-        if (currName === proposal.lorebookName) {
+        },
+        refreshUi: (lorebookName) => {
+            const currName = (typeof currentLorebookName !== 'undefined' ? currentLorebookName : null);
+            if (currName !== lorebookName) return;
             if (typeof renderEntries === 'function') renderEntries();
-            else if (typeof refreshAfterAgentChange === 'function') refreshAfterAgentChange(proposal.lorebookName);
-        }
-    } catch {}
+            else if (typeof refreshAfterAgentChange === 'function') refreshAfterAgentChange(lorebookName);
+        },
+        logger: () => (typeof window !== 'undefined' && window.ELLogger) ? window.ELLogger : console,
+    };
 }
+
+/**
+ * Apply one Feed proposal to its lorebook (human-approved commit step).
+ * Supports hub shapes ({entryData} / {changes}) and legacy {entrySnapshot}.
+ * Takes a safety backup first, then saves via the worldinfo guard.
+ */
+async function EL_applyProposal(proposal, opts) {
+    if (typeof ELApplyCore === 'undefined') {
+        throw new Error('The shared apply core (lib/apply-core.js) is not loaded — nothing was written.');
+    }
+    const core = ELApplyCore.createApplyCore(EL_applyCoreDeps());
+    return core.applyProposal(proposal, opts);
+}
+
 
 /**
  * Revise one proposal with user feedback via a hub single-mode call.
@@ -1663,4 +1490,7 @@ if (typeof window !== 'undefined') {
     window.EL_postToHost = EL_postToHost;
     window.EL_bridgeRequest = EL_bridgeRequest;
     window.EL_requestChatBooks = EL_requestChatBooks;
+    // Always listen for host messages: the host tells this window to reload
+    // the feed when it applies a proposal (el-proposals-refresh).
+    EL_installBridgeListener();
 }

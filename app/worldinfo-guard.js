@@ -181,7 +181,14 @@ async function ELG_audit(bookName, rec) {
     }
 }
 
+/**
+ * Compare two entry maps.
+ * @returns {{removed: Array<[uid, entry]>, added: Array<[uid, entry]>, changed: string[]}}
+ */
 function ELG_diff(oldEntries, newEntries) {
+    if (typeof ELApplyCore !== 'undefined' && typeof ELApplyCore.diffEntries === 'function') {
+        return ELApplyCore.diffEntries(oldEntries, newEntries);
+    }
     const removed = [];
     const added = [];
     const changed = [];
@@ -240,6 +247,9 @@ function _ELG_canon(value, inArray) {
  */
 function ELG_canonicalEntries(entries) {
     try {
+        if (typeof ELApplyCore !== 'undefined' && typeof ELApplyCore.canonicalEntries === 'function') {
+            return ELApplyCore.canonicalEntries(entries);
+        }
         const canon = _ELG_canon(entries || {}, false);
         return JSON.stringify(canon === undefined ? null : canon);
     } catch (e) {
@@ -347,6 +357,28 @@ function ELG_escapeHtml(str) {
 }
 
 /**
+ * The window-specific pieces of the guarded save. Everything that touches a
+ * window, a toast or a storage endpoint is injected here; the fail-closed
+ * orchestration itself lives in the shared core (lib/apply-core.js) so the
+ * HOST window guards its saves with exactly the same rules.
+ */
+function ELG_guardDeps() {
+    return {
+        resolveSt: (st) => st || ELG_resolveSt(),
+        fetchServerStateEx: (bookName) => ELG_fetchServerStateEx(bookName),
+        snapshot: (bookName, data) => ELG_snapshot(bookName, data),
+        trashEntries: (bookName, removed, source, note) => ELG_trashEntries(bookName, removed, source, note),
+        audit: (bookName, rec) => ELG_audit(bookName, rec),
+        pluginAvailable: () => ELG_pluginAvailable(),
+        confirmDeletions: (bookName, removed, opts) => ELG_confirmDeletions(bookName, removed, opts),
+        toast: (message, type) => ELG_toast(message, type),
+        saveWorldInfo: (bookName, data, st) => st.saveWorldInfo(bookName, data, true),
+        logger: () => window.ELLogger || window.EL_log || console,
+        isVerbose: () => _ELG_isVerboseGuard(),
+    };
+}
+
+/**
  * Core guarded save (FAIL CLOSED — a blind overwrite never happens).
  *
  * @param {string} bookName      Lorebook name
@@ -360,126 +392,13 @@ function ELG_escapeHtml(str) {
  * @returns {Promise<boolean>} true if the save was performed, false if it was blocked/skipped.
  */
 async function ELG_guardSave(bookName, newData, options = {}) {
-    const L = window.ELLogger || window.EL_log || console;
-    const st = options.st || ELG_resolveSt();
-    if (!st || !bookName || !newData) {
-        try { (L.error || L.warn || console.error).call(L, `[EL:Guard] guardSave aborted: missing st/bookName/newData`, { bookName, hasSt: !!st, hasData: !!newData }); } catch { console.error('[EL:Guard] guardSave aborted', bookName); }
-        ELG_toast('Save blocked — missing lorebook context, nothing was written.', 'error');
+    if (typeof ELApplyCore === 'undefined' || typeof ELApplyCore.createGuard !== 'function') {
+        console.error('[EL:Guard] lib/apply-core.js is not loaded — refusing to write.');
+        try { ELG_toast('Save blocked — the lorebook guard core is not loaded. Nothing was written.', 'error'); } catch (e) { /* toast is best-effort */ }
         return false;
     }
-
-    const opts = {
-        explicitDelete: false,
-        source: 'user',
-        note: '',
-        ...options,
-    };
-    try { L.info(`[EL:Guard] guardSave start book="${bookName}" source=${opts.source} note="${opts.note}" explicitDelete=${opts.explicitDelete} entries=${Object.keys(newData.entries||{}).length}`); } catch {}
-
-    // Authoritative current state straight from the server (bypasses the client cache).
-    // FAIL CLOSED: if we cannot read it, NOTHING is written — no bypass, no plain save.
-    const fresh = await ELG_fetchServerStateEx(bookName);
-    if (!fresh.ok) {
-        try { (L.error||console.error).call(L, '[EL:Guard] guardSave BLOCKED — could not read server state, nothing written', bookName, fresh.reason); } catch { console.error('[EL:Guard] guardSave BLOCKED — could not read server state', bookName, fresh.reason); }
-        ELG_toast('Save blocked — could not read the current file for "' + bookName + '" from the server (' + fresh.reason + '). Nothing was written.', 'error');
-        return false;
-    }
-
-    const prevData = fresh.data;
-    const diff = ELG_diff(prevData.entries || {}, newData.entries || {});
-    if (_ELG_isVerboseGuard()) try { L.info(`[EL:Guard] diff book="${bookName}" removed=${diff.removed.length} added=${diff.added.length} changed=${diff.changed.length}`); } catch {}
-    if (diff.removed.length && _ELG_isVerboseGuard()) try { L.warn(`[EL:Guard] diff removed details`, bookName, diff.removed.map(([uid,e])=>`${uid}:${e?.comment||''}`).join(', ').slice(0,500)); } catch {}
-
-    // Deletion protection FIRST: the confirmation modal can sit open for a
-    // while, so it must happen before the final consistency check below.
-    if (diff.removed.length > 0 && opts.explicitDelete !== true) {
-        try { L.warn(`[EL:Guard] deletion protection BLOCK — ${diff.removed.length} entries would be lost without explicitDelete`, bookName, opts); } catch {}
-        const proceed = await ELG_confirmDeletions(bookName, diff.removed, opts);
-        try { L.info(`[EL:Guard] deletion modal result proceed=${proceed}`, bookName); } catch {}
-        if (!proceed) {
-            try { L.warn(`[EL:Guard] save BLOCKED by user cancel`, bookName); } catch {}
-            ELG_toast('Save blocked — entries would have been lost', 'warning');
-            return false;
-        }
-    } else if (diff.removed.length > 0) {
-        try { L.info(`[EL:Guard] explicitDelete=true — trashing ${diff.removed.length} entries`, bookName); } catch {}
-    }
-
-    // TOCTOU check: re-read the file just before writing; abort if it moved.
-    // Done BEFORE audit/snapshot/trash so a rejected save leaves no artifacts
-    // describing a change that never happened.
-    const check = await ELG_fetchServerStateEx(bookName);
-    if (!check.ok) {
-        try { (L.error||console.error).call(L, '[EL:Guard] guardSave BLOCKED — could not re-verify before writing, nothing written', bookName, check.reason); } catch { console.error('[EL:Guard] guardSave BLOCKED — could not re-verify before writing', bookName, check.reason); }
-        ELG_toast('Save blocked — could not re-verify the file before writing (' + check.reason + '). Nothing was written.', 'error');
-        return false;
-    }
-    if (ELG_canonicalEntries(check.data.entries || {}) !== ELG_canonicalEntries(prevData.entries || {})) {
-        try { L.warn(`[EL:Guard] guardSave BLOCKED — file changed on disk mid-edit`, bookName); } catch {}
-        ELG_toast('Save blocked — "' + bookName + '" changed on disk while you were editing. Reload and try again.', 'warning');
-        return false;
-    }
-
-    const hasDiff = !!(diff.removed.length || diff.added.length || diff.changed.length);
-
-    // Audit the change. (INFO kept — lorebook-relevant)
-    if (hasDiff) {
-        if (_ELG_isVerboseGuard()) try { L.info(`[EL:Guard] audit emit book="${bookName}" action=${diff.removed.length>0&&diff.added.length===0&&diff.changed.length===0?'delete':'save'}`); } catch {}
-        await ELG_audit(bookName, {
-            action: diff.removed.length > 0 && diff.added.length === 0 && diff.changed.length === 0 ? 'delete' : 'save',
-            removed: diff.removed.map(([uid, e]) => ({ uid, comment: e?.comment || '' })),
-            added: diff.added.map(([uid, e]) => ({ uid, comment: e?.comment || '' })),
-            changedCount: diff.changed.length,
-            source: opts.source,
-            note: opts.note,
-        });
-    }
-
-    // Snapshot the pre-change state so we can always roll back.
-    if (hasDiff) {
-        if (_ELG_isVerboseGuard()) try { L.info(`[EL:Guard] snapshot pre-change book="${bookName}"`); } catch {}
-        await ELG_snapshot(bookName, prevData);
-    }
-
-    // Quarantine removed entries so they are never truly lost. Must succeed
-    // (when the plugin is reachable) BEFORE we overwrite the file.
-    if (diff.removed.length > 0) {
-        const trashed = await ELG_trashEntries(bookName, diff.removed, opts.source, opts.note);
-        if (trashed === false) {
-            if (await ELG_pluginAvailable()) {
-                try { (L.error||console.error).call(L, '[EL:Guard] guardSave BLOCKED — trash write failed, nothing written', bookName); } catch { console.error('[EL:Guard] guardSave BLOCKED — trash write failed', bookName); }
-                ELG_toast('Save blocked — removed entries could not be moved to Trash, so recovery would be impossible. Nothing was written.', 'error');
-                return false;
-            }
-            try { L.warn('[EL:Guard] trash write failed and plugin is unreachable — continuing, deletion will be permanent', bookName); } catch {}
-        }
-    }
-
-    try {
-        try { L.info(`[EL:Guard] saveWorldInfo → "${bookName}" entries=${Object.keys(newData.entries||{}).length}`); } catch {}
-        await st.saveWorldInfo(bookName, newData, true);
-        try { L.info(`[EL:Guard] saveWorldInfo ok`, bookName); } catch {}
-    } catch (e) {
-        try { (L.error||console.error).call(L, '[EL Guard] save failed', bookName, e); } catch { console.error('[EL Guard] save failed', e); }
-        ELG_toast('Save failed for "' + bookName + '": ' + (e?.message||e), 'error');
-        return false;
-    }
-
-    // Verify: read the file back and confirm it matches what was written.
-    // If we cannot read it back we must NOT report success — callers treat
-    // `true` as "confirmed on disk" and may consume recovery copies on it.
-    const after = await ELG_fetchServerStateEx(bookName);
-    if (!after.ok) {
-        try { (L.error||console.error).call(L, '[EL:Guard] save written but could not be verified — reporting failure', bookName, after.reason); } catch { console.error('[EL:Guard] save written but could not be verified', bookName, after.reason); }
-        ELG_toast('Save could not be verified (' + after.reason + ') — reload before continuing.', 'error');
-        return false;
-    }
-    if (ELG_canonicalEntries(after.data.entries || {}) !== ELG_canonicalEntries(newData.entries || {})) {
-        try { (L.error||console.error).call(L, '[EL:Guard] save verification FAILED — disk does not match what was written', bookName); } catch { console.error('[EL:Guard] save verification FAILED', bookName); }
-        ELG_toast('Save verification failed for "' + bookName + '" — the file on disk does not match what was written. Reload before continuing.', 'error');
-        return false;
-    }
-    return true;
+    const guard = ELApplyCore.createGuard(ELG_guardDeps());
+    return guard.guardSave(bookName, newData, options);
 }
 
 /**
@@ -630,6 +549,7 @@ window.ELG_fetchServerStateEx = ELG_fetchServerStateEx;
 window.ELG_snapshot = ELG_snapshot;
 window.ELG_trashEntries = ELG_trashEntries;
 window.ELG_audit = ELG_audit;
+window.ELG_diff = ELG_diff;
 window.ELG_toast = ELG_toast;
 window.ELG_canonicalEntries = ELG_canonicalEntries;
 window.ELG_pluginAvailable = ELG_pluginAvailable;

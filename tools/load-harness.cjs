@@ -15,7 +15,10 @@ const vm = require('vm');
 const APP = path.join(__dirname, '..', 'app');
 
 // Order must match app/index.html.
+// The shared core (lib/apply-core.js) is loaded first: it is the file the
+// HOST window loads too, so a load-time failure there breaks both windows.
 const ORDER = [
+  '../lib/apply-core.js',
   'toast.js', 'modal.js', 'logger.js', 'agent-config-schema.js', 'context-builder.js',
   'hub-client.js', 'hub-tools.js', 'agent-chat.js', 'agent-manager.js', 'agent-backup.js',
   'worldinfo-guard.js', 'folder-url.js', 'app.js', 'agent-ui.js', 'el.js',
@@ -156,6 +159,7 @@ for (const f of ORDER) {
 
 console.log('\n===== EXPECTED EXPORTS PRESENT AFTER LOAD =====');
 const EXPECT = [
+  'ELApplyCore',
   'EL_toast', 'EL_modalOpen', 'EL_modalClose',
   'ELLogger', 'EL_log', 'ELAgentConfigSchema',
   'EL_resolveAgentContext', 'EL_buildAgentContextAsync',
@@ -163,6 +167,7 @@ const EXPECT = [
   'EL_buildHubTools', 'EL_entryFingerprint',
   'AgentChatManager', 'renderAgentChat', 'initAgentChatPanel',
   'ELG_guardSave', 'ELG_loadFresh', 'ELG_toast', 'ELG_listTrash', 'ELG_restoreSnapshot',
+  'ELG_diff', 'EL_buildLineDiffHtml',
   'ELFolderUrl', 'EL_getUrlForUid', 'EL_ensureFolderByPath',
   'openEditEntryModal', 'EL_setLorebookData',
   // NOTE: EL_terminalBadge is assigned lazily inside initTerminalPanel(), so it is

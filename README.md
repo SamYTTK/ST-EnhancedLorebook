@@ -224,10 +224,34 @@ eventSource.on('el:proposals-changed', ({ chatId, count, reason }) => {
 
 ### The audit trail
 
-Every guarded save writes an audit record: when it happened, what was removed,
-what was added, how many entries were modified, and where the change came
-from. Read the trail with
-`GET /api/plugins/enhanced-lorebook-agent/audit/list?lorebookName=<name>`.
+Every guarded save writes an audit record. The old fields are unchanged
+(`ts`, `action`, `removed`, `added`, `changedCount`, `source`, `note`); a
+`changed` list was added that names the entries which were **modified**:
+
+```json
+{
+  "ts": 1730000000000,
+  "action": "save",
+  "removed": [{ "uid": "7", "comment": "Old tavern" }],
+  "added": [{ "uid": "9", "comment": "New tavern" }],
+  "changedCount": 1,
+  "changed": [
+    {
+      "uid": "3",
+      "comment": "Tavern",
+      "fields": ["content", "order"],
+      "before": { "comment": "Tavern", "content": "…", "order": 100 },
+      "after":  { "comment": "Tavern", "content": "…", "order": 120 }
+    }
+  ],
+  "source": "agent",
+  "note": "Hub apply - My agent"
+}
+```
+
+`before`/`after` are the entry as it was before and after the save (long
+strings are truncated so one fat entry cannot bloat the log). Read the trail
+with `GET /api/plugins/enhanced-lorebook-agent/audit/list?lorebookName=<name>`.
 
 ## Dependencies
 

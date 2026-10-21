@@ -168,14 +168,23 @@ async function ELG_trashEntries(bookName, removedEntries, source, note) {
 
 /**
  * Append an audit event (best-effort, never throws).
+ *
+ * The record shape is:
+ *   { ts, action, removed:[{uid,comment}], added:[{uid,comment}],
+ *     changedCount, changed:[{uid,comment,fields,before,after}], source, note }
+ * `changed` names the entries that were MODIFIED (not created or removed) and
+ * carries their before/after snapshots; it is new, everything else is
+ * unchanged, so older consumers keep working.
  */
 async function ELG_audit(bookName, rec) {
     try {
         if (_ELG_isVerboseGuard()) {
             const L = window.ELLogger || window.EL_log || console;
-            try { L.info(`[EL:Guard] audit → ${bookName} action=${rec?.action} removed=${rec?.removed?.length||0} added=${rec?.added?.length||0}`); } catch {}
+            try { L.info(`[EL:Guard] audit → ${bookName} action=${rec?.action} removed=${rec?.removed?.length||0} added=${rec?.added?.length||0} changed=${rec?.changed?.length||0}`); } catch {}
         }
-        await ELG_apiFetch('POST', '/audit/append', { lorebookName: bookName, entry: rec });
+        const entry = (rec && typeof rec === 'object') ? { ...rec } : {};
+        if (!Array.isArray(entry.changed)) entry.changed = [];
+        await ELG_apiFetch('POST', '/audit/append', { lorebookName: bookName, entry });
     } catch (e) {
         try { (window.ELLogger||console).warn('[EL Guard] audit append failed for', bookName, e); } catch { console.warn('[EL Guard] audit append failed for', bookName, e); }
     }
@@ -183,7 +192,11 @@ async function ELG_audit(bookName, rec) {
 
 /**
  * Compare two entry maps.
- * @returns {{removed: Array<[uid, entry]>, added: Array<[uid, entry]>, changed: string[]}}
+ *
+ * `changed` used to be a flat list of uids; it now carries the uid, the
+ * comment, the fields that differ and the before/after snapshots so the audit
+ * trail can say WHICH entries changed and HOW. `changedUids` keeps the old
+ * flat list available.
  */
 function ELG_diff(oldEntries, newEntries) {
     if (typeof ELApplyCore !== 'undefined' && typeof ELApplyCore.diffEntries === 'function') {
@@ -209,7 +222,7 @@ function ELG_diff(oldEntries, newEntries) {
         }
     }
 
-    return { removed, added, changed };
+    return { removed, added, changed, changedUids: changed.map(String) };
 }
 
 function _ELG_canon(value, inArray) {

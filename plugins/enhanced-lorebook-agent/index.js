@@ -1153,6 +1153,40 @@ async function deleteFromTrash(req, res) {
 // ── Audit log ─────────────────────────────────────────────────────────
 
 const MAX_AUDIT_ENTRIES = 500;
+const MAX_AUDIT_CHANGED = 50;
+const MAX_AUDIT_CHANGED_ITEM_BYTES = 32768;
+
+/**
+ * Normalise the `changed` list of an audit record.
+ *
+ * A record may name the entries that were MODIFIED and carry their
+ * before/after snapshots:
+ *   changed: [{ uid, comment, fields:[...], before:{...}, after:{...} }]
+ * Anything that is not a well-formed entry is dropped; an oversized snapshot
+ * is dropped (the uid/comment/fields are kept). The rest of the record is
+ * passed through untouched (older records have no `changed` at all).
+ */
+function normalizeAuditChanged(changed) {
+    if (!Array.isArray(changed)) return [];
+    const out = [];
+    for (const c of changed.slice(0, MAX_AUDIT_CHANGED)) {
+        if (!c || typeof c !== 'object' || Array.isArray(c)) continue;
+        const uid = sanitizeString(String(c.uid ?? ''), 64);
+        if (!uid) continue;
+        const item = { uid, comment: sanitizeString(String(c.comment ?? ''), 512) ?? '' };
+        if (Array.isArray(c.fields)) item.fields = c.fields.slice(0, 50).map(f => sanitizeString(String(f), 64)).filter(Boolean);
+        if (c.before && typeof c.before === 'object' && !Array.isArray(c.before)) item.before = c.before;
+        if (c.after && typeof c.after === 'object' && !Array.isArray(c.after)) item.after = c.after;
+        let size = 0;
+        try { size = JSON.stringify(item).length; } catch { size = 0; }
+        if (size > MAX_AUDIT_CHANGED_ITEM_BYTES) {
+            delete item.before;
+            delete item.after;
+        }
+        out.push(item);
+    }
+    return out;
+}
 
 /**
  * POST /api/plugins/enhanced-lorebook-agent/audit/append
@@ -1168,10 +1202,20 @@ async function appendAudit(req, res) {
         return res.status(400).json({ error: 'entry must be a non-null object' });
     }
 
+    const record = { ...entry };
+    // `changed` is optional (older clients do not send it) but must be an
+    // array of well-formed entries when it is there.
+    record.changed = normalizeAuditChanged(entry.changed);
+    if (!Array.isArray(record.removed)) record.removed = [];
+    if (!Array.isArray(record.added)) record.added = [];
+    if (!Number.isFinite(Number(record.changedCount))) {
+        record.changedCount = record.changed.length;
+    }
+
     const filePath = auditFile(params.name);
     return withFileLock(filePath, async () => {
         const audit = readJsonArray(filePath);
-        audit.push({ ts: Date.now(), ...entry });
+        audit.push({ ts: Date.now(), ...record });
         if (audit.length > MAX_AUDIT_ENTRIES) {
             audit.splice(0, audit.length - MAX_AUDIT_ENTRIES);
         }

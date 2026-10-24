@@ -25,6 +25,8 @@
         modalOpen: window.EL_modalOpen || null,
         modalClose: window.EL_modalClose || null,
         openEditEntryModal: window.openEditEntryModal || null,
+        // VSCode-style line diff (agent-ui.js → shared core).
+        buildLineDiffHtml: window.EL_buildLineDiffHtml || null,
     });
     EL.log = pick(['ELLogger', 'EL_log', 'EL_terminal', '_EL_flushLogs', 'EL_termLog']);
     EL.config = pick(['ELAgentConfigSchema']);
@@ -41,6 +43,10 @@
         'EL_proposalId', 'EL_fireToast', 'EL_getRequestHeaders', 'EL_recoverStagedHubProposals',
         'EL_extractJsonObject', 'EL_collectHistoryText', 'EL_resolveCustomText', 'EL_resolvePromptRole',
         'EL_resolvePromptPosition', 'EL_hubAllowedActions', 'EL_buildLinkedBooksLine']);
+    // Apply a pending proposal to its lorebook from this window.
+    EL.hub.applyProposal = typeof window.EL_applyProposal === 'function'
+        ? window.EL_applyProposal
+        : null;
     EL.tools = pick(['EL_buildHubTools', 'EL_parseFsPath', 'EL_entryFingerprint']);
     EL.chat = pick(['AgentChatManager', 'EL_getChatIdForAgent', 'renderAgentChat', 'initAgentChatPanel',
         'sendAgentChatMessage', 'handleChatSwipe', 'wireAgentChatUI', 'EL_simpleMarkdown',
@@ -48,7 +54,7 @@
     EL.backup = pick(['BackupClient']);
     try { if (!EL.backup.BackupClient && typeof BackupClient !== 'undefined') EL.backup.BackupClient = BackupClient; } catch (e) {}
     EL.guard = pick(['ELG_guardSave', 'ELG_loadFresh', 'ELG_fetchServerState', 'ELG_fetchServerStateEx',
-        'ELG_snapshot', 'ELG_trashEntries', 'ELG_audit', 'ELG_toast', 'ELG_canonicalEntries',
+        'ELG_snapshot', 'ELG_trashEntries', 'ELG_audit', 'ELG_diff', 'ELG_toast', 'ELG_canonicalEntries',
         'ELG_pluginAvailable', 'ELG_listTrash', 'ELG_restoreTrash', 'ELG_deleteTrashByIds',
         'ELG_deleteTrash', 'ELG_listSnapshots', 'ELG_restoreSnapshot', 'ELG_deleteSnapshot', 'ELG_listAudit']);
     EL.folders = pick(['ELFolderUrl', 'EL_getUrlForUid', 'EL_parseUrl', 'EL_ensureFolderByPath',

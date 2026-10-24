@@ -169,6 +169,90 @@ all the model talking) and a small server plugin that ships with this
 extension (which stores suggestions, chats, and backups — no model code in
 it). Backups from accepted suggestions clean themselves up after a day.
 
+## For other extensions (API)
+
+If you write extensions yourself, this one leaves a small, stable surface in
+the main SillyTavern window. Everything below lives on `window.EL` (the
+namespace is also reachable as `window.EL_hostApplyProposal` for the apply
+call alone).
+
+### Applying a suggestion
+
+```js
+await window.EL.applyProposal(proposal, { agentName: 'My extension' });
+```
+
+`proposal` is one of the stored suggestions (the same objects the Review
+Changes feed shows) — its shape is unchanged: `id`, `action`
+(`create` | `edit` | `delete`), `lorebookName`, `status`, `uid`, `entryData`,
+`changes`, `_baseFingerprint`.
+
+The call returns a promise that resolves when the lorebook was written, and
+throws when it was not (stale suggestion, blocked save, unknown lorebook —
+nothing is written in those cases). It goes through exactly the same checks as
+the Review Changes feed: a safety backup is taken first, the suggestion is
+refused if the entry changed since the agent read it, and the write is
+verified afterwards.
+
+Afterwards the suggestion is removed from the feed (same as accepting it in
+Review Changes does), the pending badge is refreshed, an open Enhanced
+Lorebook window is told to reload its feed, and the change event below is
+emitted.
+
+### Knowing when suggestions change
+
+The extension emits a SillyTavern event whenever the suggestion list changes:
+
+```js
+const { eventSource } = SillyTavern.getContext();
+eventSource.on('el:proposals-changed', ({ chatId, count, reason }) => {
+    // chatId  — the chat the suggestions belong to
+    // count   — how many suggestions are still waiting
+    // reason  — 'created' | 'accepted' | 'denied' | 'deleted' | 'loaded'
+});
+```
+
+`reason` is one of:
+
+| reason     | when                                                        |
+| ---------- | ----------------------------------------------------------- |
+| `created`  | a new suggestion was added                                   |
+| `accepted` | a suggestion was applied to a lorebook                       |
+| `denied`   | a suggestion was rejected                                    |
+| `deleted`  | decided suggestions were removed from the feed               |
+| `loaded`   | the list was (re)loaded                                      |
+
+### The audit trail
+
+Every guarded save writes an audit record. The old fields are unchanged
+(`ts`, `action`, `removed`, `added`, `changedCount`, `source`, `note`); a
+`changed` list was added that names the entries which were **modified**:
+
+```json
+{
+  "ts": 1730000000000,
+  "action": "save",
+  "removed": [{ "uid": "7", "comment": "Old tavern" }],
+  "added": [{ "uid": "9", "comment": "New tavern" }],
+  "changedCount": 1,
+  "changed": [
+    {
+      "uid": "3",
+      "comment": "Tavern",
+      "fields": ["content", "order"],
+      "before": { "comment": "Tavern", "content": "…", "order": 100 },
+      "after":  { "comment": "Tavern", "content": "…", "order": 120 }
+    }
+  ],
+  "source": "agent",
+  "note": "Hub apply - My agent"
+}
+```
+
+`before`/`after` are the entry as it was before and after the save (long
+strings are truncated so one fat entry cannot bloat the log). Read the trail
+with `GET /api/plugins/enhanced-lorebook-agent/audit/list?lorebookName=<name>`.
+
 ## Dependencies
 
 - Nothing extra, for managing lorebooks.

@@ -1,5 +1,6 @@
 const EXTENSION_NAME = 'Enhanced Lorebook UI';
 const EXTENSION_DIR = 'ST-EnhancedLorebook';
+const EL_API_BASE = '/api/plugins/enhanced-lorebook-agent';
 
 function getExtensionUrl() {
     return `scripts/extensions/third-party/${EXTENSION_DIR}`;
@@ -445,6 +446,10 @@ async function _elOnBridgeMessage(e) {
                     const n = Number(msg.proposalsCreated || 0);
                     if (n > 0) {
                         try { toastr.success('Agent "' + name + '" finished — ' + n + ' proposal(s). See Review Changes.'); } catch (_) {}
+                        // New proposals landed — tell the rest of SillyTavern.
+                        elRefreshQuickTaskBadge()
+                            .then(count => elEmitProposalsChanged('created', elHostCanonicalChatId(), count))
+                            .catch(() => {});
                     } else if (Array.isArray(msg.warnings) && msg.warnings.length) {
                         try { toastr.warning('Agent "' + name + '" finished with warnings: ' + msg.warnings[0]); } catch (_) {}
                     } else {
@@ -756,7 +761,7 @@ async function elRefreshQuickTaskBadge() {
         const chatId = charId + '_' + chatFile;
         const headers = (typeof context?.getRequestHeaders === 'function') ? context.getRequestHeaders() : { 'Content-Type': 'application/json' };
         const resp = await fetch('/api/plugins/enhanced-lorebook-agent/proposals/list?chatId=' + encodeURIComponent(chatId), { headers });
-        if (!resp.ok) return;
+        if (!resp.ok) return 0;
         const data = await resp.json().catch(() => null);
         const count = (data?.proposals || []).filter(p => p.status === 'pending').length;
         const badge = document.getElementById('agent-pending-badge');
@@ -764,8 +769,10 @@ async function elRefreshQuickTaskBadge() {
             badge.textContent = count > 99 ? '99+' : String(count);
             badge.style.display = count > 0 ? 'inline' : 'none';
         }
+        return count;
     } catch (e) {
         console.error('Enhanced Lorebook: quick-task badge refresh failed', e);
+        return 0;
     }
 }
 
@@ -1404,6 +1411,365 @@ function elHostTeardown() {
 
 window.EL_hostTeardown = elHostTeardown;
 
+// ── Host-window apply API ───────────────────────────────────────────────
+// The Review Changes feed lives in the app window, but other extensions (and
+// scripts) may want to apply a pending proposal from the MAIN SillyTavern
+// window. The apply algorithm is NOT re-implemented here: the host loads the
+// very same shared core (lib/apply-core.js) the app window uses, so both
+// windows apply proposals with identical rules, the identical staleness check
+// and the identical fail-closed save guard.
+//
+// Public surface (main window):
+//   window.EL.applyProposal(proposal, opts)   → Promise<void>
+//   window.EL.hub.applyProposal(proposal, opts)
+//   window.EL_hostApplyProposal(proposal, opts)
+//   window.EL.ui.buildLineDiffHtml(oldStr, newStr)
+//   window.EL.ready                             → Promise (core loaded)
+
+let _elApplyCorePromise = null;
+
+/**
+ * Load the shared core into the HOST window. The app window loads the same
+ * file as a classic script; here it is injected the same way SillyTavern
+ * injects extension scripts (a <script> tag with a module-free classic
+ * script), so both windows run byte-identical code.
+ */
+function elLoadApplyCore() {
+    if (window.ELApplyCore) return Promise.resolve(window.ELApplyCore);
+    if (_elApplyCorePromise) return _elApplyCorePromise;
+    _elApplyCorePromise = new Promise((resolve, reject) => {
+        try {
+            const script = document.createElement('script');
+            script.id = 'el-apply-core';
+            script.src = `/${getExtensionUrl()}/lib/apply-core.js?v=1`;
+            script.async = true;
+            script.onload = () => {
+                if (window.ELApplyCore) resolve(window.ELApplyCore);
+                else reject(new Error('apply core did not publish ELApplyCore'));
+            };
+            script.onerror = () => reject(new Error('could not load lib/apply-core.js'));
+            (document.head || document.body).appendChild(script);
+        } catch (e) {
+            reject(e);
+        }
+    }).catch((e) => {
+        _elApplyCorePromise = null;
+        console.error('Enhanced Lorebook: apply core failed to load', e);
+        throw e;
+    });
+    return _elApplyCorePromise;
+}
+
+function elHostContext() {
+    try { return SillyTavern.getContext(); } catch (e) { return null; }
+}
+
+function elHostHeaders() {
+    const ctx = elHostContext();
+    if (ctx && typeof ctx.getRequestHeaders === 'function') {
+        try { return ctx.getRequestHeaders(); } catch (e) { /* fall through */ }
+    }
+    return { 'Content-Type': 'application/json' };
+}
+
+async function elHostApiFetch(method, path, body) {
+    const opts = { method, headers: elHostHeaders() };
+    if (body !== undefined) opts.body = JSON.stringify(body);
+    const resp = await fetch(`${EL_API_BASE}${path}`, opts);
+    if (!resp.ok) {
+        const text = await resp.text().catch(() => '');
+        throw new Error(`API ${method} ${path}: ${resp.status}${text ? ' - ' + text.slice(0, 200) : ''}`);
+    }
+    return resp.json().catch(() => null);
+}
+
+// The folder mapping of the extension (app window: ELFolderUrl, host window:
+// the extension settings of the current chat).
+function elHostFolders(bookName) {
+    try {
+        const ctx = elHostContext();
+        const store = ctx?.extensionSettings?.SillyTavernEnhancedLorebook;
+        const folders = store?.folders?.[bookName];
+        return Array.isArray(folders) ? folders : [];
+    } catch (e) {
+        return [];
+    }
+}
+
+// Authoritative current state, read straight from the server (bypasses the
+// client-side world-info cache) — the guard compares against this.
+async function elHostFetchServerStateEx(bookName) {
+    const ctx = elHostContext();
+    if (!ctx || !bookName) return { ok: false, data: null, status: null, reason: 'no-context' };
+    try {
+        const resp = await fetch('/api/worldinfo/get', {
+            method: 'POST',
+            headers: elHostHeaders(),
+            body: JSON.stringify({ name: bookName }),
+            cache: 'no-cache',
+        });
+        if (!resp.ok) return { ok: false, data: null, status: resp.status, reason: 'http-' + resp.status };
+        let data;
+        try {
+            data = await resp.json();
+        } catch (e) {
+            return { ok: false, data: null, status: resp.status, reason: 'parse' };
+        }
+        if (!data || typeof data !== 'object' || !data.entries || typeof data.entries !== 'object') {
+            return { ok: false, data: null, status: resp.status, reason: 'shape' };
+        }
+        return { ok: true, data, status: resp.status, reason: '' };
+    } catch (e) {
+        return { ok: false, data: null, status: null, reason: 'network' };
+    }
+}
+
+async function elHostSnapshot(bookName, data) {
+    try {
+        await elHostApiFetch('POST', '/snapshot/create', { lorebookName: bookName, lorebookData: data, folders: elHostFolders(bookName) });
+        return true;
+    } catch (e) {
+        console.error('Enhanced Lorebook: snapshot failed for', bookName, e);
+        return false;
+    }
+}
+
+async function elHostTrashEntries(bookName, removedEntries, source, note) {
+    try {
+        const entries = (removedEntries || []).map(([uid, entry]) => ({
+            uid: String(uid),
+            entry,
+            folderId: '',
+            folderPath: '',
+            deletedAt: Date.now(),
+        }));
+        if (!entries.length) return true;
+        await elHostApiFetch('POST', '/trash/add', { lorebookName: bookName, entries, source, note });
+        return true;
+    } catch (e) {
+        console.error('Enhanced Lorebook: trash write failed for', bookName, e);
+        return false;
+    }
+}
+
+async function elHostAudit(bookName, rec) {
+    try {
+        await elHostApiFetch('POST', '/audit/append', { lorebookName: bookName, entry: rec });
+    } catch (e) {
+        console.error('Enhanced Lorebook: audit append failed for', bookName, e);
+    }
+}
+
+let _elHostPluginProbe = { value: false, at: 0 };
+async function elHostPluginAvailable() {
+    try {
+        const now = Date.now();
+        if (now - _elHostPluginProbe.at < 30000) return _elHostPluginProbe.value;
+        let ok = false;
+        try {
+            const resp = await fetch(`${EL_API_BASE}/health`, { method: 'GET', headers: elHostHeaders(), cache: 'no-cache' });
+            ok = !!resp && resp.ok === true;
+        } catch (e) { ok = false; }
+        _elHostPluginProbe = { value: ok, at: now };
+        return ok;
+    } catch (e) {
+        return false;
+    }
+}
+
+function elHostToast(message, type) {
+    try {
+        const fn = (typeof toastr === 'object' && toastr && typeof toastr[type] === 'function') ? toastr[type] : null;
+        if (fn) fn.call(toastr, message);
+        else if (typeof toastr === 'object' && toastr && typeof toastr.warning === 'function') toastr.warning(message);
+    } catch (e) { /* toasts are best-effort */ }
+}
+
+// The host window has no app-window modal, so the "these entries would be
+// lost" confirmation falls back to the browser confirm dialog.
+async function elHostConfirmDeletions(bookName, removedEntries) {
+    const names = (removedEntries || []).map(([, entry]) => (entry && entry.comment) ? entry.comment : 'entry').slice(0, 10);
+    const message = `Saving to "${bookName}" would remove ${removedEntries.length} entr${removedEntries.length === 1 ? 'y' : 'ies'}:\n${names.map(n => '• ' + n).join('\n')}\n\nSave anyway?`;
+    try {
+        return window.confirm(message) === true;
+    } catch (e) {
+        return false;
+    }
+}
+
+// The fail-closed guard, wired to the host window.
+function elHostGuard() {
+    const core = window.ELApplyCore;
+    if (!core || typeof core.createGuard !== 'function') return null;
+    return core.createGuard({
+        resolveSt: (st) => st || elHostContext(),
+        fetchServerStateEx: (bookName) => elHostFetchServerStateEx(bookName),
+        snapshot: (bookName, data) => elHostSnapshot(bookName, data),
+        trashEntries: (bookName, removed, source, note) => elHostTrashEntries(bookName, removed, source, note),
+        audit: (bookName, rec) => elHostAudit(bookName, rec),
+        pluginAvailable: () => elHostPluginAvailable(),
+        confirmDeletions: (bookName, removed) => elHostConfirmDeletions(bookName, removed),
+        toast: (message, type) => elHostToast(message, type),
+        saveWorldInfo: (bookName, data, st) => st.saveWorldInfo(bookName, data, true),
+        logger: () => console,
+        isVerbose: () => false,
+    });
+}
+
+// The apply algorithm, wired to the host window.
+function elHostApplyDeps() {
+    return {
+        resolveSt: (st) => st || elHostContext(),
+        guardSave: (bookName, data, options) => {
+            const guard = elHostGuard();
+            if (!guard) {
+                throw new Error('Refusing to write "' + bookName + '": the lorebook guard core is not loaded. Nothing was written.');
+            }
+            return guard.guardSave(bookName, data, options);
+        },
+        createBackup: async (lorebookName) => {
+            const ctx = elHostContext();
+            if (!ctx || typeof ctx.loadWorldInfo !== 'function') return;
+            const lorebookData = await ctx.loadWorldInfo(lorebookName);
+            await elHostApiFetch('POST', '/agent-backup/create', { lorebookName, lorebookData, folders: elHostFolders(lorebookName) });
+        },
+        fingerprint: (entry) => {
+            const core = window.ELApplyCore;
+            return (core && typeof core.entryFingerprint === 'function') ? core.entryFingerprint(entry) : '';
+        },
+        // Folder URLs are an app-window feature; the host only keeps the plain
+        // folder membership in sync.
+        folderOps: () => null,
+        getFolders: (bookName) => elHostFolders(bookName),
+        saveSettings: () => {
+            const ctx = elHostContext();
+            if (ctx && typeof ctx.saveSettingsDebounced === 'function') ctx.saveSettingsDebounced();
+        },
+        refreshUi: (lorebookName) => { elHostRefreshLorebookUi(lorebookName); },
+        logger: () => console,
+    };
+}
+
+// Refresh the native World Info editor when the touched book is open there.
+async function elHostRefreshLorebookUi(lorebookName) {
+    try {
+        const wi = await import('/scripts/world-info.js');
+        if (wi && typeof wi.reloadEditor === 'function') wi.reloadEditor(lorebookName);
+    } catch (e) { /* the native editor refresh is best-effort */ }
+}
+
+function elHostCanonicalChatId() {
+    try {
+        const ctx = elHostContext();
+        const charId = ctx?.characterId ?? 'no-char';
+        const chatFile = ctx?.chatId ?? ctx?.chat?.chat_id ?? 'default';
+        return charId + '_' + chatFile;
+    } catch (e) {
+        return 'no-char_default';
+    }
+}
+
+function elHostProposalChatId(proposal) {
+    if (proposal && typeof proposal._chatId === 'string' && proposal._chatId) return proposal._chatId;
+    return elHostCanonicalChatId();
+}
+
+/**
+ * Emit the cross-extension change event on the SillyTavern eventSource:
+ *   eventSource.emit('el:proposals-changed', { chatId, count, reason })
+ * reason is one of 'created' | 'accepted' | 'denied' | 'deleted' | 'loaded'.
+ */
+async function elEmitProposalsChanged(reason, chatId, count) {
+    try {
+        const ctx = elHostContext();
+        const source = ctx?.eventSource;
+        let core = null;
+        try { core = await elLoadApplyCore(); } catch (e) { core = window.ELApplyCore || null; }
+        if (core && typeof core.emitProposalsChanged === 'function') {
+            return core.emitProposalsChanged(source, { chatId, count, reason });
+        }
+        if (source && typeof source.emit === 'function') {
+            source.emit('el:proposals-changed', {
+                chatId: String(chatId || ''),
+                count: Math.max(0, Math.floor(Number(count) || 0)),
+                reason,
+            });
+            return true;
+        }
+        return false;
+    } catch (e) {
+        console.error('Enhanced Lorebook: could not emit el:proposals-changed', e);
+        return false;
+    }
+}
+
+// Delete-on-decision, exactly like the app window's accept flow.
+async function elHostDeleteDecidedProposals(proposal) {
+    try {
+        if (!proposal || !proposal.id) return false;
+        const chatId = elHostProposalChatId(proposal);
+        await elHostApiFetch('POST', '/proposals/delete', { chatId, proposalIds: [proposal.id] });
+        return true;
+    } catch (e) {
+        console.error('Enhanced Lorebook: could not remove the decided proposal', e);
+        return false;
+    }
+}
+
+// Badge + popup + event, so the host and the app window stay in sync.
+async function elHostAfterProposalChange(reason, proposal) {
+    try {
+        if (appWindow && !appWindow.closed) {
+            appWindow.postMessage({ source: 'enhanced-lorebook', type: 'el-proposals-refresh', nonce: _bridgeNonce }, window.location.origin);
+        }
+    } catch (e) {
+        console.error('Enhanced Lorebook: could not notify the app window', e);
+    }
+    let count = 0;
+    try { count = await elRefreshQuickTaskBadge(); } catch (e) { count = 0; }
+    await elEmitProposalsChanged(reason, elHostProposalChatId(proposal), count);
+}
+
+/**
+ * Apply one pending proposal to its lorebook — from the MAIN window.
+ * @param {object} proposal  the proposal record (contract unchanged:
+ *        id / action / lorebookName / status / uid / entryData / changes /
+ *        _baseFingerprint)
+ * @param {object} [opts]    { st, agentName }
+ */
+async function elHostApplyProposal(proposal, opts) {
+    const core = await elLoadApplyCore();
+    if (!core || typeof core.createApplyCore !== 'function') {
+        throw new Error('The Enhanced Lorebook apply core is not loaded — nothing was written.');
+    }
+    const apply = core.createApplyCore(elHostApplyDeps());
+    await apply.applyProposal(proposal, opts);
+    await elHostDeleteDecidedProposals(proposal);
+    await elHostAfterProposalChange('accepted', proposal);
+    return true;
+}
+
+// Public namespace for other extensions (main window).
+const _elHostNamespace = window.EL = window.EL || {};
+_elHostNamespace.applyProposal = elHostApplyProposal;
+_elHostNamespace.hub = Object.assign(_elHostNamespace.hub || {}, { applyProposal: elHostApplyProposal });
+_elHostNamespace.ui = Object.assign(_elHostNamespace.ui || {}, {
+    buildLineDiffHtml: (oldStr, newStr) => {
+        const core = window.ELApplyCore;
+        return (core && typeof core.buildLineDiffHtml === 'function') ? core.buildLineDiffHtml(oldStr, newStr) : '';
+    },
+});
+_elHostNamespace.guard = Object.assign(_elHostNamespace.guard || {}, {
+    guardSave: (bookName, data, options) => {
+        const guard = elHostGuard();
+        return guard ? guard.guardSave(bookName, data, options) : Promise.resolve(false);
+    },
+});
+_elHostNamespace.ready = elLoadApplyCore().catch(() => null);
+
+// Flat alias for extensions that do not want to walk the namespace.
+window.EL_hostApplyProposal = elHostApplyProposal;
+
 jQuery(async () => {
     setupLauncherDropdown();
     setupPostMessageBridge();
@@ -1411,4 +1777,7 @@ jQuery(async () => {
     setupElUnloadTeardown();
     addElWandButton();
     registerElSlash();
+    // Load the shared core eagerly so window.EL.ui.buildLineDiffHtml and
+    // window.EL.applyProposal are usable right away.
+    try { await _elHostNamespace.ready; } catch (e) { /* reported by elLoadApplyCore */ }
 });

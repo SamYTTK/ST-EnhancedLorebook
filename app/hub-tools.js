@@ -184,6 +184,11 @@ function EL_fingerprintHash(str) {
 // hash keeps the round trip exact and small.
 function EL_entryFingerprint(entry) {
     try {
+        // The contract and the hash live in the shared core (lib/apply-core.js)
+        // so the host window computes byte-identical fingerprints.
+        if (typeof ELApplyCore !== 'undefined' && typeof ELApplyCore.entryFingerprint === 'function') {
+            return ELApplyCore.entryFingerprint(entry);
+        }
         const keys = (typeof EL_ENTRY_FIELDS !== 'undefined' && Array.isArray(EL_ENTRY_FIELDS)) ? EL_ENTRY_FIELDS : Object.keys(entry || {});
         const picked = {};
         for (const k of keys.slice().sort()) {

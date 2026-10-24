@@ -1591,6 +1591,7 @@ async function loadProposalsForCurrentChat() {
     renderProposalsFeed(proposals, activeFilter);
     sendPendingCount();
     renderDashboard();
+    EL_emitProposalsChanged('loaded', loadedForChatId);
 }
 
 function populateAgentFilterDropdown() {
@@ -1697,8 +1698,14 @@ function updatePendingBadge(count) {
  * Unified line diff (VSCode-style): removed lines red, added lines green,
  * unchanged lines neutral. LCS-based; falls back to whole-block remove+add
  * when the grid would get too big. Output is HTML-escaped.
+ *
+ * The renderer lives in the shared core (lib/apply-core.js) so the host window
+ * can render the same diff for other extensions.
  */
 function EL_buildLineDiffHtml(oldStr, newStr) {
+    if (typeof ELApplyCore !== 'undefined' && typeof ELApplyCore.buildLineDiffHtml === 'function') {
+        return ELApplyCore.buildLineDiffHtml(oldStr, newStr);
+    }
     const esc = (typeof escapeHtml === 'function') ? escapeHtml : _escapeHtml;
     const norm = (s) => String(s ?? '').replace(/\r\n/g, '\n');
     const splitLines = (s) => {
@@ -1740,6 +1747,9 @@ function EL_buildLineDiffHtml(oldStr, newStr) {
     while (j < m) { html += line('add', '+', newLines[j]); j++; }
     return html;
 }
+
+// Exposed for other extensions (and for the EL.ui aggregator in el.js).
+window.EL_buildLineDiffHtml = EL_buildLineDiffHtml;
 
 function createProposalCard(p) {    const card = document.createElement('div');
     card.className = 'proposal-card ' + (p.status || 'pending');
@@ -2366,6 +2376,13 @@ async function EL_deleteDecidedProposals(list) {
     for (const [cid, ids] of byChat) {
         await EL_apiFetch('POST', '/proposals/delete', { chatId: cid, proposalIds: ids });
     }
+    // The feed drops the cards itself right after this call, so the pending
+    // count is computed without the deleted ids.
+    const deletedIds = new Set();
+    for (const ids of byChat.values()) for (const id of ids) deletedIds.add(id);
+    const pending = proposals.filter(p => p && p.status === 'pending' && !deletedIds.has(p.id)).length;
+    const chatId = (list && list[0]) ? proposalChatId(list[0]) : currentChatId;
+    EL_emitProposalsChanged('deleted', chatId, pending);
 }
 
 function shouldConfirmAgentAction() {
@@ -2414,6 +2431,7 @@ async function handleAcceptProposal(id) {
         proposals = proposals.filter(x => x.id !== p.id);
         renderProposalsFeed(proposals, activeFilter);
         if (typeof showToast === 'function') showToast('Proposal accepted and applied');
+        EL_emitProposalsChanged('accepted', proposalChatId(p));
     } catch (e) {
         if (typeof showToast === 'function') showToast('Failed: ' + e.message);
     }
@@ -2428,6 +2446,7 @@ async function handleDenyProposal(id) {
         proposals = proposals.filter(x => x.id !== p.id);
         renderProposalsFeed(proposals, activeFilter);
         if (typeof showToast === 'function') showToast('Proposal denied and removed');
+        EL_emitProposalsChanged('denied', proposalChatId(p));
     } catch (e) {
         if (typeof showToast === 'function') showToast('Failed: ' + e.message);
     }
@@ -2516,6 +2535,7 @@ async function handleApplyProposal(id) {
         proposals = proposals.filter(x => x.id !== p.id);
         renderProposalsFeed(proposals, activeFilter);
         if (typeof showToast === 'function') showToast('Proposal applied');
+        EL_emitProposalsChanged('accepted', proposalChatId(p));
     } catch (e) {
         if (typeof showToast === 'function') showToast('Failed: ' + e.message);
     }
@@ -2558,6 +2578,7 @@ async function handleAcceptAll() {
     proposals = proposals.filter(x => !removedAcceptIds.has(x.id));
     renderProposalsFeed(proposals, activeFilter);
     if (typeof showToast === 'function') showToast('Accepted ' + applied.length + '/' + pending.length + ' proposals');
+    EL_emitProposalsChanged('accepted');
 }
 
 async function handleDenyAll() {
@@ -2575,6 +2596,7 @@ async function handleDenyAll() {
     proposals = proposals.filter(x => !deniedIds.has(x.id));
     renderProposalsFeed(proposals, activeFilter);
     if (typeof showToast === 'function') showToast('Denied ' + pending.length + ' proposals');
+    EL_emitProposalsChanged('denied');
 }
 
 async function handleApplyAllAccepted() {
@@ -2615,6 +2637,7 @@ async function handleApplyAllAccepted() {
     proposals = proposals.filter(x => !removedApplyIds.has(x.id));
     renderProposalsFeed(proposals, activeFilter);
     if (typeof showToast === 'function') showToast('Applied ' + applied.length + '/' + accepted.length + ' proposals');
+    EL_emitProposalsChanged('accepted');
 }
 
 async function listBackups() {
@@ -2678,6 +2701,36 @@ function sendPendingCount() {
             EL_postToHost({ type: 'el-pending-count', count });
         }
     } catch (e) {}
+}
+
+/**
+ * Tell the rest of SillyTavern that the proposal list changed.
+ *
+ * Emitted on the SillyTavern eventSource (the popup shares the host's
+ * eventSource), so listeners installed in the MAIN window receive it:
+ *   eventSource.on('el:proposals-changed', ({ chatId, count, reason }) => …)
+ * reason is one of 'created' | 'accepted' | 'denied' | 'deleted' | 'loaded'.
+ */
+function EL_emitProposalsChanged(reason, chatId, countOverride) {
+    try {
+        const st = (typeof stContext !== 'undefined' && stContext) ? stContext : null;
+        const source = st && st.eventSource ? st.eventSource : null;
+        const count = (countOverride !== undefined && countOverride !== null)
+            ? countOverride
+            : (Array.isArray(proposals) ? proposals : []).filter(p => p && p.status === 'pending').length;
+        const id = (chatId !== undefined && chatId !== null) ? chatId : currentChatId;
+        const core = (typeof ELApplyCore !== 'undefined') ? ELApplyCore : null;
+        if (core && typeof core.emitProposalsChanged === 'function') {
+            return core.emitProposalsChanged(source, { chatId: id, count, reason });
+        }
+        if (source && typeof source.emit === 'function') {
+            source.emit('el:proposals-changed', { chatId: String(id || ''), count, reason });
+            return true;
+        }
+        return false;
+    } catch (e) {
+        return false;
+    }
 }
 
 /* ==========================================

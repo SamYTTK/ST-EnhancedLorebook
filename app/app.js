@@ -7917,7 +7917,7 @@ function EL_saveExpandedFolders() {
 
 /**
  * Restore the expand/collapse set for the open book. Prunes ids that no
- * longer exist. Books with no saved entry default to fully expanded.
+ * longer exist. Books with no saved entry default to fully collapsed.
  */
 function EL_restoreExpandedFolders() {
     try {
@@ -7925,7 +7925,7 @@ function EL_restoreExpandedFolders() {
         const folders = (extensionSettings && extensionSettings.folders && currentLorebookName) ? (extensionSettings.folders[currentLorebookName] || []) : [];
         const saved = extensionSettings && extensionSettings.foldersExpanded ? extensionSettings.foldersExpanded[currentLorebookName] : undefined;
         if (!Array.isArray(saved)) {
-            folders.forEach(f => { if (f && f.id !== undefined && f.id !== null) expandedFolders.add(f.id); });
+            // No saved state yet (new book) — stay collapsed by default.
             return;
         }
         const live = new Set(folders.map(f => f && f.id));

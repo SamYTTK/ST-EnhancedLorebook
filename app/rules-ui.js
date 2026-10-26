@@ -193,8 +193,11 @@ function EL_rulesBuildCtxApp(entry, uid) {
     } catch (e) { mapPlaced = false; }
     var relations = [];
     try {
-        if (typeof extensionSettings === 'object' && extensionSettings && Array.isArray(extensionSettings.relations)) {
-            relations = extensionSettings.relations;
+        var _data = (typeof currentLorebookData !== 'undefined') ? currentLorebookData : null;
+        var _entries = (_data && _data.entries && typeof _data.entries === 'object') ? _data.entries : {};
+        var _book = (typeof currentLorebookName !== 'undefined') ? currentLorebookName : '';
+        if (ELR && typeof ELR.relationsForEntries === 'function') {
+            relations = ELR.relationsForEntries(_entries, _book, uid) || [];
         }
     } catch (e) { relations = []; }
     return {
@@ -580,6 +583,36 @@ function EL_rulesRowHtml(row, idx, sys) {
         if (op !== 'empty') {
             html += '<input class="el-rules-right" data-f="right" value="' + EL_rulesEsc(row.right || '') + '" placeholder="' + EL_rulesEsc(EL_rulesRowHint(src, op)) + '" title="Right operand">';
         }
+        var ands = Array.isArray(row.ands) ? row.ands : [];
+        html += '<div class="el-rules-ands" style="flex-basis:100%;display:flex;flex-direction:column;gap:6px;">';
+        for (var a = 0; a < ands.length; a++) {
+            var aline = ands[a] || {};
+            var aop = aline.op || '=';
+            var asrc = (aline.left && aline.left.src) || src;
+            html += '<div class="el-rules-and" data-and="' + a + '" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;"><span class="el-rules-andlabel">and</span>';
+            html += '<select class="el-rules-op" data-f="andOp" data-and="' + a + '" title="AND operator">';
+            for (var ao = 0; ao < ops.length; ao++) {
+                html += '<option value="' + ops[ao] + '"' + (aop === ops[ao] ? ' selected' : '') + '>' + ops[ao] + '</option>';
+            }
+            html += '</select>';
+            html += '<select class="el-rules-src" data-f="andSrc" data-and="' + a + '" title="AND left operand source">'
+                + '<option value="time"' + (asrc === 'time' ? ' selected' : '') + '>time</option>'
+                + '<option value="dow"' + (asrc === 'dow' ? ' selected' : '') + '>day-of-week</option>'
+                + '<option value="field"' + (asrc === 'field' ? ' selected' : '') + '>field value</option>'
+                + '<option value="map"' + (asrc === 'map' ? ' selected' : '') + '>map-placed</option>'
+                + '<option value="relation"' + (asrc === 'relation' ? ' selected' : '') + '>relation</option>'
+                + '</select>';
+            if (asrc === 'field' || asrc === 'relation') {
+                html += '<input class="el-rules-ref" data-f="andRef" data-and="' + a + '" value="' + EL_rulesEsc((aline.left && aline.left.ref) || '') + '" placeholder="' + (asrc === 'field' ? 'field label' : 'relation kind') + '" title="AND source detail">';
+            }
+            if (aop !== 'empty') {
+                html += '<input class="el-rules-right" data-f="andRight" data-and="' + a + '" value="' + EL_rulesEsc(aline.right || '') + '" placeholder="' + EL_rulesEsc(EL_rulesRowHint(asrc, aop)) + '" title="AND right operand">';
+            }
+            html += '<button class="el-rules-x" data-anddel="' + a + '" title="Remove AND condition">×</button>';
+            html += '</div>';
+        }
+        html += '<div><button class="el-rules-tbtn" data-andadd title="Add AND condition">＋ condition</button></div>';
+        html += '</div>';
     } else {
         html += '<span class="el-rules-else" title="' + (kind === 'otherwise' ? 'else-branch: when no if matched' : 'constant value: always applies') + '">' + (kind === 'otherwise' ? 'else' : 'always') + '</span>';
     }
@@ -625,6 +658,72 @@ function EL_rulesPersistRow(selKey, idx, field, value) {
     } catch (e) { return false; }
 }
 
+function EL_rulesPersistAnd(selKey, idx, andIdx, sub, value) {
+    try {
+        var ELR = (typeof ELRules !== 'undefined') ? ELRules : window.ELRules;
+        var store = EL_rulesStoreApp();
+        if (!ELR || !store || !store.rules[selKey]) return false;
+        var rec = ELR.sanitizeEntryRules(store.rules[selKey]);
+        if (!rec.rows[idx]) return false;
+        var row = rec.rows[idx];
+        if (!Array.isArray(row.ands)) row.ands = [];
+        if (sub === 'add') {
+            var base = (row.left && row.left.src) || 'time';
+            row.ands.push({ op: '=', left: { src: base, ref: '' }, right: '' });
+        } else {
+            var a = row.ands[andIdx];
+            if (!a) return false;
+            if (sub === 'del') {
+                row.ands.splice(andIdx, 1);
+            } else if (sub === 'andOp') {
+                a.op = (['=', '!=', 'contains', '<', '>', 'empty'].indexOf(value) !== -1) ? value : '=';
+            } else if (sub === 'andSrc') {
+                a.left.src = (['time', 'dow', 'field', 'map', 'relation'].indexOf(value) !== -1) ? value : 'time';
+            } else if (sub === 'andRef') {
+                a.left.ref = String(value || '');
+            } else if (sub === 'andRight') {
+                a.right = String(value || '');
+            } else {
+                return false;
+            }
+        }
+        store.rules[selKey] = { systemId: rec.systemId, enabled: rec.enabled, rows: rec.rows };
+        try { saveSettings(); } catch (e) {}
+        return true;
+    } catch (e) { return false; }
+}
+
+function EL_rulesDeleteSystem(sysId) {
+    try {
+        var store = EL_rulesStoreApp();
+        if (!store) return null;
+        var sys = EL_rulesFindSystem(sysId);
+        if (!sys) return null;
+        var ELRs = (typeof ELRules !== 'undefined') ? ELRules : window.ELRules;
+        var doomed = [];
+        try {
+            doomed = Object.keys(store.rules || {}).filter(function (k) {
+                try { return ELRs && ELRs.sanitizeEntryRules(store.rules[k]).systemId === String(sys.id); }
+                catch (e) { return false; }
+            });
+        } catch (e) { doomed = []; }
+        var msg = 'Delete system "' + String(sys.name || sys.id) + '"?';
+        msg += doomed.length
+            ? ' This also removes its ' + doomed.length + ' per-entry row' + (doomed.length === 1 ? '' : 's') + ' - orphaned rows would otherwise keep evaluating silently.'
+            : ' It has no per-entry rows.';
+        var ok = true;
+        try { ok = confirm(msg); } catch (e) { ok = true; }
+        if (!ok) return null;
+        store.systems = store.systems.filter(function (s) { return String(s.id) !== String(sys.id); });
+        for (var d = 0; d < doomed.length; d++) {
+            try { delete store.rules[doomed[d]]; } catch (e) {}
+        }
+        if (EL_rulesSelKey && doomed.indexOf(EL_rulesSelKey) !== -1) EL_rulesSelKey = null;
+        try { saveSettings(); } catch (e) {}
+        return { systemId: String(sys.id), rowsRemoved: doomed.length };
+    } catch (e) { return null; }
+}
+
 function EL_rulesWire(sys, selKey) {
     var panel = null;
     try { panel = document.getElementById('rules-panel'); } catch (e) { return; }
@@ -661,13 +760,11 @@ function EL_rulesWire(sys, selKey) {
     var sysDel = q('#el-rules-sysdel');
     if (sysDel && sys) sysDel.addEventListener('click', function () {
         try {
-            var store = EL_rulesStoreApp();
-            if (!store) return;
-            store.systems = store.systems.filter(function (s) { return String(s.id) !== String(sys.id); });
-            try { saveSettings(); } catch (e) {}
+            var res = EL_rulesDeleteSystem(String(sys.id));
+            if (!res) return;
             EL_rulesSelSystem = null;
             EL_rulesSelKey = null;
-            EL_rulesLogPush('system deleted: ' + String(sys.name || sys.id));
+            EL_rulesLogPush('system deleted: ' + String(sys.name || sys.id) + ' (' + res.rowsRemoved + ' rows removed)');
             EL_rulesRender();
         } catch (e) {}
     });
@@ -743,10 +840,28 @@ function EL_rulesWire(sys, selKey) {
         var idx = Number(rowEl.getAttribute('data-row'));
         rowEl.querySelectorAll('select[data-f], input[data-f]').forEach(function (input) {
             var field = input.getAttribute('data-f');
+            var andIdx = input.getAttribute('data-and');
             input.addEventListener('change', function () {
-                if (EL_rulesPersistRow(selKey, idx, field, input.value)) {
+                if (andIdx !== null && andIdx !== '') {
+                    if (EL_rulesPersistAnd(selKey, idx, Number(andIdx), field, input.value)) {
+                        if (field === 'andOp' || field === 'andSrc') EL_rulesRender();
+                    }
+                } else if (EL_rulesPersistRow(selKey, idx, field, input.value)) {
                     if (field === 'kind' || field === 'op' || field === 'src') EL_rulesRender();
                 }
+            });
+        });
+        var andAdd = rowEl.querySelector('[data-andadd]');
+        if (andAdd && selKey) andAdd.addEventListener('click', function () {
+            try {
+                if (EL_rulesPersistAnd(selKey, idx, -1, 'add', '')) EL_rulesRender();
+            } catch (e) {}
+        });
+        rowEl.querySelectorAll('[data-anddel]').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                try {
+                    if (EL_rulesPersistAnd(selKey, idx, Number(btn.getAttribute('data-anddel')), 'del', '')) EL_rulesRender();
+                } catch (e) {}
             });
         });
         var del = rowEl.querySelector('[data-del]');

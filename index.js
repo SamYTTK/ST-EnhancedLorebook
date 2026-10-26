@@ -371,7 +371,10 @@ function elRulesTypeForHost(entry) {
 }
 
 // Clock values are read at evaluation time — no timers. dow: 0 = Sunday.
-function elRulesBuildCtx(entry, book, uid) {
+// relations reflects the entry's actual refs: kinds of el.refs on other
+// entries of the loaded book whose target is this entry (empty when none).
+// entries is the already-loaded book data the caller has in hand — no reads.
+function elRulesBuildCtx(entry, book, uid, entries) {
     const now = new Date();
     const pad = (n) => String(n).padStart(2, '0');
     let fieldValues = {};
@@ -388,9 +391,9 @@ function elRulesBuildCtx(entry, book, uid) {
     } catch (e) { mapPlaced = false; }
     let relations = [];
     try {
-        const ctx = elHostContext();
-        const rel = ctx?.extensionSettings?.SillyTavernEnhancedLorebook?.relations;
-        if (Array.isArray(rel)) relations = rel;
+        if (window.ELRules && typeof window.ELRules.relationsForEntries === 'function') {
+            relations = window.ELRules.relationsForEntries(entries || {}, book, uid) || [];
+        }
     } catch (e) { relations = []; }
     return {
         time: pad(now.getHours()) + ':' + pad(now.getMinutes()),
@@ -571,7 +574,7 @@ async function elRulesOnMessage() {
         let fresh = null;
         try { fresh = await elRulesLoadFreshCached(ctx, book, freshCache); } catch (e) { fresh = null; }
         if (!fresh || !fresh.entries || !fresh.entries[String(uid)]) continue;
-        const rctx = elRulesBuildCtx(fresh.entries[String(uid)], book, uid);
+        const rctx = elRulesBuildCtx(fresh.entries[String(uid)], book, uid, fresh.entries);
         const target = (sys && typeof sys.target === 'string' && sys.target.trim()) ? sys.target.trim() : 'Current_Location';
         let resolved = null;
         try { resolved = ELR.resolveSystem(rec, rctx, target); } catch (e) { continue; }

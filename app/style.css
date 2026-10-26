@@ -2407,3 +2407,395 @@ body.el-theme-light textarea::placeholder {
         grid-template-columns: 1fr !important;
     }
 }
+
+/* EL-REVAMP B1: typed entry editor (dossier form). Neutral surface styling on
+   theme vars only — no paper theme (theming is a later track). */
+#edit-type-tabs.el-tabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 10px;
+    border-bottom: 1px solid var(--panel-border);
+    padding-bottom: 0;
+}
+#edit-type-tabs .el-tab {
+    background: transparent;
+    border: 1px solid transparent;
+    border-bottom: 0;
+    border-radius: 8px 8px 0 0;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 0.85rem;
+    font-weight: 600;
+    padding: 6px 14px;
+}
+#edit-type-tabs .el-tab.on,
+#edit-type-tabs .el-tab[aria-selected="true"] {
+    background: var(--hover-bg);
+    border-color: var(--panel-border);
+    color: var(--text-color);
+}
+#edit-form .d-sec {
+    margin: 14px 0 4px;
+}
+#edit-form .d-sec:first-child {
+    margin-top: 2px;
+}
+#edit-form .d-sec-h {
+    display: inline-block;
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    background: rgba(0, 0, 0, 0.35);
+    border: 1px solid var(--panel-border);
+    color: var(--text-color);
+    border-radius: 3px;
+    padding: 4px 14px;
+    margin-bottom: 8px;
+}
+#edit-form details.d-field {
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    margin-bottom: 6px;
+    background: rgba(0, 0, 0, 0.15);
+    overflow: hidden;
+}
+#edit-form details.d-field summary {
+    cursor: pointer;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 11px;
+    font-family: monospace;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+}
+#edit-form details.d-field summary::-webkit-details-marker {
+    display: none;
+}
+#edit-form details.d-field summary::before {
+    content: "▸";
+    color: var(--text-muted);
+    font-size: 0.7rem;
+}
+#edit-form details.d-field[open] summary::before {
+    content: "▾";
+}
+#edit-form details.d-field summary .prev {
+    margin-left: auto;
+    font-family: inherit;
+    font-size: 0.74rem;
+    color: var(--text-muted);
+    opacity: 0.75;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 55%;
+}
+#edit-form details.d-field[open] summary .prev {
+    display: none;
+}
+#edit-form details.d-field .dbody {
+    padding: 0 11px 11px;
+}
+#edit-form details.d-field .dbody input[type="text"],
+#edit-form details.d-field .dbody textarea {
+    width: 100%;
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    color: var(--text-color);
+    font: inherit;
+    font-size: 0.85rem;
+    outline: none;
+    resize: vertical;
+    padding: 6px 8px;
+}
+#edit-form .el-kind {
+    font-size: 0.68rem;
+    color: var(--text-muted);
+    opacity: 0.8;
+}
+#edit-form .el-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 8px;
+}
+#edit-form .el-chips:empty {
+    margin-bottom: 0;
+}
+#edit-form .el-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    padding: 3px 6px 3px 10px;
+    border-radius: 20px;
+    border: 1px solid var(--panel-border);
+    background: var(--active-bg);
+    color: var(--text-color);
+}
+#edit-form .el-chip button {
+    background: transparent;
+    border: 0;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 0.85rem;
+    padding: 0 4px;
+}
+#edit-form .el-chip button:hover {
+    color: var(--danger-color);
+}
+#edit-form .el-refrow {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 8px;
+    flex-wrap: wrap;
+}
+#edit-form .el-refrow select {
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    color: var(--text-color);
+    padding: 5px 8px;
+    font-size: 0.82rem;
+    max-width: 100%;
+}
+#edit-form .el-imgrow {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+}
+#edit-form .el-thumb {
+    width: 72px;
+    height: 72px;
+    border-radius: 10px;
+    flex: 0 0 auto;
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--panel-border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    color: var(--text-muted);
+    font-size: 0.7rem;
+}
+#edit-form .el-thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+#edit-form .el-drop {
+    flex: 1;
+    border: 1px dashed var(--panel-border);
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+#edit-form .el-radar-wrap {
+    display: flex;
+    gap: 14px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+#edit-form svg.el-radar {
+    width: 190px;
+    height: 190px;
+    flex: 0 0 auto;
+}
+#edit-form svg.el-radar .el-radar-grid {
+    fill: none;
+    stroke: var(--panel-border);
+    stroke-width: 1;
+}
+#edit-form svg.el-radar .el-radar-axes line {
+    stroke: var(--panel-border);
+    stroke-width: 1;
+}
+#edit-form svg.el-radar .el-radar-lbl text {
+    fill: var(--text-muted);
+    font-size: 9px;
+    font-family: monospace;
+    text-anchor: middle;
+}
+#edit-form svg.el-radar .el-radar-poly {
+    fill: rgba(99, 102, 241, 0.3);
+    stroke: var(--primary-color);
+    stroke-width: 1.5;
+}
+#edit-form .el-rgrid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(110px, 140px));
+    gap: 6px 14px;
+}
+#edit-form .el-rrow {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.74rem;
+    font-family: monospace;
+    color: var(--text-muted);
+}
+#edit-form .el-rrow input {
+    width: 52px;
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    color: var(--text-color);
+    font: inherit;
+    padding: 3px 6px;
+}
+#edit-form .el-galrow {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 6px;
+}
+#edit-form .el-galrow button,
+#edit-form [data-el-galadd] {
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    color: var(--text-color);
+    cursor: pointer;
+    padding: 4px 10px;
+    font-size: 0.8rem;
+}
+#edit-form .el-inject {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    cursor: pointer;
+}
+#edit-form .el-cond {
+    margin-top: 8px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    font-size: 0.74rem;
+    color: var(--text-muted);
+    background: var(--active-bg);
+    border: 1px solid var(--panel-border);
+    border-radius: 7px;
+    padding: 6px 10px;
+}
+#edit-form .el-cond code {
+    font-family: monospace;
+    font-size: 0.72rem;
+}
+#edit-form .el-display {
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    padding: 8px 11px;
+    margin-bottom: 6px;
+    background: rgba(0, 0, 0, 0.15);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+#edit-form .el-badge {
+    font-size: 0.68rem;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 12px;
+    border: 1px solid var(--panel-border);
+    color: var(--text-muted);
+    white-space: nowrap;
+    align-self: flex-start;
+}
+#edit-form .el-disprow {
+    display: flex;
+    gap: 8px;
+    font-size: 0.82rem;
+    color: var(--text-muted);
+}
+#edit-form .el-disprow b {
+    color: var(--text-color);
+    font-weight: 600;
+}
+#edit-form .el-keymap {
+    margin: 12px 0 4px;
+    border: 1px solid rgba(16, 185, 129, 0.35);
+    border-radius: 8px;
+    padding: 9px 12px;
+    font-size: 0.78rem;
+    background: rgba(16, 185, 129, 0.06);
+}
+#edit-form .el-keymap-h {
+    font-weight: 700;
+    margin-bottom: 6px;
+}
+#edit-form .el-keymap-h span,
+#edit-form .el-keymap-hint {
+    font-weight: 400;
+    color: var(--text-muted);
+}
+#edit-form .el-keymap-k {
+    font-family: monospace;
+    font-size: 0.74rem;
+}
+#edit-form .el-quiet,
+#edit-appear .el-quiet {
+    font-size: 0.76rem;
+    color: var(--text-muted);
+    opacity: 0.85;
+    margin: 10px 0 4px;
+    line-height: 1.6;
+}
+#edit-appear .el-appear-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 14px;
+    align-items: center;
+    padding: 11px 0;
+    border-bottom: 1px solid var(--panel-border);
+}
+#edit-appear .el-appear-l {
+    font-weight: 600;
+    font-size: 0.85rem;
+}
+#edit-appear .el-appear-h {
+    font-size: 0.74rem;
+    color: var(--text-muted);
+    margin-top: 2px;
+}
+#edit-appear .el-pick {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+}
+#edit-appear input[type="color"] {
+    width: 40px;
+    height: 28px;
+    border: 1px solid var(--panel-border);
+    border-radius: 7px;
+    background: rgba(0, 0, 0, 0.3);
+    padding: 2px;
+    cursor: pointer;
+}
+#edit-appear .el-hex {
+    font-family: monospace;
+    font-size: 0.74rem;
+    color: var(--text-muted);
+    min-width: 58px;
+}
+#edit-appear #edit-appear-workshop {
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    color: var(--text-color);
+    cursor: pointer;
+    padding: 6px 12px;
+    font-size: 0.82rem;
+    margin-top: 10px;
+}

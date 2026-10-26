@@ -5401,6 +5401,716 @@ function EL_buildCharacterFilter(text, isExclude, previous) {
     return { isExclude: isExclude === true, names, tags };
 }
 
+/* EL-REVAMP B1: typed editing inside the edit-entry modal.
+ * Form/Appearance rendering + typed save hook. Untyped entries never touch
+ * this code (ELFormIsTyped() false → classic open/save paths run untouched).
+ * Reads go through ELSlots.extractValues, writes through ELCompile.applyType,
+ * the type store through ELTypeRegistry, and every save through ELG_guardSave.
+ */
+var ELFormState = { uid: null, typeId: 'none', values: {}, extra: [] };
+
+function ELFormNorm(s) {
+    return String(s === undefined || s === null ? '' : s).toLowerCase().replace(/[_\s]+/g, ' ').trim();
+}
+
+function ELFormGetType() {
+    if (!ELFormState.typeId || ELFormState.typeId === 'none') return null;
+    try { return EL_getEntryType(ELFormState.typeId); } catch (e) { return null; }
+}
+
+function ELFormIsTyped() {
+    try { return !!(ELFormState.typeId && ELFormState.typeId !== 'none' && ELFormGetType()); }
+    catch (e) { return false; }
+}
+
+function ELFormEntryName(uid) {
+    try {
+        const data = (typeof currentLorebookData !== 'undefined') ? currentLorebookData : null;
+        const e = data && data.entries ? data.entries[uid] : null;
+        if (!e) return 'uid ' + uid;
+        if (Array.isArray(e.key)) {
+            for (const k of e.key) { if (String(k).trim()) return String(k).trim(); }
+        }
+        if (e.comment && String(e.comment).trim()) return String(e.comment).trim();
+        return 'uid ' + uid;
+    } catch (e) { return 'uid ' + uid; }
+}
+
+function ELFormLookupName(name) {
+    try {
+        const want = ELFormNorm(name);
+        if (!want) return '';
+        const data = (typeof currentLorebookData !== 'undefined') ? currentLorebookData : null;
+        const entries = (data && data.entries) || {};
+        for (const uid of Object.keys(entries)) {
+            const e = entries[uid] || {};
+            const cands = [];
+            if (Array.isArray(e.key)) cands.push(...e.key);
+            if (e.comment) cands.push(e.comment);
+            if (typeof e.content === 'string') {
+                const m = /^\s*name\s*:(.*)$/im.exec(e.content);
+                if (m) cands.push(m[1]);
+            }
+            for (const c of cands) { if (ELFormNorm(c) === want) return String(uid); }
+        }
+    } catch (e) { /* fall through to no-match */ }
+    return '';
+}
+
+function ELFormRefCandidates(target) {
+    const out = [];
+    try {
+        const data = (typeof currentLorebookData !== 'undefined') ? currentLorebookData : null;
+        const entries = (data && data.entries) || {};
+        for (const uid of Object.keys(entries)) {
+            if (String(uid) === String(ELFormState.uid)) continue;
+            if (target) {
+                let tid = '';
+                try { tid = entries[uid] && entries[uid].extensions && entries[uid].extensions.el && entries[uid].extensions.el.type; } catch (e) { tid = ''; }
+                if (String(tid || '') !== String(target)) continue;
+            }
+            out.push({ uid: String(uid), name: ELFormEntryName(uid) });
+        }
+        out.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+    } catch (e) { /* tolerate */ }
+    return out;
+}
+
+function ELFormExtract(type) {
+    const out = { values: {}, extra: [] };
+    try {
+        const CC = (typeof ELCompile !== 'undefined') ? ELCompile : null;
+        const ELS = (typeof ELSlots !== 'undefined') ? ELSlots : null;
+        if (!CC || !ELS || !type) return out;
+        const rawEl = document.getElementById('edit-content');
+        const raw = rawEl ? (rawEl.value || '') : '';
+        const ex = ELS.extractValues(raw, CC.typeToAst(type));
+        if (ex && typeof ex === 'object') {
+            if (ex.values && typeof ex.values === 'object') out.values = ex.values;
+            if (Array.isArray(ex.extra)) out.extra = ex.extra;
+        }
+    } catch (e) { /* tolerate */ }
+    return out;
+}
+
+function ELFormMergeLabels(base, over) {
+    const out = {};
+    try {
+        if (base && typeof base === 'object') {
+            for (const k of Object.keys(base)) out[k] = base[k];
+        }
+        if (over && typeof over === 'object') {
+            const normMap = {};
+            for (const k of Object.keys(out)) {
+                const nk = ELFormNorm(k);
+                if (!Object.prototype.hasOwnProperty.call(normMap, nk)) normMap[nk] = k;
+            }
+            for (const k of Object.keys(over)) {
+                const nk = ELFormNorm(k);
+                if (Object.prototype.hasOwnProperty.call(normMap, nk)) out[normMap[nk]] = over[k];
+                else { out[k] = over[k]; normMap[nk] = k; }
+            }
+        }
+    } catch (e) { /* tolerate */ }
+    return out;
+}
+
+function ELFormSlotParams(type, label) {
+    try {
+        const sections = (type && Array.isArray(type.sections)) ? type.sections : [];
+        for (const sec of sections) {
+            const slots = (sec && Array.isArray(sec.slots)) ? sec.slots : [];
+            for (const sl of slots) {
+                if (sl && ELFormNorm(sl.label) === ELFormNorm(label)) return sl;
+            }
+        }
+    } catch (e) { /* tolerate */ }
+    return null;
+}
+
+function ELFormPreviewText(v) {
+    const s = String(v === undefined || v === null ? '' : v).replace(/\s+/g, ' ').trim();
+    if (!s) return 'empty';
+    return s.length > 60 ? s.slice(0, 60) + '…' : s;
+}
+
+function ELFormRadarAxes(slot, fallbackCount) {
+    try {
+        const raw = slot && slot.axes !== undefined && slot.axes !== null ? String(slot.axes) : '';
+        const axes = raw.split(',').map(a => a.trim()).filter(a => !!a);
+        if (axes.length) return axes;
+    } catch (e) { /* fall through */ }
+    const names = ['A', 'B', 'C', 'D', 'E', 'F'];
+    const n = Math.max(3, Math.min(8, fallbackCount || 6));
+    return names.slice(0, n);
+}
+
+function ELFormRadarNumbers(value, count) {
+    const parts = String(value === undefined || value === null ? '' : value).split(/[,\n;]+/).map(p => {
+        const n = parseFloat(String(p).trim());
+        return Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : 0;
+    });
+    const out = [];
+    for (let i = 0; i < count; i++) out.push(i < parts.length ? parts[i] : 0);
+    return out;
+}
+
+function ELFormRadarPoints(nums, size) {
+    const cx = size / 2;
+    const cy = size / 2;
+    const r = size * 0.35;
+    return nums.map((v, i) => {
+        const a = (-90 + i * (360 / nums.length)) * Math.PI / 180;
+        const d = (v / 100) * r;
+        return (cx + d * Math.cos(a)).toFixed(1) + ',' + (cy + d * Math.sin(a)).toFixed(1);
+    }).join(' ');
+}
+
+function ELFormRadarSvg(label, nums, axes, accent) {
+    const size = 200;
+    const cx = size / 2;
+    const cy = size / 2;
+    const grid = [1, 0.66, 0.33].map(f => {
+        const rr = size * 0.35 * f;
+        const pts = axes.map((_, i) => {
+            const a = (-90 + i * (360 / axes.length)) * Math.PI / 180;
+            return (cx + rr * Math.cos(a)).toFixed(1) + ',' + (cy + rr * Math.sin(a)).toFixed(1);
+        }).join(' ');
+        return '<polygon class="el-radar-grid" points="' + pts + '"/>';
+    }).join('');
+    const spokes = axes.map((_, i) => {
+        const a = (-90 + i * (360 / axes.length)) * Math.PI / 180;
+        const x = (cx + size * 0.35 * Math.cos(a)).toFixed(1);
+        const y = (cy + size * 0.35 * Math.sin(a)).toFixed(1);
+        return '<line x1="' + cx + '" y1="' + cy + '" x2="' + x + '" y2="' + y + '"/>';
+    }).join('');
+    const labels = axes.map((ax, i) => {
+        const a = (-90 + i * (360 / axes.length)) * Math.PI / 180;
+        const x = (cx + size * 0.46 * Math.cos(a)).toFixed(1);
+        const y = (cy + size * 0.46 * Math.sin(a)).toFixed(1);
+        return '<text x="' + x + '" y="' + y + '">' + escapeHtml(ax) + '</text>';
+    }).join('');
+    return '<svg class="el-radar" viewBox="0 0 ' + size + ' ' + size + '" data-el-radarsvg="' + escapeHtml(label) + '">' +
+        grid + '<g class="el-radar-axes">' + spokes + '</g>' +
+        '<polygon class="el-radar-poly" points="' + ELFormRadarPoints(nums, size) + '"/>' +
+        '<g class="el-radar-lbl">' + labels + '</g></svg>';
+}
+
+function ELFormFieldHtml(type, label, kind, value, slot) {
+    const v = String(value === undefined || value === null ? '' : value);
+    const open = v.trim() ? ' open' : '';
+    const head = '<details class="d-field" data-el-field="' + escapeHtml(label) + '"' + open + '>' +
+        '<summary><span class="d-flabel">' + escapeHtml(label) + '</span>' +
+        '<span class="prev" data-el-prev>' + escapeHtml(ELFormPreviewText(v)) + '</span></summary>' +
+        '<div class="dbody">';
+    const tail = '</div></details>';
+    if (kind === 'img') {
+        const hasLink = !!v.trim();
+        return head +
+            '<div class="el-imgrow"><div class="el-thumb" data-el-thumb>' +
+            (hasLink ? '<img src="' + escapeHtml(v.trim()) + '" alt="" onerror="this.remove()">' : '<span>no image</span>') +
+            '</div><div class="el-drop">Paste an image link below — preview only in B1, no upload yet.' +
+            '<input type="text" data-el-slot="' + escapeHtml(label) + '" value="' + escapeHtml(v) + '" placeholder="https://… or /user/images/….png"></div></div>' + tail;
+    }
+    if (kind === 'ref') {
+        const names = v.split(/[,\n;]+/).map(n => n.trim()).filter(n => !!n);
+        const chips = names.map(n => {
+            const uid = ELFormLookupName(n);
+            return '<span class="el-chip" data-uid="' + escapeHtml(uid) + '" data-name="' + escapeHtml(n) + '">' +
+                escapeHtml(n) + (uid ? '' : ' ⚠') + '<button type="button" data-el-unlink title="unlink">×</button></span>';
+        }).join('');
+        const cands = ELFormRefCandidates(slot && slot.target ? String(slot.target).trim() : '');
+        const linked = {};
+        names.forEach(n => { linked[ELFormNorm(n)] = true; });
+        let opts = '<option value="">＋ link entry…</option>';
+        for (const c of cands) {
+            if (linked[ELFormNorm(c.name)]) continue;
+            opts += '<option value="' + escapeHtml(c.uid) + '">' + escapeHtml(c.name) + '</option>';
+        }
+        const limitNote = (slot && slot.limit !== undefined && slot.limit !== null && slot.limit !== '')
+            ? ' <span class="el-kind">max ' + escapeHtml(String(slot.limit)) + (slot.target ? ' · ' + escapeHtml(String(slot.target)) : '') + '</span>'
+            : (slot && slot.target ? ' <span class="el-kind">' + escapeHtml(String(slot.target)) + '</span>' : '');
+        return head + '<div class="el-chips" data-el-ref="' + escapeHtml(label) + '">' + chips + '</div>' +
+            '<div class="el-refrow"><select data-el-refpick title="link entry">' + opts + '</select>' + limitNote + '</div>' + tail;
+    }
+    if (kind === 'gallery') {
+        const links = v ? String(v).split('\n').map(l => l.trim()).filter(l => !!l) : [''];
+        const rows = links.map(l =>
+            '<div class="el-galrow"><input type="text" data-el-gal value="' + escapeHtml(l) + '" placeholder="https://… image link">' +
+            '<button type="button" data-el-galdel title="remove">×</button></div>').join('');
+        const inj = !(slot && (String(slot.inject).toLowerCase() === 'off' || slot.inject === false));
+        return head + '<div data-el-gallery="' + escapeHtml(label) + '">' + rows + '</div>' +
+            '<div class="el-refrow"><button type="button" data-el-galadd>＋ add image</button>' +
+            '<label class="el-inject"><input type="checkbox" data-el-inject' + (inj ? ' checked' : '') + '> send extras to model</label></div>' + tail;
+    }
+    if (kind === 'radar') {
+        const axes = ELFormRadarAxes(slot, 6);
+        const nums = ELFormRadarNumbers(v, axes.length);
+        const accent = (type && type.accent) || '';
+        const inputs = axes.map((ax, i) =>
+            '<label class="el-rrow">' + escapeHtml(ax) + ' <input type="number" min="0" max="100" data-el-radar="' +
+            escapeHtml(label) + '" data-axis="' + i + '" value="' + nums[i] + '"></label>').join('');
+        return head + '<div class="el-radar-wrap" data-el-radarwrap="' + escapeHtml(label) + '">' +
+            ELFormRadarSvg(label, nums, axes, accent) +
+            '<div class="el-rgrid">' + inputs + '</div></div>' + tail;
+    }
+    if (kind === 'conditional') {
+        const when = slot && slot.when !== undefined && slot.when !== null ? String(slot.when) : '';
+        const els = slot && slot.else !== undefined && slot.else !== null ? String(slot.else) : '';
+        const condLine = when
+            ? '⌁ show only when <code>' + escapeHtml(when) + '</code> · else render <code>' + escapeHtml(els || '""') + '</code>'
+            : '⌁ always shown' + (els ? ' · empty renders <code>' + escapeHtml(els) + '</code>' : '');
+        return head + '<input type="text" data-el-slot="' + escapeHtml(label) + '" value="' + escapeHtml(v) + '">' +
+            '<div class="el-cond">' + condLine + '</div>' + tail;
+    }
+    const hint = (slot && slot.def !== undefined && slot.def !== null && String(slot.def) !== '')
+        ? String(slot.def) : '';
+    const multiline = v.indexOf('\n') !== -1 || v.length > 80 || hint.length > 80;
+    if (multiline) {
+        return head + '<textarea rows="2" data-el-slot="' + escapeHtml(label) + '"' +
+            (hint && !v ? ' placeholder="' + escapeHtml(hint) + '"' : '') + '>' + escapeHtml(v) + '</textarea>' + tail;
+    }
+    return head + '<input type="text" data-el-slot="' + escapeHtml(label) + '" value="' + escapeHtml(v) + '"' +
+        (hint && !v ? ' placeholder="' + escapeHtml(hint) + '"' : '') + '>' + tail;
+}
+
+function ELFormRenderSections(type, values) {
+    let html = '';
+    try {
+        const CC = (typeof ELCompile !== 'undefined') ? ELCompile : null;
+        const sections = (type && Array.isArray(type.sections)) ? type.sections : [];
+        for (const sec of sections) {
+            const title = sec && sec.title ? String(sec.title) : '';
+            const slots = (sec && Array.isArray(sec.slots)) ? sec.slots : [];
+            if (!slots.length) continue;
+            if (title) html += '<div class="d-sec"><div class="d-sec-h">' + escapeHtml(title) + '</div>';
+            else html += '<div class="d-sec">';
+            for (const sl of slots) {
+                const label = sl && sl.label ? String(sl.label) : '';
+                if (!label) continue;
+                const kind = sl && sl.kind ? String(sl.kind).toLowerCase() : 'cont';
+                if (kind === 'display') {
+                    const names = label.split(',').map(x => x.trim()).filter(x => !!x);
+                    let rows = '';
+                    try {
+                        const disp = (CC && typeof CC.renderDisplay === 'function')
+                            ? (CC.renderDisplay(CC.typeToAst(type), values) || {}) : {};
+                        for (const n of names) {
+                            rows += '<div class="el-disprow"><span>' + escapeHtml(n) + ':</span><b>' +
+                                escapeHtml(String(disp[n] === undefined || disp[n] === null ? '' : disp[n]) || '—') + '</b></div>';
+                        }
+                    } catch (e) { /* tolerate */ }
+                    html += '<div class="el-display" data-el-field="' + escapeHtml(label) + '">' +
+                        '<span class="el-badge">👁 visible only</span>' + rows + '</div>';
+                    continue;
+                }
+                const key = Object.prototype.hasOwnProperty.call(values, label) ? label : null;
+                const val = key !== null ? values[key] : '';
+                html += ELFormFieldHtml(type, label, kind || 'cont', val, sl);
+            }
+            html += '</div>';
+        }
+    } catch (e) { /* tolerate */ }
+    return html;
+}
+
+function ELFormKeymapHtml(type, values) {
+    try {
+        const main = type ? String(type.keyMain || 'none') : 'none';
+        const sec = type ? String(type.keySec || 'none') : 'none';
+        const canon = (name) => {
+            if (!name || name.toLowerCase() === 'none') return null;
+            if (values && Object.prototype.hasOwnProperty.call(values, name)) return name;
+            const want = ELFormNorm(name);
+            for (const k of Object.keys(values || {})) { if (ELFormNorm(k) === want) return k; }
+            return null;
+        };
+        const valOf = (name) => {
+            const c = canon(name);
+            return c ? String(values[c] === undefined || values[c] === null ? '' : values[c]).trim() : '';
+        };
+        if ((!main || main.toLowerCase() === 'none') && (!sec || sec.toLowerCase() === 'none')) {
+            return '<div class="el-keymap"><div class="el-keymap-h">Key mapping</div>' +
+                '<div class="el-keymap-k">type maps no slot — keys follow the Raw key fields above.</div></div>';
+        }
+        const mv = valOf(main);
+        const sv = valOf(sec);
+        return '<div class="el-keymap"><div class="el-keymap-h">✓ Key mapping <span>— from type: ' +
+            escapeHtml(main) + (sec && sec.toLowerCase() !== 'none' ? ' → keys · ' + escapeHtml(sec) + ' → secondary' : ' → keys') + '</span></div>' +
+            '<div class="el-keymap-k">keys: [' + escapeHtml(mv || '—') + ']' +
+            ((sec && sec.toLowerCase() !== 'none') ? ' · secondary: [' + escapeHtml(sv || '—') + ']' : '') +
+            ' <span class="el-keymap-hint">— confirm or edit, like any field; override in Raw</span></div></div>';
+    } catch (e) { return ''; }
+}
+
+function ELFormRenderAll() {
+    const type = ELFormGetType();
+    const formHost = document.getElementById('edit-form');
+    const appearHost = document.getElementById('edit-appear');
+    if (!type) {
+        if (formHost) formHost.innerHTML = '';
+        if (appearHost) appearHost.innerHTML = '';
+        return;
+    }
+    if (formHost) {
+        let html = ELFormRenderSections(type, ELFormState.values);
+        if (ELFormState.extra && ELFormState.extra.length) {
+            const shown = ELFormState.extra.slice(0, 8).map(l => escapeHtml(String(l).slice(0, 90))).join('<br>');
+            const more = ELFormState.extra.length > 8 ? '<br>… +' + (ELFormState.extra.length - 8) + ' more' : '';
+            html += '<div class="el-quiet">extra content (preserved, matches no slot):<br>' + shown + more + '</div>';
+        }
+        html += '<div id="el-keymap">' + ELFormKeymapHtml(type, ELFormState.values) + '</div>';
+        formHost.innerHTML = html;
+        ELFormBind(formHost);
+        ELFormTouch();
+    }
+    if (appearHost) {
+        const accent = (type && type.accent) || '#6366f1';
+        appearHost.innerHTML =
+            '<div class="el-appear-row"><div><div class="el-appear-l">Type accent</div>' +
+            '<div class="el-appear-h">Shared by every ' + escapeHtml(String(type.name || type.id)) + ' entry. Edge, tag, labels.</div></div>' +
+            '<div class="el-pick"><input type="color" id="edit-type-accent" value="' + escapeHtml(accent) + '">' +
+            '<span class="el-hex" id="edit-type-accent-hex">' + escapeHtml(accent) + '</span></div></div>' +
+            '<div class="el-quiet">Pickers, never hex fields — the hex is a readout. This edits the shared type look.</div>' +
+            '<div class="el-refrow"><button type="button" id="edit-appear-workshop">Open type workshop…</button></div>';
+        const picker = document.getElementById('edit-type-accent');
+        const hex = document.getElementById('edit-type-accent-hex');
+        if (picker) {
+            picker.addEventListener('input', () => { if (hex) hex.textContent = picker.value; });
+            picker.addEventListener('change', () => { ELFormSaveAccent(picker.value); });
+        }
+        const ws = document.getElementById('edit-appear-workshop');
+        if (ws) {
+            ws.addEventListener('click', () => {
+                try { EL_toast('Type workshop arrives in a later track', 'info'); } catch (e) { /* tolerate */ }
+            });
+        }
+    }
+}
+
+function ELFormSaveAccent(color) {
+    try {
+        const type = ELFormGetType();
+        if (!type) return;
+        const reg = (typeof ELTypeRegistry !== 'undefined') ? ELTypeRegistry : null;
+        if (!reg || typeof reg.putType !== 'function') return;
+        const next = JSON.parse(JSON.stringify(type));
+        next.accent = String(color);
+        const r = reg.putType(EL_getTypeStore(), next);
+        if (r && r.type) { try { saveSettings(); } catch (e) { /* tolerate */ } }
+    } catch (e) { /* tolerate */ }
+}
+
+function ELFormSaveGalleryInject(label, on) {
+    try {
+        const type = ELFormGetType();
+        if (!type) return;
+        const reg = (typeof ELTypeRegistry !== 'undefined') ? ELTypeRegistry : null;
+        if (!reg || typeof reg.putType !== 'function') return;
+        const next = JSON.parse(JSON.stringify(type));
+        let found = false;
+        for (const sec of (next.sections || [])) {
+            for (const sl of ((sec && sec.slots) || [])) {
+                if (ELFormNorm(sl.label) === ELFormNorm(label)) { sl.inject = on ? 'on' : 'off'; found = true; }
+            }
+        }
+        if (!found) return;
+        const r = reg.putType(EL_getTypeStore(), next);
+        if (r && r.type) { try { saveSettings(); } catch (e) { /* tolerate */ } }
+    } catch (e) { /* tolerate */ }
+}
+
+function ELFormBind(host) {
+    try {
+        if (!host || host.dataset.elBound) return;
+        host.dataset.elBound = '1';
+        host.addEventListener('input', (ev) => {
+            try {
+                const t = ev && ev.target;
+                if (!t) return;
+                if (t.hasAttribute && t.hasAttribute('data-el-slot') && t.tagName === 'INPUT' && t.type === 'text') {
+                    const thumb = t.closest ? t.closest('.el-imgrow') : null;
+                    if (thumb) {
+                        const box = thumb.querySelector ? thumb.querySelector('[data-el-thumb]') : null;
+                        if (box) {
+                            const link = t.value.trim();
+                            box.innerHTML = link
+                                ? '<img src="' + escapeHtml(link) + '" alt="" onerror="this.remove()">'
+                                : '<span>no image</span>';
+                        }
+                    }
+                }
+                ELFormTouch();
+            } catch (e) { /* tolerate */ }
+        });
+        host.addEventListener('change', (ev) => {
+            try {
+                const t = ev && ev.target;
+                if (!t) return;
+                if (t.hasAttribute && t.hasAttribute('data-el-inject')) {
+                    const wrap = t.closest ? t.closest('[data-el-field]') : null;
+                    const label = wrap ? wrap.getAttribute('data-el-field') : '';
+                    ELFormSaveGalleryInject(label, !!t.checked);
+                    return;
+                }
+                if (t.hasAttribute && t.hasAttribute('data-el-refpick')) {
+                    if (t.value) ELFormRefAdd(t);
+                    return;
+                }
+            } catch (e) { /* tolerate */ }
+        });
+        host.addEventListener('click', (ev) => {
+            try {
+                const t = ev && ev.target;
+                if (!t || !t.closest) return;
+                const un = t.closest('[data-el-unlink]');
+                if (un) {
+                    const chip = un.closest ? un.closest('.el-chip') : null;
+                    if (chip && chip.parentNode) chip.parentNode.removeChild(chip);
+                    ELFormTouch();
+                    return;
+                }
+                if (t.closest('[data-el-galadd]')) { ELFormGalleryAdd(t); return; }
+                const del = t.closest('[data-el-galdel]');
+                if (del) {
+                    const row = del.closest ? del.closest('.el-galrow') : null;
+                    if (row && row.parentNode) row.parentNode.removeChild(row);
+                    ELFormTouch();
+                }
+            } catch (e) { /* tolerate */ }
+        });
+    } catch (e) { /* tolerate */ }
+}
+
+function ELFormRefAdd(sel) {
+    try {
+        const uid = sel.value;
+        if (!uid) return;
+        const field = sel.closest ? sel.closest('[data-el-field]') : null;
+        const box = field ? field.querySelector('[data-el-ref]') : null;
+        if (!box) return;
+        const label = field.getAttribute('data-el-field');
+        const slot = ELFormSlotParams(ELFormGetType(), label);
+        const lim = slot && slot.limit !== undefined && slot.limit !== null && slot.limit !== '' ? parseInt(slot.limit, 10) : NaN;
+        if (Number.isFinite(lim) && lim >= 0 && box.querySelectorAll('.el-chip').length >= lim) {
+            try { EL_toast('Slot "' + label + '" allows ' + lim + ' ref(s)', 'info'); } catch (e) { /* tolerate */ }
+            sel.value = '';
+            return;
+        }
+        const name = ELFormEntryName(uid);
+        const chip = document.createElement('span');
+        chip.className = 'el-chip';
+        chip.setAttribute('data-uid', uid);
+        chip.setAttribute('data-name', name);
+        chip.innerHTML = escapeHtml(name) + '<button type="button" data-el-unlink title="unlink">×</button>';
+        box.appendChild(chip);
+        const opt = sel.querySelector ? sel.querySelector('option[value="' + uid + '"]') : null;
+        if (opt && opt.parentNode) opt.parentNode.removeChild(opt);
+        sel.value = '';
+        ELFormTouch();
+    } catch (e) { /* tolerate */ }
+}
+
+function ELFormGalleryAdd(btn) {
+    try {
+        const field = btn.closest ? btn.closest('[data-el-field]') : null;
+        const box = field ? field.querySelector('[data-el-gallery]') : null;
+        if (!box || !document.createElement) return;
+        const row = document.createElement('div');
+        row.className = 'el-galrow';
+        row.innerHTML = '<input type="text" data-el-gal placeholder="https://… image link">' +
+            '<button type="button" data-el-galdel title="remove">×</button>';
+        box.appendChild(row);
+        const inp = row.querySelector ? row.querySelector('input') : null;
+        if (inp && inp.focus) inp.focus();
+        ELFormTouch();
+    } catch (e) { /* tolerate */ }
+}
+
+function ELFormPaintRadar(wrap) {
+    try {
+        const svg = wrap.querySelector ? wrap.querySelector('[data-el-radarsvg]') : null;
+        const poly = svg ? svg.querySelector('.el-radar-poly') : null;
+        if (!poly) return;
+        const inputs = wrap.querySelectorAll ? wrap.querySelectorAll('[data-el-radar]') : [];
+        const nums = [];
+        for (let i = 0; i < inputs.length; i++) {
+            const n = parseFloat(inputs[i].value);
+            nums.push(Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : 0);
+        }
+        poly.setAttribute('points', ELFormRadarPoints(nums, 200));
+    } catch (e) { /* tolerate */ }
+}
+
+function ELFormTouch() {
+    try {
+        const host = document.getElementById('edit-form');
+        if (!host) return;
+        const fields = host.querySelectorAll ? host.querySelectorAll('[data-el-field]') : [];
+        for (let i = 0; i < fields.length; i++) {
+            const f = fields[i];
+            const prev = f.querySelector ? f.querySelector('[data-el-prev]') : null;
+            if (prev) {
+                const ctl = f.querySelector ? f.querySelector('[data-el-slot]') : null;
+                if (ctl && 'value' in ctl) prev.textContent = ELFormPreviewText(ctl.value);
+            }
+        }
+        const wraps = host.querySelectorAll ? host.querySelectorAll('[data-el-radarwrap]') : [];
+        for (let w = 0; w < wraps.length; w++) ELFormPaintRadar(wraps[w]);
+        const km = document.getElementById('el-keymap');
+        if (km) km.innerHTML = ELFormKeymapHtml(ELFormGetType(), ELFormCollect());
+    } catch (e) { /* tolerate */ }
+}
+
+function ELFormCollect() {
+    const values = ELFormMergeLabels({}, ELFormState.values);
+    try {
+        const host = document.getElementById('edit-form');
+        if (!host || !ELFormIsTyped()) return values;
+        const ctrls = host.querySelectorAll ? host.querySelectorAll('[data-el-slot]') : [];
+        for (let i = 0; i < ctrls.length; i++) {
+            const c = ctrls[i];
+            const field = c.closest ? c.closest('[data-el-field]') : null;
+            const label = field ? field.getAttribute('data-el-field') : (c.getAttribute('data-el-slot') || '');
+            if (!label) continue;
+            values[label] = ('value' in c) ? String(c.value) : '';
+        }
+        const refs = host.querySelectorAll ? host.querySelectorAll('[data-el-ref]') : [];
+        for (let r = 0; r < refs.length; r++) {
+            const box = refs[r];
+            const field = box.closest ? box.closest('[data-el-field]') : null;
+            const label = field ? field.getAttribute('data-el-field') : '';
+            if (!label) continue;
+            const chips = box.querySelectorAll ? box.querySelectorAll('.el-chip') : [];
+            const names = [];
+            for (let c = 0; c < chips.length; c++) {
+                const nm = chips[c].getAttribute('data-name') || chips[c].textContent || '';
+                const clean = String(nm).replace(/×\s*$/, '').replace(/⚠\s*$/, '').trim();
+                if (clean) names.push(clean);
+            }
+            values[label] = names.join(', ');
+        }
+        const gals = host.querySelectorAll ? host.querySelectorAll('[data-el-gallery]') : [];
+        for (let g = 0; g < gals.length; g++) {
+            const box = gals[g];
+            const label = box.getAttribute('data-el-gallery') || '';
+            if (!label) continue;
+            const inputs = box.querySelectorAll ? box.querySelectorAll('[data-el-gal]') : [];
+            const links = [];
+            for (let k = 0; k < inputs.length; k++) {
+                const l = String(inputs[k].value || '').trim();
+                if (l) links.push(l);
+            }
+            values[label] = links.join('\n');
+        }
+        const rads = host.querySelectorAll ? host.querySelectorAll('[data-el-radarwrap]') : [];
+        for (let q = 0; q < rads.length; q++) {
+            const wrap = rads[q];
+            const label = wrap.getAttribute('data-el-radarwrap') || '';
+            if (!label) continue;
+            const inputs = wrap.querySelectorAll ? wrap.querySelectorAll('[data-el-radar]') : [];
+            const nums = [];
+            for (let a = 0; a < inputs.length; a++) {
+                const n = parseFloat(inputs[a].value);
+                nums.push(Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : 0);
+            }
+            values[label] = nums.join(', ');
+        }
+    } catch (e) { /* tolerate */ }
+    return values;
+}
+
+function ELFormSwitchTab(name) {
+    try {
+        const tabs = ['form', 'raw', 'appear'];
+        for (const t of tabs) {
+            const pane = document.getElementById('edit-pane-' + t);
+            if (pane) pane.style.display = (t === name) ? '' : 'none';
+        }
+        const btns = document.querySelectorAll ? document.querySelectorAll('#edit-type-tabs .el-tab') : [];
+        for (let i = 0; i < btns.length; i++) {
+            const on = btns[i].getAttribute('data-tab') === name;
+            btns[i].setAttribute('aria-selected', on ? 'true' : 'false');
+            if (btns[i].classList) {
+                if (on) btns[i].classList.add('on');
+                else btns[i].classList.remove('on');
+            }
+        }
+    } catch (e) { /* tolerate */ }
+}
+
+function ELFormShowRaw() {
+    try {
+        const strip = document.getElementById('edit-type-tabs');
+        if (strip) strip.style.display = 'none';
+        const pf = document.getElementById('edit-pane-form');
+        const pa = document.getElementById('edit-pane-appear');
+        const pr = document.getElementById('edit-pane-raw');
+        if (pf) pf.style.display = 'none';
+        if (pa) pa.style.display = 'none';
+        if (pr) pr.style.display = '';
+    } catch (e) { /* tolerate */ }
+}
+
+function ELFormOnTypeChange() {
+    try {
+        const sel = document.getElementById('edit-type');
+        let want = sel ? String(sel.value || 'none') : 'none';
+        if (ELFormState.typeId !== 'none' && ELFormGetType()) {
+            ELFormState.values = ELFormMergeLabels(ELFormState.values, ELFormCollect());
+        }
+        if (want === 'none' || !EL_getEntryType(want)) {
+            if (want !== 'none') { try { sel.value = 'none'; } catch (e) { /* tolerate */ } }
+            ELFormState.typeId = 'none';
+            ELFormShowRaw();
+            return;
+        }
+        ELFormState.typeId = want;
+        const fresh = ELFormExtract(EL_getEntryType(want));
+        ELFormState.values = ELFormMergeLabels(fresh.values, ELFormState.values);
+        ELFormState.extra = fresh.extra;
+        ELFormRenderAll();
+        const strip = document.getElementById('edit-type-tabs');
+        if (strip) strip.style.display = '';
+        ELFormSwitchTab('form');
+    } catch (e) { /* tolerate */ }
+}
+
+function ELFormOpenFor(entry) {
+    ELFormState.uid = document.getElementById('edit-entry-uid').value;
+    ELFormState.values = {};
+    ELFormState.extra = [];
+    const sel = document.getElementById('edit-type');
+    let storedId = '';
+    try { storedId = (entry && entry.extensions && entry.extensions.el && entry.extensions.el.type) || ''; } catch (e) { storedId = ''; }
+    storedId = String(storedId || '');
+    try { EL_fillTypeSelect(sel, storedId || 'none'); } catch (e) { /* tolerate */ }
+    if (sel) {
+        sel.onchange = ELFormOnTypeChange;
+        if (storedId && !EL_getEntryType(storedId)) {
+            try { sel.value = 'none'; } catch (e) { /* tolerate */ }
+            storedId = '';
+        }
+    }
+    const btns = document.querySelectorAll ? document.querySelectorAll('#edit-type-tabs .el-tab') : [];
+    for (let i = 0; i < btns.length; i++) {
+        btns[i].onclick = () => { ELFormSwitchTab(btns[i].getAttribute('data-tab')); };
+    }
+    if (storedId && EL_getEntryType(storedId)) {
+        ELFormState.typeId = storedId;
+        const ex = ELFormExtract(EL_getEntryType(storedId));
+        ELFormState.values = ex.values;
+        ELFormState.extra = ex.extra;
+        ELFormRenderAll();
+        const strip = document.getElementById('edit-type-tabs');
+        if (strip) strip.style.display = '';
+        ELFormSwitchTab('form');
+    } else {
+        ELFormState.typeId = 'none';
+        ELFormShowRaw();
+    }
+}
+
 // ==========================================
 // Entry Editing
 // ==========================================
@@ -5479,6 +6189,10 @@ function openEditEntryModal(uid) {
         document.getElementById('edit-automation-id').value = entry.automationId || '';
         document.getElementById('edit-delay-recursion').checked = !!entry.delayUntilRecursion;
         document.getElementById('edit-ignore-budget').checked = !!entry.ignoreBudget;
+
+        /* EL-REVAMP B1: populate the type select + tabs; untyped entries
+           fall back to the classic Raw view. Never throws into the open path. */
+        try { ELFormOpenFor(entry); } catch (e) { EL_warn('typed form open failed — classic Raw view', e); try { ELFormShowRaw(); } catch (e2) {} }
 
         EL_modalOpen('edit-entry-modal');
     } catch (e) {
@@ -5598,6 +6312,27 @@ async function saveEditedEntry() {
 
     entry.automationId = document.getElementById('edit-automation-id').value;
     entry.ignoreBudget = document.getElementById('edit-ignore-budget').checked;
+
+    /* EL-REVAMP B1: typed save. Form values are compiled through the type
+       (content/keys/el refs), then the EXISTING guard save below persists the
+       book unchanged. Untyped entries skip this block entirely. */
+    try {
+        if (ELFormIsTyped() && String(document.getElementById('edit-entry-uid').value) === String(uid)) {
+            const b1type = ELFormGetType();
+            const b1values = ELFormCollect();
+            const CC = (typeof ELCompile !== 'undefined') ? ELCompile : null;
+            if (b1type && CC && typeof CC.applyType === 'function') {
+                const base = JSON.parse(JSON.stringify(entry));
+                const r = CC.applyType(base, b1type, { values: b1values, lookupName: ELFormLookupName });
+                if (r && r.entry && typeof r.entry.content === 'string') {
+                    entry.content = r.entry.content;
+                    if (r.entry.key) entry.key = r.entry.key;
+                    if (r.entry.keysecondary) entry.keysecondary = r.entry.keysecondary;
+                    if (r.entry.extensions) entry.extensions = r.entry.extensions;
+                }
+            }
+        }
+    } catch (e) { EL_warn('typed save compile failed — kept classic field values', e); }
 
     if (EL_isGenerating()) EL_warn(`saveEditedEntry: generation running (agent=${agentEngine?.state}) — save may race with agent`, { uid: entry.uid, book: currentLorebookName });
     const _guardOk = await ELG_guardSave(currentLorebookName, currentLorebookData, { explicitDelete: false, source: 'user', note: 'Save edited entry' });

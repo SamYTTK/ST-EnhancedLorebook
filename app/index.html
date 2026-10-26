@@ -942,7 +942,12 @@
             </div>
             <div class="modal-body" style="overflow-y: auto; padding-right: 12px;">
                 <input type="hidden" id="edit-entry-uid">
-                
+
+                <div class="form-group">
+                    <label for="edit-type">Entry type</label>
+                    <select id="edit-type"></select>
+                </div>
+
                 <div class="form-group">
                     <label>Title/Comment</label>
                     <input type="text" id="edit-comment">
@@ -966,9 +971,22 @@
                     </div>
                 </div>
                 
-                <div class="form-group" style="margin-bottom: 20px;">
-                    <label>Content</label>
-                    <textarea id="edit-content" style="min-height: 55vh; background: rgba(0,0,0,0.3); border: 1px solid var(--panel-border); color: var(--text-color); padding: 8px 12px; border-radius: 6px; font-family: inherit; font-size: 0.95rem; outline: none; resize: vertical; width: 100%;"></textarea>
+                <div id="edit-type-tabs" class="el-tabs" role="tablist" style="display:none;">
+                    <button type="button" class="el-tab" data-tab="form" role="tab" aria-selected="false">Form</button>
+                    <button type="button" class="el-tab" data-tab="raw" role="tab" aria-selected="false">Raw</button>
+                    <button type="button" class="el-tab" data-tab="appear" role="tab" aria-selected="false">Appearance</button>
+                </div>
+                <div id="edit-pane-form" style="display:none; margin-bottom: 20px;">
+                    <div id="edit-form"></div>
+                </div>
+                <div id="edit-pane-raw" style="margin-bottom: 20px;">
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label>Content</label>
+                        <textarea id="edit-content" style="min-height: 55vh; background: rgba(0,0,0,0.3); border: 1px solid var(--panel-border); color: var(--text-color); padding: 8px 12px; border-radius: 6px; font-family: inherit; font-size: 0.95rem; outline: none; resize: vertical; width: 100%;"></textarea>
+                    </div>
+                </div>
+                <div id="edit-pane-appear" style="display:none; margin-bottom: 20px;">
+                    <div id="edit-appear"></div>
                 </div>
                 
                 <details open style="margin-bottom: 12px; background: rgba(0,0,0,0.1); padding: 8px; border-radius: 6px;">

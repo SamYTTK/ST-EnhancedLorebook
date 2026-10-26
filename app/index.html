@@ -167,6 +167,7 @@
                     <button id="btn-deselect-all" title="Deselect All" style="display:none;"><i class="fa-solid fa-minus-square"></i></button>
                     <button id="btn-batch-options" title="Batch Options" disabled><i class="fa-solid fa-layer-group"></i> Batch</button>
                     <button id="btn-batch-undo" title="Undo last batch edit" style="display:none;"><i class="fa-solid fa-rotate-left"></i> Undo</button>
+                    <button id="btn-sections" title="Sections — order/position recipes"><i class="fa-solid fa-list-ol"></i> Sections</button>
                     <button id="btn-download-selected" title="Download Selected Entries" disabled style="display:none;"><i class="fa-solid fa-download"></i> Download</button>
                     <button id="btn-backup-watch" title="Backup Watch"><i class="fa-solid fa-shield-halved"></i> Backup Watch</button>
                     <button id="btn-export-lorebook" title="Export this lorebook (.json)"><i class="fa-solid fa-download"></i> Export</button>
@@ -1537,6 +1538,64 @@
             </div>
         </div>
     </div>
+
+    <!-- Sections Modal (Track B3: one-shot order/position recipes with live preview) -->
+    <div id="sections-modal" class="modal">
+        <div class="modal-content glass-panel" style="width: 1020px; max-width: 96vw; max-height: 90vh; display: flex; flex-direction: column;">
+            <div class="modal-header">
+                <h3>Sections — <span id="el-sections-book"></span></h3>
+                <button class="close-modal"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="modal-body" style="overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 12px;">
+                <div id="el-sections-list"></div>
+                <div class="el-sections-cols">
+                    <div class="el-sections-left">
+                        <h4>Result preview</h4>
+                        <p class="el-sections-sub">Members spread across the range, keeping their current relative order. Nothing is written until Confirm.</p>
+                        <div id="el-sections-preview"></div>
+                    </div>
+                    <div class="el-sections-right">
+                        <h4>Recipe</h4>
+                        <div class="form-group"><label>Section name</label><input type="text" id="el-section-name"></div>
+                        <div class="form-group"><label>Order range</label>
+                            <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+                                <input type="number" id="el-section-lo" min="0" title="Range start (sequential orders begin here)">
+                                <input type="number" id="el-section-hi" min="0" title="Range cap (warns on overflow, still applies)">
+                            </div>
+                        </div>
+                        <div class="form-group"><label>Position</label>
+                            <select id="el-section-position">
+                                <option value="keep">keep each entry's position</option>
+                                <option value="0">↑Char — before char</option>
+                                <option value="1">↓Char — after char</option>
+                                <option value="2">↑AN — before author note</option>
+                                <option value="3">↓AN — after author note</option>
+                                <option value="4">@D — at depth</option>
+                            </select>
+                        </div>
+                        <div class="form-group" id="el-section-depth-row" style="display:none;"><label>Depth</label><input type="number" id="el-section-depth" min="0" value="4"></div>
+                        <div class="form-group"><label>Lock to type</label><select id="el-section-lock"><option value="off">off — manual members</option></select></div>
+                        <div class="form-group"><label>Members <span style="font-weight:normal" id="el-section-seed-note"></span>
+                            <span style="float:right; font-weight:normal;"><a href="#" id="el-section-all">all</a> · <a href="#" id="el-section-none">none</a></span></label>
+                            <div id="el-section-members" class="el-sections-members"></div>
+                        </div>
+                        <div class="el-sections-stat" id="el-sections-stats"></div>
+                        <p class="el-sections-sub" id="el-sections-linked-note">Entries that reference (⛓) a member share its slot automatically.</p>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-actions" style="display:flex; justify-content:space-between; gap:12px;">
+                <div style="display:flex; gap:8px;">
+                    <button id="btn-sections-new" class="btn btn-secondary">New</button>
+                    <button id="btn-sections-delete" class="btn btn-secondary">Delete</button>
+                </div>
+                <div style="display:flex; gap:8px;">
+                    <button id="btn-sections-close" class="btn btn-secondary">Cancel</button>
+                    <button id="btn-sections-confirm" class="btn btn-primary">Confirm — apply</button>
+                </div>
+            </div>
+        </div>
+    </div>
     <!-- Unified Add Item Modal -->
     <div id="add-item-modal" class="modal">
         <!-- Floating Eye Toggle Button -->
@@ -1899,6 +1958,7 @@
     <script src="../lib/slot-parse.js?v=1"></script>
     <script src="../lib/dep-index.js?v=1"></script>
     <script src="../lib/type-compiler.js?v=1"></script>
+    <script src="../lib/sections.js?v=1"></script>
     <script src="toast.js?v=1"></script>
     <script src="modal.js?v=1"></script>
     <script src="logger.js?v=7"></script>

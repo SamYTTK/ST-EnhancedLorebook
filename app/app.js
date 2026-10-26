@@ -64,7 +64,11 @@ function EL_getLorebookData() {
 
 /** Same treatment for the open book's name, for symmetry. */
 function EL_setLorebookName(name) {
-    currentLorebookName = (typeof name === 'string' && name) ? name : null;
+    const next = (typeof name === 'string' && name) ? name : null;
+    if (next !== currentLorebookName) {
+        try { EL_sectionsDraft = null; } catch (e) {}
+    }
+    currentLorebookName = next;
     return currentLorebookName;
 }
 let panelHeights = {};
@@ -194,6 +198,7 @@ async function init() {
     extensionSettings = stContext.extensionSettings[EL_SETTINGS_KEY];
     if (!extensionSettings.folders) extensionSettings.folders = {};
     if (!extensionSettings.templates) extensionSettings.templates = {};
+    if (!extensionSettings.sections || typeof extensionSettings.sections !== 'object' || Array.isArray(extensionSettings.sections)) extensionSettings.sections = {};
     if (typeof extensionSettings.dragAndDrop !== 'boolean') extensionSettings.dragAndDrop = true;
     if (!extensionSettings.foldersExpanded || typeof extensionSettings.foldersExpanded !== 'object') extensionSettings.foldersExpanded = {};
     if (!extensionSettings.sidebarPanelHeights) extensionSettings.sidebarPanelHeights = {};
@@ -7831,6 +7836,25 @@ function setupEventListeners() {
     const btnBatchUndo = document.getElementById('btn-batch-undo');
     if (btnBatchUndo) btnBatchUndo.addEventListener('click', EL_batchUndoBatch);
 
+    // Sections (Track B3: one-shot order/position recipes)
+    document.getElementById('btn-sections').addEventListener('click', EL_sectionsOpen);
+    document.getElementById('btn-sections-new').addEventListener('click', EL_sectionsNew);
+    document.getElementById('btn-sections-delete').addEventListener('click', EL_sectionsDeleteSelected);
+    document.getElementById('btn-sections-close').addEventListener('click', () => EL_modalClose(document.getElementById('sections-modal')));
+    document.getElementById('btn-sections-confirm').addEventListener('click', EL_sectionsConfirmApply);
+    ['el-section-name', 'el-section-lo', 'el-section-hi', 'el-section-position', 'el-section-depth', 'el-section-lock'].forEach(id => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.addEventListener('input', EL_sectionsOnRecipeInput);
+        el.addEventListener('change', EL_sectionsOnRecipeInput);
+    });
+    const secAll = document.getElementById('el-section-all');
+    if (secAll) secAll.addEventListener('click', (e) => { e.preventDefault(); EL_sectionsSetAll(true); });
+    const secNone = document.getElementById('el-section-none');
+    if (secNone) secNone.addEventListener('click', (e) => { e.preventDefault(); EL_sectionsSetAll(false); });
+    const secMembers = document.getElementById('el-section-members');
+    if (secMembers) secMembers.addEventListener('change', EL_sectionsOnMemberToggle);
+
     // Theme mode
     const themeModeSelect = document.getElementById('setting-theme-mode');
     if (themeModeSelect) {
@@ -10393,3 +10417,582 @@ async function EL_workshopDeleteConvert(typeId) {
 
 // Start app
 window.addEventListener('load', init);
+
+/* EL-REVAMP B3: sections as one-shot order/position recipes with live preview.
+ * Storage: extensionSettings.sections = { [bookName]: [section] }, persisted
+ * through the app's existing saveSettings path. Engine lives in
+ * lib/sections.js (ELSections.computeSection — pure, DOM-free); this block
+ * is the UI shell plus the one-shot apply through ELG_guardSave.
+ * Only order/position/role/depth fields are ever written — never content.
+ * Nothing is written until Confirm/Run (one-shot rule: no auto-apply).
+ */
+
+let EL_sectionsDraft = null;
+let EL_sectionsAnchorIdx = -1;
+
+function EL_sectionsStore() {
+    try {
+        if (!extensionSettings.sections || typeof extensionSettings.sections !== 'object' || Array.isArray(extensionSettings.sections)) {
+            extensionSettings.sections = {};
+        }
+        return extensionSettings.sections;
+    } catch (e) { return {}; }
+}
+
+function EL_sectionsForBook(book) {
+    try {
+        const store = EL_sectionsStore();
+        const list = book ? store[book] : null;
+        return Array.isArray(list) ? list : [];
+    } catch (e) { return []; }
+}
+
+function EL_sectionsSave() {
+    try { saveSettings(); } catch (e) {}
+}
+
+function EL_sectionNewId() {
+    try {
+        return 'sec_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+    } catch (e) { return 'sec_' + Date.now(); }
+}
+
+function EL_sectionsEngine() {
+    try {
+        if (typeof ELSections !== 'undefined' && ELSections && typeof ELSections.computeSection === 'function') return ELSections;
+        if (typeof window !== 'undefined' && window.ELSections && typeof window.ELSections.computeSection === 'function') return window.ELSections;
+    } catch (e) {}
+    return null;
+}
+
+function EL_sectionsPositionLabel(pos) {
+    const map = { keep: 'keep position', 0: '↑Char', 1: '↓Char', 2: '↑AN', 3: '↓AN', 4: '@D' };
+    try {
+        if (pos === 'keep') return map.keep;
+        const n = parseInt(pos, 10);
+        if (Object.prototype.hasOwnProperty.call(map, n)) return map[n];
+    } catch (e) {}
+    return 'keep position';
+}
+
+function EL_sectionsEntryLabel(uid, entry) {
+    try {
+        if (typeof EL_batchEntryLabel === 'function') return EL_batchEntryLabel(String(uid), entry);
+    } catch (e) {}
+    try {
+        const c = entry && entry.comment ? String(entry.comment).trim() : '';
+        if (c) return c;
+    } catch (e2) {}
+    return 'Entry ' + String(uid);
+}
+
+function EL_sectionsEntryFolderName(uid) {
+    try {
+        const folders = (extensionSettings.folders && extensionSettings.folders[currentLorebookName]) || [];
+        for (const f of folders) {
+            const items = f.entries || [];
+            if (items.map(String).indexOf(String(uid)) !== -1) {
+                if (typeof getFolderPathName === 'function') return getFolderPathName(f.id);
+                return (f.name || f.id || '');
+            }
+        }
+    } catch (e) {}
+    return '';
+}
+
+function EL_sectionsEntryTypeId(entry) {
+    try {
+        const eng = EL_sectionsEngine();
+        if (eng && typeof eng.entryTypeId === 'function') return eng.entryTypeId(entry);
+    } catch (e) {}
+    try {
+        const t = entry && entry.extensions && entry.extensions.el && entry.extensions.el.type;
+        return (typeof t === 'string' && t) ? t : '';
+    } catch (e2) { return ''; }
+}
+
+function EL_sectionsEntryTypeLabel(entry) {
+    try {
+        const tid = EL_sectionsEntryTypeId(entry);
+        if (!tid) return 'None';
+        if (typeof EL_entryTypeLabel === 'function') return EL_entryTypeLabel(tid);
+        return tid;
+    } catch (e) { return 'None'; }
+}
+
+function EL_sectionsDepIndex() {
+    try {
+        const D = (typeof ELDepIndex !== 'undefined') ? ELDepIndex : (typeof window !== 'undefined' ? window.ELDepIndex : null);
+        if (D && typeof D.getCurrent === 'function') return D.getCurrent();
+    } catch (e) {}
+    return null;
+}
+
+function EL_sectionsCompute(section) {
+    try {
+        const eng = EL_sectionsEngine();
+        if (!eng) return null;
+        const entries = (currentLorebookData && currentLorebookData.entries) || {};
+        return eng.computeSection(entries, section, { index: EL_sectionsDepIndex() });
+    } catch (e) { return null; }
+}
+
+function EL_sectionsBlankDraft() {
+    const entries = (currentLorebookData && currentLorebookData.entries) || {};
+    const seeds = [];
+    try {
+        for (const uid of selectedEntries || []) {
+            if (Object.prototype.hasOwnProperty.call(entries, String(uid))) seeds.push(String(uid));
+        }
+    } catch (e) {}
+    let lo = 100;
+    try {
+        if (seeds.length) {
+            lo = seeds.reduce((m, u) => {
+                const n = Number(entries[u] && entries[u].order);
+                return Number.isFinite(n) ? Math.min(m, Math.floor(n)) : m;
+            }, Number.POSITIVE_INFINITY);
+            if (!Number.isFinite(lo)) lo = 100;
+        }
+    } catch (e) { lo = 100; }
+    const existing = EL_sectionsForBook(currentLorebookName).length;
+    return { id: EL_sectionNewId(), name: 'Section ' + (existing + 1), lo: lo, hi: lo + 99, position: 'keep', depth: 4, lockType: 'off', memberUids: seeds, _unsaved: true };
+}
+
+function EL_sectionsReadDraft() {
+    if (!EL_sectionsDraft) EL_sectionsDraft = EL_sectionsBlankDraft();
+    const d = EL_sectionsDraft;
+    try {
+        const nameEl = document.getElementById('el-section-name');
+        if (nameEl) d.name = String(nameEl.value || '').trim() || 'Section';
+        let lo = parseInt((document.getElementById('el-section-lo') || {}).value, 10);
+        let hi = parseInt((document.getElementById('el-section-hi') || {}).value, 10);
+        if (!Number.isFinite(lo) || lo < 0) lo = 0;
+        if (!Number.isFinite(hi)) hi = lo;
+        if (hi < lo) hi = lo;
+        d.lo = lo;
+        d.hi = hi;
+        const posEl = document.getElementById('el-section-position');
+        if (posEl) {
+            d.position = (posEl.value === 'keep') ? 'keep' : parseInt(posEl.value, 10);
+            if (d.position !== 'keep' && !(d.position >= 0 && d.position <= 4)) d.position = 'keep';
+        }
+        const depEl = document.getElementById('el-section-depth');
+        if (depEl) {
+            const n = parseInt(depEl.value, 10);
+            d.depth = Number.isFinite(n) && n >= 0 ? Math.floor(n) : 4;
+        }
+    } catch (e) {}
+    return d;
+}
+
+function EL_sectionsFillLockSelect() {
+    try {
+        const sel = document.getElementById('el-section-lock');
+        if (!sel) return;
+        const cur = (EL_sectionsDraft && EL_sectionsDraft.lockType) || 'off';
+        let types = [];
+        try { if (typeof EL_listEntryTypes === 'function') types = EL_listEntryTypes() || []; } catch (e) { types = []; }
+        types = types.slice().sort((a, b) => String((a && a.name) || (a && a.id) || '').localeCompare(String((b && b.name) || (b && b.id) || '')));
+        let html = '<option value="off">off — manual members</option>';
+        for (const t of types) {
+            const tid = String((t && t.id) || '');
+            if (!tid) continue;
+            const label = String((t && t.name) || tid);
+            html += '<option value="' + escapeHtml(tid) + '"' + (tid === cur ? ' selected' : '') + '>' + escapeHtml(label) + '</option>';
+        }
+        sel.innerHTML = html;
+        try { sel.value = cur; } catch (e) {}
+    } catch (e) {}
+}
+
+function EL_sectionsFillEditor() {
+    const d = EL_sectionsDraft;
+    if (!d) return;
+    try { document.getElementById('el-section-name').value = d.name || ''; } catch (e) {}
+    try { document.getElementById('el-section-lo').value = d.lo; } catch (e) {}
+    try { document.getElementById('el-section-hi').value = d.hi; } catch (e) {}
+    try { document.getElementById('el-section-position').value = String(d.position); } catch (e) {}
+    try { document.getElementById('el-section-depth').value = (d.depth === undefined || d.depth === null) ? 4 : d.depth; } catch (e) {}
+    EL_sectionsFillLockSelect();
+    try {
+        const locked = d.lockType && d.lockType !== 'off';
+        const note = document.getElementById('el-section-seed-note');
+        if (note) note.textContent = locked ? '(seeded from type ' + d.lockType + ')' : '(manual)';
+    } catch (e) {}
+}
+
+function EL_sectionsSetAll(on) {
+    if (!EL_sectionsDraft) return;
+    try {
+        const entries = (currentLorebookData && currentLorebookData.entries) || {};
+        EL_sectionsDraft.memberUids = on ? Object.keys(entries).map(String) : [];
+        EL_sectionsRenderPreview();
+    } catch (e) {}
+}
+
+function EL_sectionsOnRecipeInput() {
+    if (!EL_sectionsDraft) return;
+    try {
+        const lockSel = document.getElementById('el-section-lock');
+        const prevLock = EL_sectionsDraft.lockType || 'off';
+        EL_sectionsReadDraft();
+        const nextLock = EL_sectionsDraft.lockType || 'off';
+        if (nextLock !== prevLock && nextLock !== 'off') {
+            const entries = (currentLorebookData && currentLorebookData.entries) || {};
+            EL_sectionsDraft.memberUids = Object.keys(entries).filter(u => EL_sectionsEntryTypeId(entries[u]) === nextLock).map(String);
+        }
+        const hiEl = document.getElementById('el-section-hi');
+        if (hiEl && Number(hiEl.value) < EL_sectionsDraft.lo) hiEl.value = EL_sectionsDraft.lo;
+        EL_sectionsFillLockSelect();
+        EL_sectionsRenderPreview();
+    } catch (e) {}
+}
+
+function EL_sectionsMemberOrder() {
+    try {
+        const entries = (currentLorebookData && currentLorebookData.entries) || {};
+        return Object.keys(entries).sort((a, b) => {
+            const oa = Number(entries[a] && entries[a].order);
+            const ob = Number(entries[b] && entries[b].order);
+            const na = Number.isFinite(oa) ? oa : 100;
+            const nb = Number.isFinite(ob) ? ob : 100;
+            if (na !== nb) return na - nb;
+            return a < b ? -1 : (a > b ? 1 : 0);
+        }).map(String);
+    } catch (e) { return []; }
+}
+
+function EL_sectionsOnMemberToggle(e) {
+    if (!EL_sectionsDraft) return;
+    try {
+        const box = e && e.target;
+        if (!box || !box.dataset || !box.dataset.uid) return;
+        const uid = String(box.dataset.uid);
+        const idx = parseInt(box.dataset.idx, 10);
+        const set = new Set((EL_sectionsDraft.memberUids || []).map(String));
+        if (box.checked) set.add(uid);
+        else set.delete(uid);
+        if (e.shiftKey && Number.isFinite(idx) && EL_sectionsAnchorIdx >= 0 && EL_sectionsAnchorIdx !== idx) {
+            const order = EL_sectionsMemberOrder();
+            const a = Math.min(EL_sectionsAnchorIdx, idx);
+            const b = Math.max(EL_sectionsAnchorIdx, idx);
+            for (let i = a; i <= b; i++) {
+                const u = order[i];
+                if (!u) continue;
+                if (box.checked) set.add(u);
+                else set.delete(u);
+            }
+        }
+        EL_sectionsDraft.memberUids = Array.from(set);
+        EL_sectionsAnchorIdx = Number.isFinite(idx) ? idx : EL_sectionsAnchorIdx;
+        EL_sectionsRenderPreview();
+    } catch (err) {}
+}
+
+function EL_sectionsOpen() {
+    try {
+        if (!currentLorebookName || !currentLorebookData || !currentLorebookData.entries) {
+            if (typeof showToast === 'function') showToast('Open a lorebook first.');
+            return;
+        }
+        try { document.getElementById('el-sections-book').textContent = currentLorebookName; } catch (e) {}
+        const list = EL_sectionsForBook(currentLorebookName);
+        if (list.length && !list.some(s => s && s.id === (EL_sectionsDraft && EL_sectionsDraft.id))) {
+            EL_sectionsSelect(list[0].id);
+        } else if (!EL_sectionsDraft) {
+            EL_sectionsDraft = EL_sectionsBlankDraft();
+        }
+        EL_sectionsAnchorIdx = -1;
+        EL_sectionsRefreshList();
+        EL_sectionsFillEditor();
+        EL_sectionsRenderPreview();
+        EL_modalOpen(document.getElementById('sections-modal'));
+    } catch (e) {
+        try { if (typeof showToast === 'function') showToast('Could not open Sections.'); } catch (e2) {}
+    }
+}
+
+function EL_sectionsRefreshList() {
+    try {
+        const host = document.getElementById('el-sections-list');
+        if (!host) return;
+        const list = EL_sectionsForBook(currentLorebookName);
+        if (!list.length) {
+            host.innerHTML = '<p class="el-sections-sub" style="margin:0;">No sections yet — edit the recipe below and Confirm to save + apply it.</p>';
+            return;
+        }
+        let html = '';
+        for (const s of list) {
+            const sel = EL_sectionsDraft && s.id === EL_sectionsDraft.id;
+            const n = Array.isArray(s.memberUids) ? s.memberUids.length : 0;
+            html += '<div class="el-sections-item' + (sel ? ' selected' : '') + '" data-id="' + escapeHtml(String(s.id)) + '">'
+                + '<span class="el-sections-item-name">' + escapeHtml(String(s.name || 'Section')) + '</span>'
+                + '<span class="el-sections-item-meta">' + escapeHtml(String(s.lo) + '–' + String(s.hi)) + ' · ' + n + ' member' + (n === 1 ? '' : 's')
+                + (s.lockType && s.lockType !== 'off' ? ' · 🔒' + escapeHtml(String(s.lockType)) : '') + '</span>'
+                + '<span style="flex:1;"></span>'
+                + '<button class="btn btn-secondary btn-sm" data-act="run">Run</button>'
+                + '<button class="btn btn-secondary btn-sm" data-act="del">Delete</button>'
+                + '</div>';
+        }
+        host.innerHTML = html;
+        host.querySelectorAll('.el-sections-item').forEach(row => {
+            row.addEventListener('click', (e) => {
+                try {
+                    const btn = e.target.closest ? e.target.closest('[data-act]') : null;
+                    const id = row.dataset.id;
+                    if (btn) {
+                        e.stopPropagation();
+                        if (btn.dataset.act === 'run') EL_sectionRun(id);
+                        else if (btn.dataset.act === 'del') EL_sectionsDeleteById(id);
+                        return;
+                    }
+                    EL_sectionsSelect(id);
+                } catch (err) {}
+            });
+        });
+    } catch (e) {}
+}
+
+function EL_sectionsSelect(id) {
+    try {
+        const list = EL_sectionsForBook(currentLorebookName);
+        const found = list.find(s => s && String(s.id) === String(id));
+        if (!found) return;
+        EL_sectionsDraft = JSON.parse(JSON.stringify(found));
+        delete EL_sectionsDraft._unsaved;
+        EL_sectionsAnchorIdx = -1;
+        EL_sectionsRefreshList();
+        EL_sectionsFillEditor();
+        EL_sectionsRenderPreview();
+    } catch (e) {}
+}
+
+function EL_sectionsNew() {
+    try {
+        EL_sectionsDraft = EL_sectionsBlankDraft();
+        EL_sectionsAnchorIdx = -1;
+        EL_sectionsRefreshList();
+        EL_sectionsFillEditor();
+        EL_sectionsRenderPreview();
+        try { document.getElementById('el-section-name').focus(); } catch (e) {}
+    } catch (e) {}
+}
+
+function EL_sectionsDeleteById(id) {
+    try {
+        const store = EL_sectionsStore();
+        const list = EL_sectionsForBook(currentLorebookName);
+        const idx = list.findIndex(s => s && String(s.id) === String(id));
+        if (idx === -1) return;
+        const name = String(list[idx].name || 'Section');
+        list.splice(idx, 1);
+        store[currentLorebookName] = list;
+        EL_sectionsSave();
+        if (EL_sectionsDraft && String(EL_sectionsDraft.id) === String(id)) {
+            EL_sectionsDraft = list.length ? JSON.parse(JSON.stringify(list[0])) : EL_sectionsBlankDraft();
+        }
+        EL_sectionsRefreshList();
+        EL_sectionsFillEditor();
+        EL_sectionsRenderPreview();
+        if (typeof showToast === 'function') showToast('Section "' + name + '" deleted (recipe only — arrangement stays).');
+    } catch (e) {}
+}
+
+function EL_sectionsDeleteSelected() {
+    try {
+        if (!EL_sectionsDraft) return;
+        if (EL_sectionsDraft._unsaved) {
+            EL_sectionsDraft = EL_sectionsBlankDraft();
+            EL_sectionsRefreshList();
+            EL_sectionsFillEditor();
+            EL_sectionsRenderPreview();
+            return;
+        }
+        EL_sectionsDeleteById(EL_sectionsDraft.id);
+    } catch (e) {}
+}
+
+function EL_sectionsRenderPreview() {
+    try {
+        const preview = document.getElementById('el-sections-preview');
+        const stats = document.getElementById('el-sections-stats');
+        const confirmBtn = document.getElementById('btn-sections-confirm');
+        if (!preview || !EL_sectionsDraft) return;
+        const d = EL_sectionsDraft;
+        try {
+            document.getElementById('el-section-depth-row').style.display = (String(d.position) === '4') ? '' : 'none';
+        } catch (e) {}
+        const res = EL_sectionsCompute(d);
+        if (!res) {
+            preview.innerHTML = '<p class="el-sections-sub">Preview unavailable (engine failed to load).</p>';
+            return;
+        }
+        const entries = (currentLorebookData && currentLorebookData.entries) || {};
+        const labels = {};
+        try { for (const r of res.rows) labels[r.uid] = EL_sectionsEntryLabel(r.uid, entries[r.uid]); } catch (e) {}
+        const MAX_ROWS = 250;
+        let html = '';
+        if (res.warnings && res.warnings.length) {
+            for (const w of res.warnings) {
+                html += '<p class="el-sections-warn">⚠ ' + escapeHtml(String(w)) + '</p>';
+            }
+        }
+        for (const r of res.rows.slice(0, MAX_ROWS)) {
+            const entry = entries[r.uid] || {};
+            const typeLabel = EL_sectionsEntryTypeLabel(entry);
+            const folder = EL_sectionsEntryFolderName(r.uid);
+            let ordHtml;
+            let cls = 'el-sections-row';
+            if (r.linkedTo) {
+                ordHtml = escapeHtml(String(r.oldOrder)) + ' → <b>≡' + escapeHtml(String(r.newOrder)) + ' shared</b>';
+            } else if (!r.outsider) {
+                ordHtml = escapeHtml(String(r.oldOrder)) + ' → <b>' + escapeHtml(String(r.newOrder)) + '</b>';
+            } else {
+                const inCap = r.oldOrder >= d.lo && r.oldOrder <= d.hi;
+                if (inCap) cls += ' out';
+                ordHtml = escapeHtml(String(r.oldOrder)) + ' → <b>untouched</b>';
+            }
+            const depHtml = ' · d' + escapeHtml(String(r.depth)) + (r.linkedTo ? ' shared' : '');
+            const linkNote = r.linkedTo ? ' <span class="el-sections-link">⛓ ' + escapeHtml(labels[r.linkedTo] || r.linkedTo) + '</span>' : '';
+            html += '<div class="' + cls + '">'
+                + '<span class="el-sections-type">' + escapeHtml(typeLabel) + '</span>'
+                + '<span class="el-sections-name">' + escapeHtml(labels[r.uid] || r.uid) + linkNote
+                + (folder ? ' <span class="el-sections-folder">' + escapeHtml(folder) + '</span>' : '') + '</span>'
+                + '<span class="el-sections-ords">' + ordHtml + depHtml + '</span>'
+                + '</div>';
+        }
+        if (res.rows.length > MAX_ROWS) {
+            html += '<p class="el-sections-sub">Showing ' + MAX_ROWS + ' of ' + res.rows.length + ' entries.</p>';
+        }
+        preview.innerHTML = html;
+
+        const memberCount = res.rows.filter(r => !r.outsider && !r.linkedTo).length;
+        const linkedCount = res.rows.filter(r => !!r.linkedTo).length;
+        let posTxt = EL_sectionsPositionLabel(d.position);
+        if (String(d.position) === '4') posTxt += ' depth ' + d.depth;
+        let st = memberCount + ' slots · ' + d.lo + '–' + d.hi + ' cap · ' + res.changed + ' change' + (res.changed === 1 ? '' : 's') + ' · ' + posTxt;
+        if (d.lockType && d.lockType !== 'off') st += ' · locked: ' + d.lockType;
+        if (linkedCount) st += ' · ' + linkedCount + ' linked auto-included';
+        if (stats) stats.textContent = st;
+        try {
+            const note = document.getElementById('el-sections-linked-note');
+            if (note) note.textContent = linkedCount
+                ? linkedCount + ' linked entr' + (linkedCount === 1 ? 'y' : 'ies') + ' auto-included (⛓) — share the member slot.'
+                : 'Entries that reference (⛓) a member share its slot automatically.';
+        } catch (e) {}
+        if (confirmBtn) {
+            try { confirmBtn.textContent = res.changed ? ('Confirm — apply ' + res.changed + ' change' + (res.changed === 1 ? '' : 's')) : 'Confirm — apply'; } catch (e) {}
+        }
+
+        const memHost = document.getElementById('el-section-members');
+        if (memHost) {
+            const locked = d.lockType && d.lockType !== 'off';
+            const memberSet = new Set((d.memberUids || []).map(String));
+            const order = EL_sectionsMemberOrder();
+            let mhtml = '';
+            order.forEach((u, idx) => {
+                const checked = memberSet.has(u);
+                mhtml += '<label><input type="checkbox" data-uid="' + escapeHtml(u) + '" data-idx="' + idx + '"'
+                    + (checked ? ' checked' : '') + (locked ? ' disabled' : '') + '>'
+                    + escapeHtml(labels[u] || u)
+                    + '<span class="el-sections-memtag">' + escapeHtml(EL_sectionsEntryTypeLabel(entries[u])) + '</span></label>';
+            });
+            memHost.innerHTML = mhtml || '<p class="el-sections-sub">No entries in this book.</p>';
+        }
+    } catch (e) {}
+}
+
+async function EL_sectionApplyWrites(section) {
+    try {
+        if (!currentLorebookName || !currentLorebookData || !currentLorebookData.entries) {
+            if (typeof showToast === 'function') showToast('Open a lorebook first.');
+            return false;
+        }
+        const res = EL_sectionsCompute(section);
+        if (!res) {
+            if (typeof showToast === 'function') showToast('Section engine unavailable.');
+            return false;
+        }
+        const byUid = {};
+        try { for (const r of res.rows) byUid[r.uid] = r; } catch (e) {}
+        const setPos = section.position !== 'keep' && section.position !== undefined && section.position !== null;
+        const setDepth = setPos && Number(section.position) === 4;
+        let n = 0;
+        for (const r of res.rows) {
+            if (r.outsider) continue;
+            const entry = currentLorebookData.entries[r.uid];
+            if (!entry) continue;
+            let touched = false;
+            if (r.newOrder !== entry.order) { entry.order = r.newOrder; touched = true; }
+            if (setPos) {
+                if (entry.position !== r.position) { entry.position = r.position; touched = true; }
+                if (setDepth && entry.role !== r.role) { entry.role = r.role; touched = true; }
+                if (setDepth && entry.depth !== r.depth) { entry.depth = r.depth; touched = true; }
+            }
+            if (touched) n++;
+        }
+        if (!n) {
+            EL_info('Section "' + section.name + '" already applied — nothing changed.');
+            if (typeof showToast === 'function') showToast('Section "' + section.name + '" already applied — nothing changed.');
+            return true;
+        }
+        const ok = await ELG_guardSave(currentLorebookName, currentLorebookData, { explicitDelete: false, source: 'user', note: 'Apply section ' + section.name });
+        EL_logGuardResult(ok, 'Apply section ' + section.name, currentLorebookName);
+        if (!ok) {
+            EL_error('Apply section blocked/failed');
+            try { const fresh = await ELG_loadFresh(currentLorebookName); if (fresh) EL_setLorebookData(fresh, { own: true }); } catch (e) { EL_warn('reload after failed section apply failed', e); }
+            if (typeof showToast === 'function') showToast('Section was blocked — no changes were saved.');
+            renderEntries();
+            return false;
+        }
+        renderEntries();
+        if (typeof showToast === 'function') showToast('Section "' + section.name + '" applied to ' + n + ' entr' + (n === 1 ? 'y' : 'ies') + '.');
+        return true;
+    } catch (e) {
+        EL_error('section apply failed', e);
+        if (typeof showToast === 'function') showToast('Section apply failed.');
+        return false;
+    }
+}
+
+async function EL_sectionsConfirmApply() {
+    try {
+        if (!currentLorebookName) {
+            if (typeof showToast === 'function') showToast('Open a lorebook first.');
+            return;
+        }
+        const d = EL_sectionsReadDraft();
+        const store = EL_sectionsStore();
+        const list = EL_sectionsForBook(currentLorebookName);
+        const clean = JSON.parse(JSON.stringify(d));
+        delete clean._unsaved;
+        const idx = list.findIndex(s => s && String(s.id) === String(clean.id));
+        if (idx !== -1) list[idx] = clean;
+        else list.push(clean);
+        store[currentLorebookName] = list;
+        EL_sectionsSave();
+        EL_sectionsDraft = JSON.parse(JSON.stringify(clean));
+        EL_sectionsRefreshList();
+        const ok = await EL_sectionApplyWrites(clean);
+        if (ok) EL_sectionsRenderPreview();
+    } catch (e) {
+        EL_error('section confirm failed', e);
+        if (typeof showToast === 'function') showToast('Section apply failed.');
+    }
+}
+
+async function EL_sectionRun(id) {
+    try {
+        const list = EL_sectionsForBook(currentLorebookName);
+        const found = list.find(s => s && String(s.id) === String(id));
+        if (!found) {
+            if (typeof showToast === 'function') showToast('Section not found.');
+            return;
+        }
+        await EL_sectionApplyWrites(found);
+        try { EL_sectionsRenderPreview(); } catch (e) {}
+    } catch (e) {
+        EL_error('section run failed', e);
+    }
+}

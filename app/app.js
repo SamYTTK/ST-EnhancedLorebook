@@ -49,6 +49,12 @@ function EL_cloneLorebookData(data) {
 function EL_setLorebookData(data, opts) {
     const o = opts || {};
     currentLorebookData = (o.own === true) ? EL_cloneLorebookData(data) : (data || null);
+    try {
+        if (typeof ELDepIndex !== 'undefined' && ELDepIndex && typeof ELDepIndex.buildIndex === 'function') {
+            const entries = (currentLorebookData && currentLorebookData.entries) || {};
+            ELDepIndex.setCurrent(ELDepIndex.buildIndex(entries, { book: currentLorebookName }));
+        }
+    } catch (e) { /* dep index is advisory only — adoption must never fail */ }
     return currentLorebookData;
 }
 
@@ -5295,6 +5301,9 @@ async function saveEditedEntry() {
     if (EL_isGenerating()) EL_warn(`saveEditedEntry: generation running (agent=${agentEngine?.state}) — save may race with agent`, { uid: entry.uid, book: currentLorebookName });
     const _guardOk = await ELG_guardSave(currentLorebookName, currentLorebookData, { explicitDelete: false, source: 'user', note: 'Save edited entry' });
     EL_logGuardResult(_guardOk, 'saveEditedEntry', currentLorebookName, { uid: entry.uid });
+    // Track A2 note: no explicit dep-index invalidation here — the success
+    // path persists via saveSettings(), and the index rebuild arrives with
+    // the next EL_setLorebookData adoption (here or on the next sync tick).
     if (!_guardOk) { EL_error('saveEditedEntry blocked/failed — entry not persisted, will reload from server'); extensionSettings.folders[currentLorebookName] = foldersBefore; try { const fresh = await ELG_loadFresh(currentLorebookName); if(fresh){ EL_setLorebookData(fresh, { own: true }); } } catch(e){ EL_warn('reload after failed save failed', e);} } else { saveSettings(); }
     EL_modalClose('edit-entry-modal');
     renderEntries();

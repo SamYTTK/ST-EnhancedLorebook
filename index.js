@@ -1357,6 +1357,9 @@ function setupElEventSubscriptions() {
         _elOn(context.eventSource, context.event_types.CHARACTER_MESSAGE_RENDERED, _elOnCharacterMessageRendered);
         _elOn(context.eventSource, context.event_types.USER_MESSAGE_RENDERED, _elOnUserMessageRendered);
         _elOn(context.eventSource, context.event_types.CHAT_CHANGED, _elOnChatChanged);
+        // Track A2 note: a future WORLDINFO_UPDATED subscription will live here
+        // (host-side dep-index refresh). No listener is added in A2 — host
+        // behavior must not change.
         _elEventsReady = true;
     } catch (e) {
         console.error('Enhanced Lorebook: failed to subscribe to events', e);

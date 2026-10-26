@@ -45,17 +45,37 @@ function EL_cloneLorebookData(data) {
  * The single mutation point for the open book's entries.
  * opts.own = true takes our own deep copy (use when adopting data that came from
  * SillyTavern, so we never mutate its cache).
+ *
+ * Perf: the dep-index rebuild is advisory-only, so it is scheduled OFF the
+ * critical path (idle callback, else a 0ms timer) instead of blocking the
+ * adoption. Callers that need the index immediately (sections compute) tolerate
+ * a stale/missing index and re-read it lazily.
  */
 function EL_setLorebookData(data, opts) {
     const o = opts || {};
     currentLorebookData = (o.own === true) ? EL_cloneLorebookData(data) : (data || null);
-    try {
-        if (typeof ELDepIndex !== 'undefined' && ELDepIndex && typeof ELDepIndex.buildIndex === 'function') {
-            const entries = (currentLorebookData && currentLorebookData.entries) || {};
-            ELDepIndex.setCurrent(ELDepIndex.buildIndex(entries, { book: currentLorebookName }));
-        }
-    } catch (e) { /* dep index is advisory only — adoption must never fail */ }
+    EL_scheduleDepIndex();
     return currentLorebookData;
+}
+
+let _elDepIndexScheduled = false;
+function EL_scheduleDepIndex() {
+    try {
+        if (typeof ELDepIndex === 'undefined' || !ELDepIndex || typeof ELDepIndex.buildIndex !== 'function') return;
+        if (_elDepIndexScheduled) return;
+        _elDepIndexScheduled = true;
+        const run = () => {
+            _elDepIndexScheduled = false;
+            try {
+                const entries = (currentLorebookData && currentLorebookData.entries) || {};
+                ELDepIndex.setCurrent(ELDepIndex.buildIndex(entries, { book: currentLorebookName }));
+            } catch (e) { /* dep index is advisory only — adoption must never fail */ }
+        };
+        try {
+            if (typeof requestIdleCallback === 'function') requestIdleCallback(run, { timeout: 2000 });
+            else setTimeout(run, 0);
+        } catch (e) { setTimeout(run, 0); }
+    } catch (e) {}
 }
 
 function EL_getLorebookData() {
@@ -159,6 +179,7 @@ const els = {
     mainToolbar: document.getElementById('main-toolbar'),
     currentTitle: document.getElementById('current-lorebook-title'),
     entriesContainer: document.getElementById('entries-container'),
+    rail: document.getElementById('el-rail'),
 
     btnAddItem: document.getElementById('btn-add-item'),
     btnBatchOptions: document.getElementById('btn-batch-options'),
@@ -732,6 +753,19 @@ function isEntryEditorOpen() {
         const el = document.getElementById(id);
         return !!(el && el.classList.contains('active'));
     });
+}
+
+// Dirty flag for the edit-entry modal: set by any input/change inside the
+// modal, cleared on open and after a successful saveEditedEntry. Lets the
+// workshop flow skip the guard save entirely when nothing changed.
+let _elEntryDirty = false;
+function EL_isEntryModalDirty() {
+    try {
+        if (_elEntryDirty) return true;
+        const modal = document.getElementById('edit-entry-modal');
+        if (!modal || !modal.classList.contains('active')) return false;
+        return false;
+    } catch (e) { return _elEntryDirty; }
 }
 
 async function fetchSettingsData() {
@@ -1557,13 +1591,17 @@ async function openLorebook(name) {
     currentViewMode = 'lorebook';
     els.currentTitle.textContent = name;
     els.mainToolbar.style.display = 'flex';
+    if (els.rail) els.rail.style.display = '';
     els.entriesContainer.innerHTML = '';
     els.entriesContainer.classList.remove('hidden');
     selectedEntries.clear();
     lastClickedEntryUid = null;
     try { selectedFolders.clear(); } catch (e) {}
     try { EL_clearDragHighlights(); } catch (e) {}
-    try { EL_restoreExpandedFolders(); } catch (e) { try { expandedFolders.clear(); } catch (_e) {} }
+    // Groups never persist open state: every book open/switch collapses all.
+    // Any previously stored expansion is dropped, not restored.
+    try { expandedFolders.clear(); } catch (_e) {}
+    try { if (extensionSettings && extensionSettings.foldersExpanded && currentLorebookName) delete extensionSettings.foldersExpanded[currentLorebookName]; } catch (_e) {}
     updateBatchButton();
     EL_batchClearUndo();
     try { if (typeof EL_b6ClearActive === 'function') EL_b6ClearActive(name); } catch (e) {}
@@ -1589,11 +1627,13 @@ function showLorebookView() {
         els.currentTitle.textContent = currentLorebookName;
         els.entriesContainer.classList.remove('hidden');
         els.mainToolbar.style.display = 'flex';
+        if (els.rail) els.rail.style.display = '';
         renderEntries();
     } else {
         els.currentTitle.textContent = 'No Lorebook Selected';
         els.entriesContainer.classList.remove('hidden');
         els.mainToolbar.style.display = 'none';
+        if (els.rail) els.rail.style.display = 'none';
         els.entriesContainer.innerHTML = '<div class="empty-state"><i class="fa-solid fa-book-open fa-3x"></i><p>Select a lorebook from the sidebar</p></div>';
     }
 }
@@ -1844,12 +1884,13 @@ async function EL_uploadImageToServer(file) {
 }
 
 /**
- * Clear the open-book view (empty state + hidden toolbar).
+ * Clear the open-book view (empty state + hidden toolbar/rail, groups collapsed).
  */
 function EL_clearOpenBookView() {
     EL_setLorebookName('');
     EL_setLorebookData(null, { own: false });
     currentLorebookData = null;
+    try { expandedFolders.clear(); } catch (e) {}
     try {
         selectedEntries.clear();
     } catch (e) {}
@@ -1857,6 +1898,7 @@ function EL_clearOpenBookView() {
         if (els && els.currentTitle) els.currentTitle.textContent = 'No Lorebook Selected';
         if (els && els.entriesContainer) els.entriesContainer.innerHTML = '<div class="empty-state"><i class="fa-solid fa-book-open fa-3x"></i><p>Select a lorebook from the sidebar</p></div>';
         if (els && els.mainToolbar) els.mainToolbar.style.display = 'none';
+        if (els && els.rail) els.rail.style.display = 'none';
     } catch (e) {}
 }
 
@@ -6006,8 +6048,11 @@ function ELFormRenderAll() {
             ws.addEventListener('click', () => {
                 try {
                     const t = (typeof ELFormGetType === 'function') ? ELFormGetType() : null;
-                    switchToView('type-workshop');
-                    if (t && t.id && typeof EL_workshopSelect === 'function') EL_workshopSelect(String(t.id));
+                    // Guarded funnel: saves the open entry via the guard when
+                    // dirty (aborts + keeps the modal on block), closes the
+                    // entry modal first, then opens the workshop on top.
+                    if (typeof EL_workshopOpen === 'function') EL_workshopOpen(t && t.id ? String(t.id) : null);
+                    else switchToView('type-workshop');
                 } catch (e) { try { switchToView('type-workshop'); } catch (_e) {} }
             });
         }
@@ -6393,6 +6438,7 @@ function ELFormOpenFor(entry) {
 // ==========================================
 function openEditEntryModal(uid) {
     try {
+        _elEntryDirty = false;
         if (!currentLorebookData || !currentLorebookData.entries[uid]) return;
 
         const entry = currentLorebookData.entries[uid];
@@ -6471,6 +6517,7 @@ function openEditEntryModal(uid) {
            fall back to the classic Raw view. Never throws into the open path. */
         try { ELFormOpenFor(entry); } catch (e) { EL_warn('typed form open failed — classic Raw view', e); try { ELFormShowRaw(); } catch (e2) {} }
 
+        _elEntryDirty = false;
         EL_modalOpen('edit-entry-modal');
     } catch (e) {
         alert('Error opening modal: ' + e.stack);
@@ -6481,14 +6528,20 @@ window.openEditEntryModal = openEditEntryModal;
 
 async function saveEditedEntry() {
     const uid = document.getElementById('edit-entry-uid').value;
-    if (!currentLorebookData || !currentLorebookData.entries[uid]) return;
+    if (!currentLorebookData || !currentLorebookData.entries[uid]) return false;
 
     const entry = currentLorebookData.entries[uid];
 
-    // Change folder mapping
+    // Change folder mapping. Rollback needs only the entry's previous folder,
+    // not a deep clone of the whole folder layout (the old JSON clone ran on
+    // EVERY save, even the successful ones that never roll back).
     const newFolderId = document.getElementById('edit-entry-folder').value;
-    const foldersBefore = JSON.parse(JSON.stringify(extensionSettings.folders[currentLorebookName] || []));
     const folders = extensionSettings.folders[currentLorebookName] || [];
+    let prevFolderId = '';
+    try {
+        const prev = folders.find(f => Array.isArray(f.entries) && f.entries.map(String).includes(String(uid)));
+        prevFolderId = prev ? prev.id : '';
+    } catch (e) { prevFolderId = ''; }
     folders.forEach(f => {
         f.entries = f.entries.filter(e => String(e) !== String(uid));
     });
@@ -6612,14 +6665,51 @@ async function saveEditedEntry() {
     } catch (e) { EL_warn('typed save compile failed — kept classic field values', e); }
 
     if (EL_isGenerating()) EL_warn(`saveEditedEntry: generation running (agent=${agentEngine?.state}) — save may race with agent`, { uid: entry.uid, book: currentLorebookName });
+    // NOTE (deliberately NOT optimized): ELG_guardSave performs its own fresh
+    // server read, a TOCTOU re-read before writing, and a post-write verify
+    // read. Those round trips are the guard's safety contract — removing any of
+    // them would reopen the blind-overwrite window — so they stay. The wins
+    // below are all OUTSIDE the guard: no duplicate full-tree renders, no
+    // folder deep-clone, no synchronous settings persist on the hot path, and
+    // the dep-index rebuild is deferred (see EL_scheduleDepIndex).
     const _guardOk = await ELG_guardSave(currentLorebookName, currentLorebookData, { explicitDelete: false, source: 'user', note: 'Save edited entry' });
     EL_logGuardResult(_guardOk, 'saveEditedEntry', currentLorebookName, { uid: entry.uid });
     // Track A2 note: no explicit dep-index invalidation here — the success
     // path persists via saveSettings(), and the index rebuild arrives with
     // the next EL_setLorebookData adoption (here or on the next sync tick).
-    if (!_guardOk) { EL_error('saveEditedEntry blocked/failed — entry not persisted, will reload from server'); extensionSettings.folders[currentLorebookName] = foldersBefore; try { const fresh = await ELG_loadFresh(currentLorebookName); if(fresh){ EL_setLorebookData(fresh, { own: true }); } } catch(e){ EL_warn('reload after failed save failed', e);} } else { saveSettings(); }
+    if (!_guardOk) {
+        EL_error('saveEditedEntry blocked/failed — entry not persisted, will reload from server');
+        try {
+            const fl = extensionSettings.folders[currentLorebookName] || [];
+            fl.forEach(f => { if (Array.isArray(f.entries)) f.entries = f.entries.filter(e => String(e) !== String(uid)); });
+            if (prevFolderId) {
+                const t = fl.find(f => f && f.id === prevFolderId);
+                if (t && Array.isArray(t.entries)) t.entries.push(String(uid));
+            }
+        } catch (e) {}
+        try { const fresh = await ELG_loadFresh(currentLorebookName); if(fresh){ EL_setLorebookData(fresh, { own: true }); } } catch(e){ EL_warn('reload after failed save failed', e);}
+        return false;
+    }
+    _elEntryDirty = false;
+    // Tell the sync poll the disk state already matches memory, so the next
+    // tick skips its whole-book re-fetch + re-render instead of redoing the
+    // refresh we are about to do here (single render, not two).
+    try {
+        sync.lastSave[currentLorebookName] = Date.now();
+        const sig = entriesSignature(currentLorebookData);
+        sync.poll.entriesSig = sig;
+        sync.poll.entriesBook = currentLorebookName;
+        sync.signatures.entries = sig;
+    } catch (e) {}
     EL_modalClose('edit-entry-modal');
     renderEntries();
+    // Folder-layout persist rides AFTER paint, not inside the save hot path.
+    try {
+        const persist = () => { try { saveSettings(); } catch (e) {} };
+        if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => { try { setTimeout(persist, 0); } catch (e) { persist(); } });
+        else setTimeout(persist, 0);
+    } catch (e) { try { saveSettings(); } catch (_e) {} }
+    return true;
 }
 
 // ==========================================
@@ -7690,7 +7780,7 @@ function toggleAllFolders() {
         expandedFolders.clear();
     }
 
-    try { EL_saveExpandedFolders(); } catch (e) { try { saveSettings(); } catch (_e) {} }
+    // Session-only: the toggle UI stays, but open state is never persisted.
     renderEntries();
 }
 
@@ -8139,6 +8229,19 @@ function setupEventListeners() {
     // Edit Entry
     document.getElementById('btn-save-edit-entry').addEventListener('click', saveEditedEntry);
 
+    // Entry-dirty tracking: any input/change inside the edit modal marks the
+    // form dirty so the workshop flow knows whether a guard save is needed.
+    // Delegated on the modal container — covers classic fields and the typed
+    // form, which re-renders its inputs dynamically.
+    try {
+        const editModalEl = document.getElementById('edit-entry-modal');
+        if (editModalEl && !editModalEl.dataset.elDirtyBound) {
+            editModalEl.dataset.elDirtyBound = '1';
+            editModalEl.addEventListener('input', () => { _elEntryDirty = true; });
+            editModalEl.addEventListener('change', () => { _elEntryDirty = true; });
+        }
+    } catch (e) {}
+
     // Mutual exclusivity between Constant and Vectorized checkboxes
     function mutualExclusive(id1, id2) {
         const el1 = document.getElementById(id1);
@@ -8178,7 +8281,7 @@ function setupEventListeners() {
 
     const navTypeWorkshop = document.getElementById('nav-type-workshop');
     if (navTypeWorkshop) {
-        navTypeWorkshop.addEventListener('click', function () { switchToView('type-workshop'); });
+        navTypeWorkshop.addEventListener('click', function () { try { EL_workshopOpen(); } catch (e) { switchToView('type-workshop'); } });
     }
 
     const navMap = document.getElementById('nav-map');
@@ -8238,6 +8341,7 @@ function switchToView(view) {
     els.entriesContainer.classList.add('hidden');
     document.querySelectorAll('.agent-sidebar-item').forEach(i => i.classList.remove('active'));
     els.mainToolbar.style.display = 'none';
+    if (els.rail) els.rail.style.display = 'none';
 
     const dashboardPanel = document.getElementById('agent-dashboard-panel');
     const configPanel = document.getElementById('agent-config-panel');
@@ -9295,33 +9399,29 @@ function EL_moveFolderToParent(folderId, newParentId, newOrder) {
 
 /**
  * Persist the current expand/collapse set for the open book.
+ *
+ * NEUTRALIZED: group open state is session-only and never persisted. This is
+ * kept as a no-op (rather than deleted) because folder move/paste flows call
+ * it; it now drops any previously stored expansion instead of writing it.
  */
 function EL_saveExpandedFolders() {
     try {
-        if (!currentLorebookName) return;
-        if (!extensionSettings.foldersExpanded || typeof extensionSettings.foldersExpanded !== 'object') {
-            extensionSettings.foldersExpanded = {};
+        if (extensionSettings && extensionSettings.foldersExpanded && currentLorebookName) {
+            delete extensionSettings.foldersExpanded[currentLorebookName];
         }
-        extensionSettings.foldersExpanded[currentLorebookName] = Array.from(expandedFolders);
-        saveSettings();
     } catch (e) {}
 }
 
 /**
- * Restore the expand/collapse set for the open book. Prunes ids that no
- * longer exist. Books with no saved entry default to fully collapsed.
+ * Restore the expand/collapse set for the open book.
+ *
+ * NEUTRALIZED: always collapses. Books open (and switch) with every group
+ * collapsed; the toggle UI still works in-session, it just stops remembering.
+ * Anything reading foldersExpanded falls back to "no saved state" → collapsed.
  */
 function EL_restoreExpandedFolders() {
     try {
         expandedFolders.clear();
-        const folders = (extensionSettings && extensionSettings.folders && currentLorebookName) ? (extensionSettings.folders[currentLorebookName] || []) : [];
-        const saved = extensionSettings && extensionSettings.foldersExpanded ? extensionSettings.foldersExpanded[currentLorebookName] : undefined;
-        if (!Array.isArray(saved)) {
-            // No saved state yet (new book) — stay collapsed by default.
-            return;
-        }
-        const live = new Set(folders.map(f => f && f.id));
-        saved.forEach(id => { if (live.has(id)) expandedFolders.add(id); });
     } catch (e) {}
 }
 
@@ -10045,11 +10145,48 @@ function EL_workshopUniqueId(base) {
     return stem + '-' + n;
 }
 
-function EL_workshopOpen(id) {
-    try { switchToView('type-workshop'); } catch (e) {}
+/**
+ * Single funnel for opening the Type Workshop. When the entry editor is open,
+ * its edits are saved first through the existing guard path (saveEditedEntry →
+ * ELG_guardSave); a blocked save aborts the workshop open with a toast and the
+ * modal stays open so no edit is lost. The entry modal is always fully closed
+ * BEFORE the workshop view shows, so the workshop panel never stacks under the
+ * entry overlay. Async — callers must not depend on the return value.
+ */
+async function EL_workshopOpen(id) {
+    try {
+        const modal = document.getElementById('edit-entry-modal');
+        if (modal && modal.classList.contains('active')) {
+            const uidEl = document.getElementById('edit-entry-uid');
+            const uid = uidEl ? uidEl.value : null;
+            const hasEntry = !!(uid && currentLorebookData && currentLorebookData.entries && currentLorebookData.entries[uid]);
+            if (hasEntry && EL_isEntryModalDirty()) {
+                let ok = false;
+                try { ok = await saveEditedEntry(); } catch (e) { ok = false; }
+                if (!ok) {
+                    try { EL_toast('Workshop not opened — the entry save was blocked. Your edits are still open.', 'warning'); } catch (e) {}
+                    return;
+                }
+            } else {
+                try { EL_modalClose('edit-entry-modal'); } catch (e) {}
+            }
+            // saveEditedEntry closes the modal on success; close again is a
+            // harmless no-op that guarantees the modal stack is empty.
+            try { EL_modalClose('edit-entry-modal'); } catch (e) {}
+            _elEntryDirty = false;
+        }
+    } catch (e) {}
+    try { switchToView('type-workshop'); } catch (e) { return; }
     if (id && typeof EL_workshopSelect === 'function') {
         try { EL_workshopSelect(String(id)); } catch (e) {}
     }
+}
+
+/**
+ * Close the Type Workshop via the existing entries-view path.
+ */
+function EL_workshopClose() {
+    try { showLorebookView(); } catch (e) {}
 }
 
 function EL_workshopSelect(id) {
@@ -10110,6 +10247,8 @@ function EL_workshopBind() {
     on('el-tw-ins-save', 'click', EL_workshopSave);
     on('el-tw-ins-delete', 'click', EL_workshopAskDelete);
     on('el-tw-validate', 'click', () => EL_workshopValidate(true));
+    on('el-tw-close', 'click', EL_workshopClose);
+    on('el-tw-close-footer', 'click', EL_workshopClose);
 }
 
 function EL_workshopRenderList() {

@@ -467,6 +467,83 @@ body {
     cursor: not-allowed;
 }
 
+/* Entry row: hover-expand action rail + entries column */
+.el-mainrow {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+}
+
+.el-mainrow #entries-container {
+    flex: 1;
+    min-width: 0;
+}
+
+/* Left action rail: icons only (~40px), expands on hover or keyboard focus.
+   No JS needed — existing click handlers are untouched. */
+.el-rail {
+    width: 40px;
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+    padding: 12px 5px;
+    border-right: 1px solid var(--panel-border);
+    background: var(--panel-bg);
+    overflow: hidden;
+    white-space: nowrap;
+    transition: width var(--transition-speed);
+}
+
+.el-rail:hover,
+.el-rail:focus-within {
+    width: 172px;
+}
+
+.el-rail button {
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--text-muted);
+    padding: 6px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 32px;
+    font-size: 0.85rem;
+    transition: all var(--transition-speed);
+}
+
+.el-rail button i {
+    width: 16px;
+    text-align: center;
+    flex: 0 0 auto;
+}
+
+.el-rail button:hover:not(:disabled) {
+    color: var(--text-color);
+    background: var(--hover-bg);
+    border-color: var(--panel-border);
+}
+
+.el-rail button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.el-rail .el-rail-label {
+    display: none;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.el-rail:hover .el-rail-label,
+.el-rail:focus-within .el-rail-label {
+    display: inline;
+}
+
 /* Entries Container */
 .entries-container {
     padding: 24px;
@@ -4642,9 +4719,39 @@ body.el-b6-per-surface .entry-card.el-b6-card {
 /* ============================================================
  * EL-REVAMP B6: mobile. Every new surface scrolls inside;
  * modals go full-screen; touch targets >= 36px.
- * (The app has no icon rail — the mockup-only rail concept maps
- * to the toolbar/filter rows, which wrap and stay reachable.)
+ * The action rail becomes a horizontal bottom bar (<=720px),
+ * following the filter-bar pattern: full-width, scrollable.
  * ============================================================ */
+@media (max-width: 720px) {
+    .el-mainrow {
+        flex-direction: column;
+    }
+    .el-mainrow #entries-container {
+        order: 1;
+    }
+    .el-rail,
+    .el-rail:hover,
+    .el-rail:focus-within {
+        order: 2;
+        width: 100%;
+        flex-direction: row;
+        align-items: center;
+        overflow-x: auto;
+        overflow-y: hidden;
+        border-right: 0;
+        border-top: 1px solid var(--el-border);
+        padding: 6px 8px;
+    }
+    .el-rail .el-rail-label,
+    .el-rail:hover .el-rail-label,
+    .el-rail:focus-within .el-rail-label {
+        display: inline;
+    }
+    .el-rail button {
+        flex: 0 0 auto;
+        min-height: 36px;
+    }
+}
 @media (max-width: 760px) {
     .glass-container {
         flex-direction: column;

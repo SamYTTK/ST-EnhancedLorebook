@@ -358,9 +358,9 @@ function EL_mapUpsertLocationLine(content, value) {
         }
     }
     const line = 'Current_Location: ' + v;
-    // Spaced-closer-tolerant limiter, mirroring the canonical RE_CLOSE in
-    // lib/type-compiler.js (~:48).
-    const RE_LIM = /^\s*\*\*<\s*\/\s*([^<>\s][^<>]*?)\s*>\*\*\s*$/;
+    // Both limiter forms (canonical <tag>, legacy **<tag>**), mirroring the
+    // canonical RE_CLOSE in lib/type-compiler.js.
+    const RE_LIM = /^\s*(?:\*\*<\s*\/\s*|<\s*\/\s*)([^<>\s][^<>]*?)\s*(?:>\*\*|>)\s*$/;
     let at = lineCount;
     for (let i = lineCount - 1; i >= 0; i--) {
         if (RE_LIM.test(atLine(i))) { at = i; break; }

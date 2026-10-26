@@ -177,25 +177,29 @@
                             <option value="search" style="color: black;">Search Match</option>
                         </select>
                     </div>
-                    <button id="btn-toggle-all-folders" title="Expand/Collapse All Folders"><i class="fa-solid fa-folder-open"></i></button>
                     <button id="btn-add-item" title="Add Item"><i class="fa-solid fa-circle-plus"></i> Add Item</button>
-                    <button id="btn-select-all" title="Select All" style="display:none;"><i class="fa-solid fa-check-square"></i></button>
-                    <button id="btn-deselect-all" title="Deselect All" style="display:none;"><i class="fa-solid fa-minus-square"></i></button>
-                    <button id="btn-batch-options" title="Batch Options" disabled><i class="fa-solid fa-layer-group"></i> Batch</button>
                     <button id="btn-batch-undo" title="Undo last batch edit" style="display:none;"><i class="fa-solid fa-rotate-left"></i> Undo</button>
-                    <button id="btn-sections" title="Sections — order/position recipes"><i class="fa-solid fa-list-ol"></i> Sections</button>
-                    <button id="btn-download-selected" title="Download Selected Entries" disabled style="display:none;"><i class="fa-solid fa-download"></i> Download</button>
-                    <button id="btn-backup-watch" title="Backup Watch"><i class="fa-solid fa-shield-halved"></i> Backup Watch</button>
-                    <button id="btn-export-lorebook" title="Export this lorebook (.json)"><i class="fa-solid fa-download"></i> Export</button>
                 </div>
             </div>
 
             <div id="el-b6-filterbar" class="el-b6-filterbar" hidden></div>
+            <div class="el-mainrow">
+            <nav id="el-rail" class="el-rail" aria-label="Lorebook actions" style="display: none;">
+                <button id="btn-toggle-all-folders" title="Expand/Collapse All Folders"><i class="fa-solid fa-folder-open"></i><span class="el-rail-label">Folders</span></button>
+                <button id="btn-select-all" title="Select All" style="display:none;"><i class="fa-solid fa-check-square"></i><span class="el-rail-label">Select all</span></button>
+                <button id="btn-deselect-all" title="Deselect All" style="display:none;"><i class="fa-solid fa-minus-square"></i><span class="el-rail-label">Deselect</span></button>
+                <button id="btn-batch-options" title="Batch Options" disabled><i class="fa-solid fa-layer-group"></i><span class="el-rail-label">Batch</span></button>
+                <button id="btn-sections" title="Sections — order/position recipes"><i class="fa-solid fa-list-ol"></i><span class="el-rail-label">Sections</span></button>
+                <button id="btn-download-selected" title="Download Selected Entries" disabled style="display:none;"><i class="fa-solid fa-download"></i><span class="el-rail-label">Download</span></button>
+                <button id="btn-backup-watch" title="Backup Watch"><i class="fa-solid fa-shield-halved"></i><span class="el-rail-label">Backup</span></button>
+                <button id="btn-export-lorebook" title="Export this lorebook (.json)"><i class="fa-solid fa-download"></i><span class="el-rail-label">Export</span></button>
+            </nav>
             <div id="entries-container" class="entries-container">
                 <div class="empty-state">
                     <i class="fa-solid fa-book-open fa-3x"></i>
                     <p>Select a lorebook from the sidebar</p>
                 </div>
+            </div>
             </div>
 
             <!-- Type Workshop Panel (Track B2) -->
@@ -205,6 +209,7 @@
                     <span class="el-tw-sub">Builder emits the raw template live. Name is cosmetic — the id never changes.</span>
                     <span style="flex:1;"></span>
                     <button id="el-tw-save" class="btn btn-primary btn-sm" title="Save the selected type"><i class="fa-solid fa-floppy-disk"></i> Save type</button>
+                    <button id="el-tw-close" class="btn btn-secondary btn-sm" title="Close workshop and return to entries"><i class="fa-solid fa-xmark"></i> Close</button>
                 </div>
                 <div class="el-tw-cols">
                     <div class="el-tw-listcol">
@@ -239,6 +244,9 @@
                             </div>
                         </div>
                     </div>
+                </div>
+                <div class="el-tw-footer" style="display:flex; justify-content:flex-end; gap:8px; padding-top:16px;">
+                    <button id="el-tw-close-footer" class="btn btn-secondary btn-sm" title="Close workshop and return to entries"><i class="fa-solid fa-xmark"></i> Close</button>
                 </div>
             </div>
 

@@ -502,5 +502,75 @@ try {
   console.log('  FAIL  rules tests threw: ' + e.message);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// COMPILER LIMITER/SECTION/TAG TESTS (el-revamp type-content fixes)
+// Canonical limiter emission is <tag> (no asterisks); the legacy **<tag>**
+// form is still accepted on read. Section titles never reach entry content
+// (template/preview only). Old ST tag metadata (`Tags:` lines consumed into
+// extractValues().tags, plus a literal entry.tags array) migrates into the
+// typed limiter tag: first old tag fills an empty Name, otherwise dropped,
+// with a `moved tags [...] into typed tag` note. Keys stay verbatim.
+// ─────────────────────────────────────────────────────────────────────────────
+const COMPILER_TEST = `
+(function () {
+    const out = [];
+    function eq(label, got, want) { out.push([label, got === want]); }
+    function ok(label, cond) { out.push([label, !!cond]); }
+    const T = JSON.parse(JSON.stringify(ELTypeRegistry.BUILTIN_TYPES.character));
+    const built = ELCompile.compileEntry({ content: 'Name: Anna Smith' }, T, {});
+    ok('limiter derived from Name, new form', built.content.indexOf('<anna_smith>') !== -1 && built.content.indexOf('</anna_smith>') !== -1);
+    ok('no asterisks in rendered limiter', built.content.indexOf('**') === -1);
+    ok('no section headers in content', !/^==.*==$/m.test(built.content));
+    const fallback = ELCompile.compileEntry({ content: '' }, T, {});
+    ok('empty Name falls back to static tag', fallback.content.indexOf('<char_name>') !== -1);
+    const tpl = ELSlots.parseTemplate('**<char_name>**\\n== Basic Information ==\\n"Name: " ||cont:Name||\\n**</char_name>**');
+    eq('legacy template tag parsed', tpl.tag, 'char_name');
+    const tplNew = ELSlots.parseTemplate('<char_name>\\n== Basic Information ==\\n"Name: " ||cont:Name||\\n</char_name>');
+    eq('new template tag parsed', tplNew.tag, 'char_name');
+    const emitted = ELSlots.emitTemplate(tpl);
+    ok('template keeps section header', emitted.indexOf('== Basic Information ==') !== -1);
+    ok('template emits new limiter', emitted.indexOf('<char_name>') !== -1 && emitted.indexOf('**') === -1);
+    ok('renameTag both forms', ELSlots.renameTag('<a>\\nx\\n</a>', 'b') === '<b>\\nx\\n</b>' && ELSlots.renameTag('**<a>**\\nx\\n**</a>**', 'b') === '**<b>**\\nx\\n**</b>**');
+    const ast = ELCompile.typeToAst(T);
+    eq('typeToAst drops section titles', ast.sections.every(function (s) { return !s.title; }), true);
+    const ex = ELSlots.extractValues('== Basic Information ==\\nName: Bob\\nTags: alpha, beta\\nStray line', ast);
+    ok('header line not extra', ex.extra.indexOf('== Basic Information ==') === -1);
+    eq('tags consumed', JSON.stringify(ex.tags), JSON.stringify(['alpha', 'beta']));
+    ok('tags line not extra', !ex.extra.some(function (l) { return /^tags:/i.test(l); }));
+    ok('unmatched line still extra', ex.extra.indexOf('Stray line') !== -1);
+    const r = ELCompile.applyType({ content: 'Tags: Zara, warrior\\nAppearance: tall', tags: ['Zara', 'warrior'] }, T, {});
+    ok('Name filled from first old tag', /Name: Zara/.test(r.entry.content));
+    eq('entry.tags cleared', JSON.stringify(r.entry.tags), JSON.stringify([]));
+    ok('changes note moved tags', r.changes.some(function (m) { return /moved tags \\[Zara, warrior\\] into typed tag/.test(m); }));
+    ok('no Tags: line in content', !/Tags:/i.test(r.entry.content));
+    ok('no section headers after apply', !/^==.*==$/m.test(r.entry.content));
+    const k = ELCompile.compileEntry({ content: 'Name: Anna Smith' }, Object.assign({}, T, { keyMain: 'Name' }), {});
+    eq('keys verbatim', JSON.stringify(k.patch.key), JSON.stringify(['Anna Smith']));
+    eq('detach new', ELCompile.detachToPlain({ content: '<a>\\nX\\n</a>' }).content, 'X');
+    eq('detach legacy', ELCompile.detachToPlain({ content: '**<a>**\\nX\\n**</a>**' }).content, 'X');
+    eq('map upsert new limiter', EL_mapUpsertLocationLine('<char_name>\\nName: Anna\\n</char_name>', 'Thornwall'), '<char_name>\\nName: Anna\\nCurrent_Location: Thornwall\\n</char_name>');
+    eq('rules upsert new limiter', ELRules.upsertFieldLine('<tag>\\nName: A\\n</tag>', 'Status', 'Ledger'), '<tag>\\nName: A\\nStatus: Ledger\\n</tag>');
+    return out;
+})()
+`;
+
+console.log('\n===== COMPILER LIMITER/SECTION/TAG TESTS (type-content fixes) =====');
+try {
+  const compilerResults = new vm.Script(COMPILER_TEST).runInContext(sandbox);
+  const bad = compilerResults.filter(([, ok]) => !ok);
+  for (const [label, ok] of compilerResults) {
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${label}`);
+  }
+  if (bad.length) {
+    failed += bad.length;
+    console.log(`  -> ${bad.length} compiler test(s) FAILED`);
+  } else {
+    console.log(`  all ${compilerResults.length} compiler assertions passed`);
+  }
+} catch (e) {
+  failed++;
+  console.log('  FAIL  compiler tests threw: ' + e.message);
+}
+
 console.log('\n===== FINAL: ' + (failed === 0 ? 'PASS' : failed + ' FAILURE(S)') + ' =====');
 process.exit(failed === 0 ? 0 : 1);

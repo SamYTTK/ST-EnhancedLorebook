@@ -116,6 +116,15 @@
                         </div>
 
                         <div class="section-header mt-4">
+                            <h3>Types</h3>
+                        </div>
+                        <div class="list-container">
+                            <div id="nav-type-workshop" class="list-item agent-sidebar-item" style="cursor:pointer;">
+                                <i class="fa-solid fa-shapes"></i><span>Type Workshop</span>
+                            </div>
+                        </div>
+
+                        <div class="section-header mt-4">
                             <h3>Recovery</h3>
                         </div>
                         <div class="list-container">
@@ -168,6 +177,50 @@
                 <div class="empty-state">
                     <i class="fa-solid fa-book-open fa-3x"></i>
                     <p>Select a lorebook from the sidebar</p>
+                </div>
+            </div>
+
+            <!-- Type Workshop Panel (Track B2) -->
+            <div id="type-workshop-panel" class="type-workshop-panel hidden" style="padding:24px; overflow-y:auto; height:100%;">
+                <div class="el-tw-bar">
+                    <h2 style="margin:0; display:flex; align-items:center; gap:10px;"><i class="fa-solid fa-shapes"></i> Type Workshop</h2>
+                    <span class="el-tw-sub">Builder emits the raw template live. Name is cosmetic — the id never changes.</span>
+                    <span style="flex:1;"></span>
+                    <button id="el-tw-save" class="btn btn-primary btn-sm" title="Save the selected type"><i class="fa-solid fa-floppy-disk"></i> Save type</button>
+                </div>
+                <div class="el-tw-cols">
+                    <div class="el-tw-listcol">
+                        <div class="el-tw-listhead">
+                            <span>Types</span>
+                            <span style="flex:1;"></span>
+                            <button id="el-tw-new" class="btn btn-secondary btn-sm" title="New type"><i class="fa-solid fa-plus"></i></button>
+                            <button id="el-tw-clone" class="btn btn-secondary btn-sm" title="Clone selected type"><i class="fa-solid fa-copy"></i></button>
+                            <button id="el-tw-delete" class="btn btn-secondary btn-sm" title="Delete selected type"><i class="fa-solid fa-trash"></i></button>
+                        </div>
+                        <div id="el-tw-list"></div>
+                    </div>
+                    <div class="el-tw-buildcol">
+                        <div id="el-tw-identity"></div>
+                        <div id="el-tw-sections"></div>
+                    </div>
+                    <div class="el-tw-sidecol">
+                        <div class="el-tw-box">
+                            <h4>Emitted template</h4>
+                            <pre id="el-tw-preview" class="el-tw-raw"></pre>
+                        </div>
+                        <div id="el-tw-usage" class="el-tw-box"></div>
+                        <div class="el-tw-box">
+                            <h4>Inspector</h4>
+                            <div id="el-tw-inspector"></div>
+                            <div id="el-tw-errors" class="el-tw-errors" style="display:none;"></div>
+                            <div class="el-tw-insprow">
+                                <button id="el-tw-validate" class="btn btn-secondary btn-sm"><i class="fa-solid fa-check"></i> Validate</button>
+                                <span style="flex:1;"></span>
+                                <button id="el-tw-ins-save" class="btn btn-primary btn-sm"><i class="fa-solid fa-floppy-disk"></i> Save</button>
+                                <button id="el-tw-ins-delete" class="btn btn-secondary btn-sm el-tw-danger"><i class="fa-solid fa-trash"></i> Delete</button>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
 

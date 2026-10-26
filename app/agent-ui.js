@@ -2219,6 +2219,8 @@ function hideAgentPanels() {
     if (chatPanel) chatPanel.classList.add('hidden');
     const recoveryPanel = document.getElementById('recovery-panel');
     if (recoveryPanel) recoveryPanel.classList.add('hidden');
+    const workshopPanel = document.getElementById('type-workshop-panel');
+    if (workshopPanel) workshopPanel.classList.add('hidden');
 }
 
 async function saveAgentConfig() {

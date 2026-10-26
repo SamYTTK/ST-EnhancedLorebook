@@ -5782,7 +5782,11 @@ function ELFormRenderAll() {
         const ws = document.getElementById('edit-appear-workshop');
         if (ws) {
             ws.addEventListener('click', () => {
-                try { EL_toast('Type workshop arrives in a later track', 'info'); } catch (e) { /* tolerate */ }
+                try {
+                    const t = (typeof ELFormGetType === 'function') ? ELFormGetType() : null;
+                    switchToView('type-workshop');
+                    if (t && t.id && typeof EL_workshopSelect === 'function') EL_workshopSelect(String(t.id));
+                } catch (e) { try { switchToView('type-workshop'); } catch (_e) {} }
             });
         }
     }
@@ -7877,6 +7881,11 @@ function setupEventListeners() {
         navRecovery.addEventListener('click', function () { switchToView('recovery'); });
     }
 
+    const navTypeWorkshop = document.getElementById('nav-type-workshop');
+    if (navTypeWorkshop) {
+        navTypeWorkshop.addEventListener('click', function () { switchToView('type-workshop'); });
+    }
+
     // Recovery sub-tab routing
     document.querySelectorAll('.pill-btn[data-recovery-tab]').forEach(btn => {
         btn.addEventListener('click', () => {
@@ -7935,6 +7944,8 @@ function switchToView(view) {
     if (feedPanel) feedPanel.classList.add('hidden');
     if (recoveryPanel) recoveryPanel.classList.add('hidden');
     if (chatPanel) chatPanel.classList.add('hidden');
+    const workshopPanel = document.getElementById('type-workshop-panel');
+    if (workshopPanel) workshopPanel.classList.add('hidden');
 
     if (view === 'agent-dashboard') {
         const nav = document.getElementById('nav-agent-dashboard');
@@ -7975,6 +7986,15 @@ function switchToView(view) {
         els.currentTitle.textContent = 'Agent Chat';
         if (typeof initAgentChatPanel === 'function') initAgentChatPanel();
         if (typeof renderAgentChat === 'function') renderAgentChat();
+    } else if (view === 'type-workshop') {
+        const nav = document.getElementById('nav-type-workshop');
+        if (nav) nav.classList.add('active');
+        const wsPanel = document.getElementById('type-workshop-panel');
+        if (wsPanel) wsPanel.classList.remove('hidden');
+        els.currentTitle.textContent = 'Type Workshop';
+        if (typeof EL_workshopRender === 'function') {
+            EL_workshopRender();
+        }
     }
 }
 
@@ -9646,6 +9666,729 @@ function EL_setupRootDrop() {
             } catch (err) {}
         });
     } catch (e) {}
+}
+
+// ==========================================
+// Type Workshop (Track B2)
+// Full type CRUD: list, builder, live raw preview, inspector.
+// All persistence goes through ELTypeRegistry.putType/deleteType on
+// EL_getTypeStore() + saveSettings(). Entry writes still go through
+// ELG_guardSave; this module never touches the B1 form or the guard.
+// ==========================================
+let EL_workshopSelectedId = null;
+let EL_workshopDraft = null;
+let EL_workshopUsage = null;
+let EL_workshopUsageToken = 0;
+let EL_workshopBound = false;
+
+function EL_workshopReg() {
+    try {
+        const r = (typeof ELTypeRegistry !== 'undefined') ? ELTypeRegistry : (typeof window !== 'undefined' ? window.ELTypeRegistry : null);
+        return r || null;
+    } catch (e) { return null; }
+}
+
+function EL_workshopKinds() {
+    const reg = EL_workshopReg();
+    if (reg && Array.isArray(reg.KNOWN_KINDS) && reg.KNOWN_KINDS.length) return reg.KNOWN_KINDS.slice();
+    return ['cont', 'img', 'ref', 'gallery', 'radar', 'display', 'conditional', 'setref', 'getref', 'hub'];
+}
+
+function EL_workshopIsBuiltin(id) {
+    try {
+        const reg = EL_workshopReg();
+        return !!(reg && reg.BUILTIN_TYPES && Object.prototype.hasOwnProperty.call(reg.BUILTIN_TYPES, String(id)));
+    } catch (e) { return false; }
+}
+
+function EL_workshopCloneOf(v) {
+    try { return JSON.parse(JSON.stringify(v)); } catch (e) { return null; }
+}
+
+function EL_workshopUniqueId(base) {
+    const reg = EL_workshopReg();
+    const slugger = (reg && typeof reg.slug === 'function') ? reg.slug : function (s) { return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''); };
+    let stem = '';
+    try { stem = slugger(base) || 'type'; } catch (e) { stem = 'type'; }
+    let store = null;
+    try { store = EL_getTypeStore(); } catch (e) { store = {}; }
+    if (!store || !Object.prototype.hasOwnProperty.call(store, stem)) return stem;
+    let n = 2;
+    while (Object.prototype.hasOwnProperty.call(store, stem + '-' + n)) n++;
+    return stem + '-' + n;
+}
+
+function EL_workshopOpen(id) {
+    try { switchToView('type-workshop'); } catch (e) {}
+    if (id && typeof EL_workshopSelect === 'function') {
+        try { EL_workshopSelect(String(id)); } catch (e) {}
+    }
+}
+
+function EL_workshopSelect(id) {
+    EL_workshopSelectedId = String(id || '');
+    EL_workshopDraft = null;
+    EL_workshopUsage = null;
+    try {
+        const reg = EL_workshopReg();
+        if (reg && typeof reg.getType === 'function') {
+            EL_workshopDraft = reg.getType(EL_getTypeStore(), EL_workshopSelectedId);
+        }
+        if (!EL_workshopDraft && typeof EL_getEntryType === 'function') {
+            EL_workshopDraft = EL_getEntryType(EL_workshopSelectedId);
+        }
+    } catch (e) { EL_workshopDraft = null; }
+    EL_workshopRender();
+    EL_workshopRefreshUsage();
+}
+
+function EL_workshopRender() {
+    EL_workshopBind();
+    try {
+        const reg = EL_workshopReg();
+        let list = [];
+        if (reg && typeof reg.listTypes === 'function') {
+            try { list = reg.listTypes(EL_getTypeStore()) || []; } catch (e) { list = []; }
+        }
+        const alive = list.some(t => String(t && t.id) === String(EL_workshopSelectedId));
+        if ((!EL_workshopDraft || !alive) && list.length) {
+            EL_workshopSelectedId = String(list.slice().sort((a, b) => String(a.name || a.id).localeCompare(String(b.name || b.id)))[0].id);
+            EL_workshopDraft = EL_workshopCloneOf(list.find(t => String(t.id) === EL_workshopSelectedId));
+        } else if (!list.length) {
+            EL_workshopSelectedId = null;
+            EL_workshopDraft = null;
+        }
+    } catch (e) {}
+    EL_workshopRenderList();
+    EL_workshopRenderBuilder();
+    EL_workshopRenderInspector();
+    EL_workshopRenderPreview();
+    EL_workshopRenderUsage();
+    if (!EL_workshopUsage || EL_workshopUsage.typeId !== EL_workshopSelectedId) EL_workshopRefreshUsage();
+}
+
+function EL_workshopBind() {
+    if (EL_workshopBound) return;
+    EL_workshopBound = true;
+    const on = (id, ev, fn) => {
+        try {
+            const el = document.getElementById(id);
+            if (el && !el.dataset.elTwBound) { el.dataset.elTwBound = '1'; el.addEventListener(ev, fn); }
+        } catch (e) {}
+    };
+    on('el-tw-new', 'click', EL_workshopNew);
+    on('el-tw-clone', 'click', EL_workshopClone);
+    on('el-tw-delete', 'click', EL_workshopAskDelete);
+    on('el-tw-save', 'click', EL_workshopSave);
+    on('el-tw-ins-save', 'click', EL_workshopSave);
+    on('el-tw-ins-delete', 'click', EL_workshopAskDelete);
+    on('el-tw-validate', 'click', () => EL_workshopValidate(true));
+}
+
+function EL_workshopRenderList() {
+    const host = document.getElementById('el-tw-list');
+    if (!host) return;
+    let list = [];
+    try {
+        const reg = EL_workshopReg();
+        if (reg && typeof reg.listTypes === 'function') list = reg.listTypes(EL_getTypeStore()) || [];
+    } catch (e) { list = []; }
+    list = list.slice().sort((a, b) => String(a.name || a.id).localeCompare(String(b.name || b.id)));
+    if (!list.length) {
+        host.innerHTML = '<div class="empty-state" style="padding:20px 0;"><p>No types yet</p></div>';
+        return;
+    }
+    host.innerHTML = list.map(t => {
+        const id = String(t.id);
+        const active = (id === String(EL_workshopSelectedId)) ? ' active' : '';
+        const builtin = EL_workshopIsBuiltin(id) ? '<span class="el-tw-builtin">built-in</span>' : '';
+        const accent = /^#[0-9a-fA-F]{6}$/.test(String(t.accent || '')) ? String(t.accent) : '#6366f1';
+        return '<div class="el-tw-typeitem' + active + '" data-el-tw-type="' + escapeHtml(id) + '" title="' + escapeHtml(id) + '">'
+            + '<span class="el-tw-dot" style="background:' + escapeHtml(accent) + ';"></span>'
+            + '<span class="el-tw-tname">' + escapeHtml(String(t.icon || '') + ' ' + String(t.name || id)).trim() + '</span>'
+            + builtin + '</div>';
+    }).join('');
+    host.querySelectorAll('[data-el-tw-type]').forEach(el => {
+        el.addEventListener('click', () => EL_workshopSelect(el.getAttribute('data-el-tw-type')));
+    });
+}
+
+function EL_workshopContLabels() {
+    const out = [];
+    try {
+        for (const sec of (EL_workshopDraft.sections || [])) {
+            for (const sl of ((sec && sec.slots) || [])) {
+                if (sl && sl.kind === 'cont' && sl.label) out.push(String(sl.label));
+            }
+        }
+    } catch (e) {}
+    return out;
+}
+
+function EL_workshopRenderBuilder() {
+    const identHost = document.getElementById('el-tw-identity');
+    const secHost = document.getElementById('el-tw-sections');
+    if (!identHost || !secHost) return;
+    const d = EL_workshopDraft;
+    if (!d) {
+        identHost.innerHTML = '<div class="empty-state" style="padding:20px 0;"><p>Select a type</p></div>';
+        secHost.innerHTML = '';
+        return;
+    }
+    const accent = /^#[0-9a-fA-F]{6}$/.test(String(d.accent || '')) ? String(d.accent) : '#6366f1';
+    try {
+        const panel = document.getElementById('type-workshop-panel');
+        if (panel) panel.style.setProperty('--el-tw-accent', accent);
+    } catch (e) {}
+    identHost.innerHTML =
+        '<div class="el-tw-ident">'
+        + '<div class="el-tw-irow"><label>Type name</label><input type="text" id="el-tw-name" value="' + escapeHtml(String(d.name || '')) + '" placeholder="Character"></div>'
+        + '<div class="el-tw-irow el-tw-inline">'
+        + '<div><label>Icon</label><input type="text" id="el-tw-icon" value="' + escapeHtml(String(d.icon || '')) + '" placeholder="👤" style="width:64px;"></div>'
+        + '<div><label>Accent</label><div class="el-tw-pick"><input type="color" id="el-tw-accent" value="' + escapeHtml(/^#[0-9a-fA-F]{6}$/.test(accent) ? accent : '#6366f1') + '"><span class="el-tw-hex" id="el-tw-accent-hex">' + escapeHtml(accent) + '</span></div></div>'
+        + '<div style="flex:1; min-width:140px;"><label>Tag limiter</label><input type="text" id="el-tw-tag" value="' + escapeHtml(String(d.tag || '')) + '" placeholder="char_name" style="width:100%; font-family:monospace;"></div>'
+        + '</div>'
+        + '<div class="el-tw-idline">id <code>' + escapeHtml(String(d.id || '')) + '</code> — ids never change; rename freely.</div>'
+        + '</div>';
+    const kinds = EL_workshopKinds();
+    secHost.innerHTML = (d.sections || []).map((sec, si) => {
+        const slots = Array.isArray(sec.slots) ? sec.slots : [];
+        const rows = slots.map((sl, sj) => {
+            const kind = String((sl && sl.kind) || 'cont');
+            const opts = kinds.map(k => '<option value="' + escapeHtml(k) + '"' + (k === kind ? ' selected' : '') + '>' + escapeHtml(k) + '</option>').join('');
+            return '<div class="el-tw-slot" data-el-tw-sec="' + si + '" data-el-tw-slot="' + sj + '">'
+                + '<div class="el-tw-slotrow"><select data-el-tw-kind>' + opts + '</select>'
+                + '<input type="text" data-el-tw-label value="' + escapeHtml(String((sl && sl.label) || '')) + '" placeholder="Label">'
+                + '<span class="el-tw-rowbtns"><button data-el-tw-up title="Move up">↑</button><button data-el-tw-down title="Move down">↓</button><button data-el-tw-del title="Delete slot">×</button></span></div>'
+                + '<div class="el-tw-cfg">' + EL_workshopSlotCfgHtml(kind, sl || {}) + '</div>'
+                + '</div>';
+        }).join('');
+        const kindOpts = kinds.map(k => '<option value="' + escapeHtml(k) + '">+ ' + escapeHtml(k) + '</option>').join('');
+        return '<div class="el-tw-sec" data-el-tw-section="' + si + '">'
+            + '<div class="el-tw-sechead"><input type="text" data-el-tw-sectitle value="' + escapeHtml(String(sec.title || '')) + '" placeholder="Section title">'
+            + '<span class="el-tw-rowbtns"><button data-el-tw-secup title="Move section up">↑</button><button data-el-tw-secdown title="Move section down">↓</button><button data-el-tw-secdel title="Delete section">×</button></span></div>'
+            + rows
+            + '<div class="el-tw-addrow"><select data-el-tw-addkind>' + kindOpts + '</select><button data-el-tw-addslot>Add slot</button></div>'
+            + '</div>';
+    }).join('') + '<button id="el-tw-addsec" class="btn btn-secondary btn-sm">＋ Add section</button>';
+    try {
+        const nameEl = document.getElementById('el-tw-name');
+        if (nameEl) nameEl.addEventListener('input', () => { EL_workshopDraft.name = nameEl.value; EL_workshopRenderList(); EL_workshopRenderPreview(); });
+        const iconEl = document.getElementById('el-tw-icon');
+        if (iconEl) iconEl.addEventListener('input', () => { EL_workshopDraft.icon = iconEl.value; EL_workshopRenderList(); });
+        const tagEl = document.getElementById('el-tw-tag');
+        if (tagEl) tagEl.addEventListener('input', () => { EL_workshopDraft.tag = tagEl.value; EL_workshopRenderUsage(); EL_workshopRenderPreview(); });
+        const accEl = document.getElementById('el-tw-accent');
+        if (accEl) accEl.addEventListener('input', () => {
+            var safeAcc = /^#[0-9a-fA-F]{6}$/.test(accEl.value) ? accEl.value : '#6366f1';
+            EL_workshopDraft.accent = safeAcc;
+            const hex = document.getElementById('el-tw-accent-hex');
+            if (hex) hex.textContent = safeAcc;
+            try { document.getElementById('type-workshop-panel').style.setProperty('--el-tw-accent', safeAcc); } catch (e) {}
+            EL_workshopRenderList();
+        });
+    } catch (e) {}
+    try {
+        secHost.querySelectorAll('.el-tw-sec').forEach(secEl => {
+            const si = parseInt(secEl.getAttribute('data-el-tw-section'), 10);
+            const titleEl = secEl.querySelector('[data-el-tw-sectitle]');
+            if (titleEl) titleEl.addEventListener('input', () => {
+                try { EL_workshopDraft.sections[si].title = titleEl.value; } catch (e) {}
+                EL_workshopRenderPreview();
+            });
+            const upB = secEl.querySelector('[data-el-tw-secup]');
+            if (upB) upB.addEventListener('click', () => EL_workshopMoveSection(si, -1));
+            const dnB = secEl.querySelector('[data-el-tw-secdown]');
+            if (dnB) dnB.addEventListener('click', () => EL_workshopMoveSection(si, 1));
+            const delB = secEl.querySelector('[data-el-tw-secdel]');
+            if (delB) delB.addEventListener('click', () => {
+                try { EL_workshopDraft.sections.splice(si, 1); } catch (e) {}
+                EL_workshopRenderBuilder(); EL_workshopRenderInspector(); EL_workshopRenderPreview();
+            });
+            const addKind = secEl.querySelector('[data-el-tw-addkind]');
+            const addB = secEl.querySelector('[data-el-tw-addslot]');
+            if (addB) addB.addEventListener('click', () => EL_workshopAddSlot(si, addKind ? addKind.value : 'cont'));
+            secEl.querySelectorAll('.el-tw-slot').forEach(row => {
+                const sj = parseInt(row.getAttribute('data-el-tw-slot'), 10);
+                const kindSel = row.querySelector('[data-el-tw-kind]');
+                if (kindSel) kindSel.addEventListener('change', () => {
+                    try { EL_workshopDraft.sections[si].slots[sj].kind = kindSel.value; } catch (e) {}
+                    EL_workshopRenderBuilder(); EL_workshopRenderInspector(); EL_workshopRenderPreview();
+                });
+                const labEl = row.querySelector('[data-el-tw-label]');
+                if (labEl) {
+                    labEl.addEventListener('input', () => {
+                        try { EL_workshopDraft.sections[si].slots[sj].label = labEl.value; } catch (e) {}
+                        EL_workshopRenderPreview();
+                    });
+                    labEl.addEventListener('change', () => { EL_workshopRenderInspector(); });
+                }
+                const su = row.querySelector('[data-el-tw-up]');
+                if (su) su.addEventListener('click', () => EL_workshopMoveSlot(si, sj, -1));
+                const sd = row.querySelector('[data-el-tw-down]');
+                if (sd) sd.addEventListener('click', () => EL_workshopMoveSlot(si, sj, 1));
+                const sdel = row.querySelector('[data-el-tw-del]');
+                if (sdel) sdel.addEventListener('click', () => {
+                    try { EL_workshopDraft.sections[si].slots.splice(sj, 1); } catch (e) {}
+                    EL_workshopRenderBuilder(); EL_workshopRenderInspector(); EL_workshopRenderPreview();
+                });
+                EL_workshopBindSlotParams(row, si, sj);
+            });
+        });
+        const addSec = document.getElementById('el-tw-addsec');
+        if (addSec) addSec.addEventListener('click', () => {
+            try { EL_workshopDraft.sections.push({ title: 'New Section', slots: [] }); } catch (e) {}
+            EL_workshopRenderBuilder(); EL_workshopRenderPreview();
+        });
+    } catch (e) {}
+}
+
+function EL_workshopSlotCfgHtml(kind, sl) {
+    const v = (x) => escapeHtml(String(x ?? ''));
+    const txt = (f, val, ph, style) => '<label>' + escapeHtml(f) + ' <input type="text" data-el-tw-param="' + escapeHtml(f) + '" value="' + v(val) + '" placeholder="' + escapeHtml(ph || '') + '"' + (style ? ' style="' + style + '"' : '') + '></label>';
+    switch (String(kind)) {
+        case 'cont': {
+            const keys = String(sl.keys || '');
+            return '<label>default <input type="text" data-el-tw-param="def" value="' + v(sl.def) + '" placeholder="empty"></label>'
+                + '<label>keys <select data-el-tw-param="keys"><option value="">—</option>'
+                + '<option value="main"' + (keys === 'main' ? ' selected' : '') + '>main</option>'
+                + '<option value="secondary"' + (keys === 'secondary' ? ' selected' : '') + '>secondary</option></select></label>'
+                + '<label><input type="checkbox" data-el-tw-param="hide"' + (sl.hide ? ' checked' : '') + '> visible-only</label>';
+        }
+        case 'ref':
+            return txt('target', sl.target, 'any') + '<label>limit <input type="number" data-el-tw-param="limit" min="0" value="' + v(sl.limit ?? 3) + '" style="width:64px;"></label>';
+        case 'gallery': {
+            const on = String(sl.inject || 'off') === 'on';
+            return '<label>send to model <button type="button" class="el-tw-sw" role="switch" aria-checked="' + (on ? 'true' : 'false') + '" data-el-tw-param="inject"></button></label>'
+                + '<span class="el-tw-hint">default off</span>';
+        }
+        case 'radar':
+            return txt('axes', sl.axes, 'Strength,Agility,…', 'min-width:220px;');
+        case 'conditional':
+            return txt('when', sl.when, 'map-placed') + txt('else', sl.else, 'Unknown');
+        case 'display':
+            return '<span class="el-tw-hint">visible only — the label above is the comma-separated show list; never injected.</span>';
+        case 'img':
+        case 'setref':
+        case 'getref':
+        case 'hub':
+            return txt('target', sl.target, '') + txt('id', sl.id, '') + txt('query', sl.query, '');
+        default:
+            return '';
+    }
+}
+
+function EL_workshopBindSlotParams(row, si, sj) {
+    try {
+        row.querySelectorAll('[data-el-tw-param]').forEach(el => {
+            const f = el.getAttribute('data-el-tw-param');
+            if (!f) return;
+            if (el.classList && el.classList.contains('el-tw-sw')) {
+                el.addEventListener('click', () => {
+                    const nowOn = el.getAttribute('aria-checked') === 'true';
+                    el.setAttribute('aria-checked', nowOn ? 'false' : 'true');
+                    try {
+                        if (f === 'inject') EL_workshopDraft.sections[si].slots[sj].inject = nowOn ? 'off' : 'on';
+                    } catch (e) {}
+                    EL_workshopRenderPreview();
+                });
+                return;
+            }
+            if (el.type === 'checkbox') {
+                el.addEventListener('change', () => {
+                    try {
+                        if (el.checked) EL_workshopDraft.sections[si].slots[sj][f] = true;
+                        else delete EL_workshopDraft.sections[si].slots[sj][f];
+                    } catch (e) {}
+                    EL_workshopRenderPreview();
+                });
+                return;
+            }
+            if (el.tagName === 'SELECT') {
+                el.addEventListener('change', () => {
+                    try {
+                        if (el.value) EL_workshopDraft.sections[si].slots[sj][f] = el.value;
+                        else delete EL_workshopDraft.sections[si].slots[sj][f];
+                    } catch (e) {}
+                    EL_workshopRenderPreview();
+                });
+                return;
+            }
+            el.addEventListener('input', () => {
+                try {
+                    const slot = EL_workshopDraft.sections[si].slots[sj];
+                    if (f === 'limit') {
+                        const n = parseInt(el.value, 10);
+                        if (isFinite(n) && n >= 0) slot.limit = n;
+                        else delete slot.limit;
+                    } else if (el.value) slot[f] = el.value;
+                    else delete slot[f];
+                } catch (e) {}
+                EL_workshopRenderPreview();
+            });
+        });
+    } catch (e) {}
+}
+
+function EL_workshopMoveSection(si, dir) {
+    try {
+        const arr = EL_workshopDraft.sections;
+        const nj = si + dir;
+        if (!arr || nj < 0 || nj >= arr.length) return;
+        const tmp = arr[si]; arr[si] = arr[nj]; arr[nj] = tmp;
+        EL_workshopRenderBuilder(); EL_workshopRenderPreview();
+    } catch (e) {}
+}
+
+function EL_workshopMoveSlot(si, sj, dir) {
+    try {
+        const arr = EL_workshopDraft.sections[si].slots;
+        const nj = sj + dir;
+        if (!arr || nj < 0 || nj >= arr.length) return;
+        const tmp = arr[sj]; arr[sj] = arr[nj]; arr[nj] = tmp;
+        EL_workshopRenderBuilder(); EL_workshopRenderInspector(); EL_workshopRenderPreview();
+    } catch (e) {}
+}
+
+function EL_workshopAddSlot(si, kind) {
+    try {
+        const k = String(kind || 'cont');
+        const ns = { kind: k, label: 'New ' + k };
+        if (k === 'ref') { ns.target = 'any'; ns.limit = 3; }
+        if (k === 'gallery') { ns.inject = 'off'; }
+        if (k === 'radar') { ns.axes = 'A,B,C,D,E,F'; }
+        if (k === 'conditional') { ns.when = ''; ns.else = 'Unknown'; }
+        if (k === 'cont') { ns.def = ''; }
+        EL_workshopDraft.sections[si].slots.push(ns);
+        EL_workshopRenderBuilder(); EL_workshopRenderInspector(); EL_workshopRenderPreview();
+    } catch (e) {}
+}
+
+function EL_workshopRenderInspector() {
+    const host = document.getElementById('el-tw-inspector');
+    if (!host) return;
+    const d = EL_workshopDraft;
+    if (!d) { host.innerHTML = ''; return; }
+    const conts = EL_workshopContLabels();
+    const opt = (cur) => '<option value="none">none</option>' + conts.map(c => '<option value="' + escapeHtml(c) + '"' + (c === cur ? ' selected' : '') + '>' + escapeHtml(c) + '</option>').join('');
+    const km = (d.keyMain && conts.includes(String(d.keyMain))) ? String(d.keyMain) : 'none';
+    const ks = (d.keySec && conts.includes(String(d.keySec))) ? String(d.keySec) : 'none';
+    host.innerHTML =
+        '<div class="el-tw-insprow"><span class="el-tw-k">Main keys from</span><select id="el-tw-keymain">' + opt(km) + '</select></div>'
+        + '<div class="el-tw-insprow"><span class="el-tw-k">Secondary from</span><select id="el-tw-keysec">' + opt(ks) + '</select></div>'
+        + '<div class="el-tw-insprow"><span class="el-tw-k">Reorder on apply</span><button type="button" class="el-tw-sw" role="switch" id="el-tw-reorder" aria-checked="' + (d.reorder ? 'true' : 'false') + '"></button></div>'
+        + '<div class="el-tw-insprow"><span class="el-tw-k">Custom CSS</span><input type="text" id="el-tw-csspath" value="' + escapeHtml(String(d.cssPath || '')) + '" placeholder="themes/mine/type.css" style="flex:1; min-width:0;"></div>';
+    try {
+        const kmEl = document.getElementById('el-tw-keymain');
+        if (kmEl) kmEl.addEventListener('change', () => { EL_workshopDraft.keyMain = kmEl.value; EL_workshopRenderPreview(); });
+        const ksEl = document.getElementById('el-tw-keysec');
+        if (ksEl) ksEl.addEventListener('change', () => { EL_workshopDraft.keySec = ksEl.value; EL_workshopRenderPreview(); });
+        const reEl = document.getElementById('el-tw-reorder');
+        if (reEl) reEl.addEventListener('click', () => {
+            EL_workshopDraft.reorder = !EL_workshopDraft.reorder;
+            reEl.setAttribute('aria-checked', EL_workshopDraft.reorder ? 'true' : 'false');
+        });
+        const cssEl = document.getElementById('el-tw-csspath');
+        if (cssEl) cssEl.addEventListener('input', () => { EL_workshopDraft.cssPath = cssEl.value; });
+    } catch (e) {}
+}
+
+function EL_workshopRenderPreview() {
+    const pre = document.getElementById('el-tw-preview');
+    if (!pre) return;
+    try {
+        const CC = (typeof ELCompile !== 'undefined') ? ELCompile : (typeof window !== 'undefined' ? window.ELCompile : null);
+        const SP = (typeof ELSlots !== 'undefined') ? ELSlots : (typeof window !== 'undefined' ? window.ELSlots : null);
+        if (!CC || !SP || !EL_workshopDraft) { pre.textContent = ''; return; }
+        const ast = CC.typeToAst(EL_workshopDraft);
+        pre.textContent = SP.emitTemplate(ast);
+    } catch (e) { pre.textContent = ''; }
+}
+
+function EL_workshopStoredTag() {
+    try {
+        if (!EL_workshopSelectedId) return '';
+        const t = (typeof EL_getEntryType === 'function') ? EL_getEntryType(EL_workshopSelectedId) : null;
+        return String((t && t.tag) || '');
+    } catch (e) { return ''; }
+}
+
+function EL_workshopRenderUsage() {
+    const host = document.getElementById('el-tw-usage');
+    if (!host) return;
+    const d = EL_workshopDraft;
+    if (!d) { host.innerHTML = ''; return; }
+    const u = (EL_workshopUsage && EL_workshopUsage.typeId === EL_workshopSelectedId) ? EL_workshopUsage : null;
+    const renamed = String(d.tag || '') !== EL_workshopStoredTag();
+    let body;
+    if (!u) {
+        body = '<div class="el-tw-muted">Counting entries…</div>';
+    } else if (!u.total) {
+        body = '<div class="el-tw-muted">No entries use this type.</div>';
+    } else {
+        body = '<div><strong>' + u.total + '</strong> entr' + (u.total === 1 ? 'y' : 'ies') + ' use this type:</div>'
+            + '<div class="el-tw-books">' + u.books.map(b => '<div>' + escapeHtml(b.book) + ' <span class="el-tw-muted">(' + b.count + ')</span></div>').join('') + '</div>';
+    }
+    const warn = renamed
+        ? '<div class="el-tw-tagwarn">Tag renamed — existing entries will be re-matched by label on save. Entries whose labels no longer match are preserved as extra content.</div>'
+        : '';
+    host.innerHTML = '<h4>Usage</h4>' + warn + body + '<button id="el-tw-refresh-usage" class="btn btn-secondary btn-sm" style="margin-top:6px;">Recount</button>';
+    try {
+        const rb = document.getElementById('el-tw-refresh-usage');
+        if (rb) rb.addEventListener('click', () => EL_workshopRefreshUsage());
+    } catch (e) {}
+}
+
+function EL_workshopCountEntries(entries, typeId) {
+    let n = 0;
+    try {
+        for (const uid of Object.keys(entries || {})) {
+            let tid = '';
+            try { tid = entries[uid] && entries[uid].extensions && entries[uid].extensions.el && entries[uid].extensions.el.type; } catch (e) { tid = ''; }
+            if (String(tid || '') === String(typeId)) n++;
+        }
+    } catch (e) {}
+    return n;
+}
+
+async function EL_workshopCountUsage(typeId) {
+    const books = [];
+    let total = 0;
+    try {
+        if (typeof currentLorebookName !== 'undefined' && currentLorebookName && typeof currentLorebookData !== 'undefined' && currentLorebookData && currentLorebookData.entries) {
+            const n = EL_workshopCountEntries(currentLorebookData.entries, typeId);
+            books.push({ book: currentLorebookName, count: n, current: true });
+            total += n;
+        }
+    } catch (e) {}
+    let names = [];
+    try {
+        if (typeof stContext !== 'undefined' && stContext && typeof stContext.getWorldInfoNames === 'function') {
+            names = stContext.getWorldInfoNames() || [];
+        }
+    } catch (e) { names = []; }
+    if (typeof ELG_loadFresh !== 'function') return { total: total, books: books };
+    for (const name of names) {
+        try {
+            if (typeof currentLorebookName !== 'undefined' && name === currentLorebookName) continue;
+            const data = await ELG_loadFresh(name);
+            const n = (data && data.entries) ? EL_workshopCountEntries(data.entries, typeId) : 0;
+            if (n > 0) { books.push({ book: name, count: n }); total += n; }
+        } catch (e) {}
+    }
+    return { total: total, books: books };
+}
+
+async function EL_workshopRefreshUsage() {
+    const id = EL_workshopSelectedId;
+    if (!id) return;
+    const token = ++EL_workshopUsageToken;
+    try {
+        const u = await EL_workshopCountUsage(id);
+        if (token !== EL_workshopUsageToken) return;
+        u.typeId = id;
+        EL_workshopUsage = u;
+        if (EL_workshopSelectedId === id) EL_workshopRenderUsage();
+    } catch (e) {}
+}
+
+function EL_workshopSave() {
+    try {
+        const reg = EL_workshopReg();
+        if (!reg || !EL_workshopDraft) { try { EL_toast('Nothing to save.', 'error'); } catch (e) {} return; }
+        const r = reg.putType(EL_getTypeStore(), EL_workshopDraft);
+        if (!r || !r.type) {
+            try { EL_toast('Save refused: ' + ((r && r.warnings && r.warnings[0]) || 'invalid type'), 'error'); } catch (e) {}
+            return;
+        }
+        EL_workshopDraft = EL_workshopCloneOf(r.type);
+        try { saveSettings(); } catch (e) {}
+        if (r.warnings && r.warnings.length) {
+            try { EL_toast('Saved with ' + r.warnings.length + ' warning(s): ' + r.warnings[0], 'warning'); } catch (e) {}
+        } else {
+            try { EL_toast('Type saved.', 'success'); } catch (e) {}
+        }
+        EL_workshopRenderList();
+        EL_workshopRenderUsage();
+        EL_workshopRefreshUsage();
+    } catch (e) { try { EL_toast('Save failed: ' + (e && e.message ? e.message : e), 'error'); } catch (_e) {} }
+}
+
+function EL_workshopValidate(showOk) {
+    const box = document.getElementById('el-tw-errors');
+    try {
+        const reg = EL_workshopReg();
+        if (!reg || typeof reg.validateType !== 'function') return true;
+        const r = reg.validateType(EL_workshopDraft);
+        if (box) {
+            if (r.ok) {
+                box.style.display = showOk ? '' : 'none';
+                if (showOk) box.innerHTML = '<div class="el-tw-ok">Valid — tag set, sections present, labels unique.</div>';
+            } else {
+                box.style.display = '';
+                box.innerHTML = (r.errors || []).map(e => '<div>' + escapeHtml(String(e)) + '</div>').join('');
+            }
+        }
+        return !!r.ok;
+    } catch (e) { return false; }
+}
+
+function EL_workshopNew() {
+    try {
+        const reg = EL_workshopReg();
+        const base = (reg && typeof reg.blankType === 'function') ? reg.blankType('Untitled Type') : { id: 'type', name: 'Untitled Type', icon: '', accent: '#6366f1', tag: '', reorder: true, keyMain: 'none', keySec: 'none', cssPath: '', sections: [{ title: 'General', slots: [] }] };
+        base.id = EL_workshopUniqueId(base.name);
+        base.name = 'Untitled Type';
+        const r = reg ? reg.putType(EL_getTypeStore(), base) : { type: base };
+        if (!r || !r.type) { try { EL_toast('Could not create type.', 'error'); } catch (e) {} return; }
+        try { saveSettings(); } catch (e) {}
+        EL_workshopSelect(String(r.type.id));
+        try { EL_toast('Type created. Rename it, then Save.', 'success'); } catch (e) {}
+    } catch (e) { try { EL_toast('Could not create type.', 'error'); } catch (_e) {} }
+}
+
+function EL_workshopClone() {
+    try {
+        if (!EL_workshopDraft) return;
+        const reg = EL_workshopReg();
+        const copy = EL_workshopCloneOf(EL_workshopDraft);
+        if (!copy) return;
+        copy.name = String(copy.name || copy.id) + ' Copy';
+        copy.id = EL_workshopUniqueId(copy.name);
+        const r = reg ? reg.putType(EL_getTypeStore(), copy) : { type: copy };
+        if (!r || !r.type) { try { EL_toast('Could not clone type.', 'error'); } catch (e) {} return; }
+        try { saveSettings(); } catch (e) {}
+        EL_workshopSelect(String(r.type.id));
+        try { EL_toast('Type cloned.', 'success'); } catch (e) {}
+    } catch (e) {}
+}
+
+function EL_workshopAskDelete() {
+    try {
+        if (!EL_workshopDraft || !EL_workshopSelectedId) return;
+        const id = String(EL_workshopSelectedId);
+        if (EL_workshopIsBuiltin(id)) {
+            try { EL_toast('Built-in types cannot be deleted — clone one to customise it.', 'warning'); } catch (e) {}
+            return;
+        }
+        const name = String(EL_workshopDraft.name || id);
+        const u = (EL_workshopUsage && EL_workshopUsage.typeId === id) ? EL_workshopUsage : { total: 0, books: [] };
+        const bookLines = u.books.length
+            ? u.books.map(b => '<div>' + escapeHtml(b.book) + ' <span style="opacity:0.7;">(' + b.count + ')</span></div>').join('')
+            : '<div style="opacity:0.7;">No entries use this type.</div>';
+        const ov = document.createElement('div');
+        ov.className = 'modal active';
+        ov.id = 'el-tw-delete-overlay';
+        ov.innerHTML = '<div class="modal-content glass-panel" style="width:460px;">'
+            + '<div class="modal-header"><h3><i class="fa-solid fa-trash" style="margin-right:8px;"></i>Delete type</h3>'
+            + '<button class="close-modal"><i class="fa-solid fa-xmark"></i></button></div>'
+            + '<div class="modal-body">'
+            + '<p>Delete type <strong>' + escapeHtml(name) + '</strong> (<code>' + escapeHtml(id) + '</code>)?</p>'
+            + '<p style="margin:8px 0; font-size:0.85rem;">' + u.total + ' entr' + (u.total === 1 ? 'y' : 'ies') + ' use this type:</p>'
+            + '<div style="max-height:140px; overflow-y:auto; font-size:0.85rem; margin-bottom:10px;">' + bookLines + '</div>'
+            + '<p style="font-size:0.85rem; opacity:0.85;">Affected entries are converted to plain text first (limiter lines stripped, type link removed) — nothing is deleted.</p>'
+            + '</div>'
+            + '<div class="modal-footer" style="display:flex; gap:8px; justify-content:flex-end;">'
+            + '<button class="btn btn-secondary" data-el-tw-cancel>Cancel</button>'
+            + '<button class="btn btn-danger" data-el-tw-confirm>Convert &amp; Delete</button>'
+            + '</div></div>';
+        document.body.appendChild(ov);
+        const close = () => { try { EL_modalClose(ov); } catch (e) {} try { if (ov.parentNode) ov.parentNode.removeChild(ov); } catch (e) {} };
+        const cancelBtn = ov.querySelector('[data-el-tw-cancel]');
+        if (cancelBtn) cancelBtn.addEventListener('click', close);
+        const xBtn = ov.querySelector('.close-modal');
+        if (xBtn) xBtn.addEventListener('click', close);
+        const okBtn = ov.querySelector('[data-el-tw-confirm]');
+        if (okBtn) okBtn.addEventListener('click', async () => {
+            okBtn.disabled = true;
+            try { await EL_workshopDeleteConvert(id); } catch (e) {}
+            close();
+        });
+        try { EL_modalOpen(ov); } catch (e) {}
+    } catch (e) {}
+}
+
+async function EL_workshopDeleteConvert(typeId) {
+    const id = String(typeId);
+    let usage = null;
+    try { usage = await EL_workshopCountUsage(id); } catch (e) { usage = { total: 0, books: [] }; }
+    const affected = (usage.books || []).filter(b => b.count > 0);
+    let typeName = id;
+    try {
+        const t = (typeof EL_getEntryType === 'function') ? EL_getEntryType(id) : null;
+        if (t && t.name) typeName = String(t.name);
+    } catch (e) {}
+    const pending = [];
+    for (const b of affected) {
+        let data = null;
+        try { data = await ELG_loadFresh(b.book); } catch (e) { data = null; }
+        if (!data || !data.entries) {
+            try { EL_toast('Could not load "' + b.book + '" — type deletion blocked.', 'error'); } catch (e) {}
+            return false;
+        }
+        pending.push({ book: b.book, data: data });
+    }
+    for (const b of pending) {
+        const data = b.data;
+        let changed = 0;
+        try {
+            for (const uid of Object.keys(data.entries)) {
+                const e = data.entries[uid];
+                let tid = '';
+                try { tid = e && e.extensions && e.extensions.el && e.extensions.el.type; } catch (err) { tid = ''; }
+                if (String(tid || '') !== id) continue;
+                const w = (typeof EL_batchTypeResetWrites === 'function') ? EL_batchTypeResetWrites(e) : null;
+                if (w) {
+                    if (Object.prototype.hasOwnProperty.call(w, 'content')) e.content = w.content;
+                    if (Object.prototype.hasOwnProperty.call(w, 'extensions')) e.extensions = w.extensions;
+                } else {
+                    try { if (e.extensions) delete e.extensions.el; } catch (err) {}
+                }
+                changed++;
+            }
+        } catch (e) {}
+        let ok = false;
+        try {
+            ok = await ELG_guardSave(b.book, data, { explicitDelete: false, source: 'user', note: 'Type "' + typeName + '" deleted — ' + changed + ' entries converted to plain text' });
+        } catch (e) { ok = false; }
+        if (!ok) {
+            try { EL_toast('Save to "' + b.book + '" failed — type deletion blocked, nothing deleted.', 'error'); } catch (e) {}
+            try {
+                if (typeof currentLorebookName !== 'undefined' && b.book === currentLorebookName) {
+                    const fresh = await ELG_loadFresh(b.book);
+                    if (fresh) EL_setLorebookData(fresh, { own: true });
+                    if (typeof renderEntries === 'function') renderEntries();
+                }
+            } catch (e) {}
+            return false;
+        }
+        try {
+            if (typeof currentLorebookName !== 'undefined' && b.book === currentLorebookName && typeof EL_setLorebookData === 'function') {
+                EL_setLorebookData(data, { own: true });
+                if (typeof renderEntries === 'function') renderEntries();
+            }
+        } catch (e) {}
+    }
+    let deleted = false;
+    try {
+        const reg = EL_workshopReg();
+        if (reg && typeof reg.deleteType === 'function') deleted = !!reg.deleteType(EL_getTypeStore(), id);
+        else deleted = false;
+        try { saveSettings(); } catch (e) {}
+    } catch (e) { deleted = false; }
+    if (!deleted) {
+        try { EL_toast('Could not delete type "' + typeName + '".', 'error'); } catch (e) {}
+        EL_workshopRender();
+        return false;
+    }
+    if (EL_workshopSelectedId === id) {
+        EL_workshopSelectedId = null;
+        EL_workshopDraft = null;
+        EL_workshopUsage = null;
+    }
+    try { EL_toast('Type "' + typeName + '" deleted' + (usage.total ? ' — ' + usage.total + ' entries converted to plain text.' : '.'), 'success'); } catch (e) {}
+    EL_workshopRender();
+    return true;
 }
 
 // Start app

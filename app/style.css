@@ -2799,3 +2799,477 @@ body.el-theme-light textarea::placeholder {
     font-size: 0.82rem;
     margin-top: 10px;
 }
+
+/* ============================================================
+ * Type Workshop — Track B2
+ * Three-column type CRUD: list | builder | preview + inspector.
+ * Theme vars only; accent tint rides --el-tw-accent (set from JS).
+ * ============================================================ */
+#type-workshop-panel {
+    --el-tw-accent: var(--primary-color);
+}
+
+.el-tw-bar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+}
+
+.el-tw-sub {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+
+.el-tw-cols {
+    display: grid;
+    grid-template-columns: 240px minmax(0, 1.35fr) minmax(0, 1fr);
+    gap: 16px;
+    align-items: start;
+}
+
+.el-tw-listcol,
+.el-tw-buildcol,
+.el-tw-sidecol {
+    min-width: 0;
+}
+
+.el-tw-sidecol {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.el-tw-listhead {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 700;
+    font-size: 0.8rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin-bottom: 8px;
+}
+
+#el-tw-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.el-tw-typeitem {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 10px;
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 0.88rem;
+    background: rgba(0, 0, 0, 0.12);
+}
+
+.el-tw-typeitem:hover {
+    background: var(--hover-bg);
+}
+
+.el-tw-typeitem.active {
+    border-color: var(--el-tw-accent);
+    background: var(--active-bg);
+}
+
+.el-tw-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex: 0 0 auto;
+}
+
+.el-tw-tname {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.el-tw-builtin {
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    border: 1px solid var(--panel-border);
+    border-radius: 4px;
+    padding: 1px 6px;
+}
+
+.el-tw-ident {
+    border: 1px solid var(--panel-border);
+    border-radius: 10px;
+    padding: 12px;
+    margin-bottom: 12px;
+    background: rgba(0, 0, 0, 0.12);
+}
+
+.el-tw-irow {
+    margin-bottom: 10px;
+}
+
+.el-tw-irow label {
+    display: block;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin-bottom: 4px;
+}
+
+.el-tw-irow input[type="text"] {
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    color: var(--text-color);
+    padding: 6px 10px;
+    font-size: 0.92rem;
+    outline: none;
+    width: 100%;
+}
+
+.el-tw-irow input[type="text"]:focus {
+    border-color: var(--el-tw-accent);
+}
+
+.el-tw-inline {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.el-tw-idline {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+}
+
+.el-tw-idline code {
+    font-family: monospace;
+    color: var(--text-color);
+}
+
+.el-tw-pick {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.el-tw-pick input[type="color"] {
+    width: 40px;
+    height: 28px;
+    border: 1px solid var(--panel-border);
+    border-radius: 7px;
+    background: rgba(0, 0, 0, 0.3);
+    padding: 2px;
+    cursor: pointer;
+}
+
+.el-tw-hex {
+    font-family: monospace;
+    font-size: 0.74rem;
+    color: var(--text-muted);
+}
+
+.el-tw-sec {
+    border: 1px solid var(--panel-border);
+    border-radius: 10px;
+    margin-bottom: 12px;
+    overflow: hidden;
+}
+
+.el-tw-sechead {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    background: rgba(0, 0, 0, 0.25);
+    border-bottom: 1px solid var(--panel-border);
+}
+
+.el-tw-sechead input {
+    flex: 1;
+    min-width: 0;
+    background: transparent;
+    border: 0;
+    color: var(--text-color);
+    font-weight: 700;
+    font-size: 0.8rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    outline: none;
+}
+
+.el-tw-sechead input:focus {
+    border-bottom: 1px dotted var(--el-tw-accent);
+}
+
+.el-tw-rowbtns {
+    display: flex;
+    gap: 2px;
+}
+
+.el-tw-rowbtns button {
+    width: 26px;
+    height: 26px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    background: transparent;
+    border: 0;
+    cursor: pointer;
+}
+
+.el-tw-rowbtns button:hover {
+    background: var(--hover-bg);
+    color: var(--text-color);
+}
+
+.el-tw-slot {
+    padding: 7px 10px;
+    border-bottom: 1px solid var(--panel-border);
+}
+
+.el-tw-slot:last-of-type {
+    border-bottom: 0;
+}
+
+.el-tw-slotrow {
+    display: grid;
+    grid-template-columns: 110px minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: center;
+}
+
+.el-tw-slotrow select,
+.el-tw-slotrow input[type="text"],
+.el-tw-slotrow input[type="number"] {
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    color: var(--text-color);
+    font-size: 0.8rem;
+    padding: 4px 7px;
+    outline: none;
+    min-width: 0;
+    width: 100%;
+}
+
+.el-tw-slotrow select:focus,
+.el-tw-slotrow input:focus {
+    border-color: var(--el-tw-accent);
+}
+
+.el-tw-cfg {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+    font-size: 0.76rem;
+    color: var(--text-muted);
+    padding-top: 6px;
+}
+
+.el-tw-cfg label {
+    display: inline-flex;
+    gap: 5px;
+    align-items: center;
+}
+
+.el-tw-cfg input[type="text"],
+.el-tw-cfg input[type="number"] {
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    color: var(--text-color);
+    font-size: 0.76rem;
+    padding: 3px 6px;
+    outline: none;
+}
+
+.el-tw-cfg select {
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    color: var(--text-color);
+    font-size: 0.76rem;
+    padding: 3px 6px;
+    outline: none;
+}
+
+.el-tw-hint {
+    font-size: 0.74rem;
+    color: var(--text-muted);
+}
+
+.el-tw-addrow {
+    display: flex;
+    gap: 8px;
+    padding: 8px 10px;
+    align-items: center;
+}
+
+.el-tw-addrow select {
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px dashed var(--text-muted);
+    border-radius: 6px;
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    padding: 4px 7px;
+}
+
+.el-tw-addrow button {
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    color: var(--text-color);
+    cursor: pointer;
+    padding: 4px 10px;
+    font-size: 0.78rem;
+}
+
+#el-tw-addsec {
+    margin-bottom: 4px;
+}
+
+.el-tw-box {
+    border: 1px solid var(--panel-border);
+    border-radius: 10px;
+    padding: 10px 12px;
+    background: rgba(0, 0, 0, 0.12);
+}
+
+.el-tw-box h4 {
+    margin: 0 0 8px;
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+}
+
+.el-tw-raw {
+    background: rgba(0, 0, 0, 0.35);
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    padding: 12px;
+    font-family: monospace;
+    font-size: 0.72rem;
+    line-height: 1.65;
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin: 0;
+    color: var(--text-color);
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+.el-tw-tagwarn {
+    font-size: 0.76rem;
+    color: var(--warning-color);
+    background: rgba(245, 158, 11, 0.08);
+    border: 1px solid rgba(245, 158, 11, 0.4);
+    border-radius: 8px;
+    padding: 8px 10px;
+    margin-bottom: 8px;
+}
+
+.el-tw-books {
+    font-size: 0.8rem;
+    margin-top: 4px;
+    max-height: 120px;
+    overflow-y: auto;
+}
+
+.el-tw-muted {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+
+.el-tw-insprow {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 0;
+    font-size: 0.82rem;
+}
+
+.el-tw-k {
+    color: var(--text-muted);
+    min-width: 118px;
+}
+
+.el-tw-insprow select,
+.el-tw-insprow input[type="text"] {
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    color: var(--text-color);
+    font-size: 0.8rem;
+    padding: 4px 7px;
+    outline: none;
+}
+
+.el-tw-sw {
+    width: 38px;
+    height: 21px;
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.15);
+    border: 1px solid var(--panel-border);
+    position: relative;
+    cursor: pointer;
+    flex: 0 0 auto;
+    padding: 0;
+}
+
+.el-tw-sw::after {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 3px;
+    width: 15px;
+    height: 15px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    transition: left 0.15s;
+}
+
+.el-tw-sw[aria-checked="true"] {
+    background: var(--el-tw-accent);
+}
+
+.el-tw-sw[aria-checked="true"]::after {
+    left: 18px;
+    background: #fff;
+}
+
+.el-tw-errors {
+    font-size: 0.78rem;
+    color: var(--danger-color);
+    background: rgba(239, 68, 68, 0.08);
+    border: 1px solid rgba(239, 68, 68, 0.4);
+    border-radius: 8px;
+    padding: 8px 10px;
+    margin-top: 8px;
+}
+
+.el-tw-ok {
+    color: var(--success-color);
+}
+
+.el-tw-danger {
+    color: var(--danger-color);
+}

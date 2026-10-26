@@ -3005,7 +3005,7 @@ function createEntryCard(uid) {
             <div style="display:flex; align-items:center; gap:4px;"><i class="fa-solid fa-map-pin"></i> Pos: <select class="inline-edit inline-entry-pos">${posOptions}</select></div>
             <div style="display:flex; align-items:center; gap:4px;"><i class="fa-solid fa-percent"></i> Prob: <input type="number" class="inline-edit inline-entry-prob" value="${entry.probability ?? 100}" style="width:50px;" min="0" max="100">%</div>
             <span style="display:flex; align-items:center;"><i class="fa-solid fa-filter"></i>&nbsp;Logic: ${logicName}</span>
-            ${entry.delay ? `<span style="display:flex; align-items:center;"><i class="fa-solid fa-clock"></i>&nbsp;Delay: ${entry.delay}</span>` : ''}
+            ${entry.delay ? `<span style="display:flex; align-items:center;"><i class="fa-solid fa-clock"></i>&nbsp;Delay: ${escapeHtml(entry.delay)}</span>` : ''}
             ${((typeof EL_mapKindOf === 'function') && EL_mapKindOf(entry)) ? `<button class="el-map-pinbtn${((typeof EL_mapIsPinned === 'function') && currentLorebookName && EL_mapIsPinned(currentLorebookName, uid)) ? ' on' : ''}" title="Pin to map"><i class="fa-solid fa-thumbtack"></i></button>` : ''}
         </div>
     `;

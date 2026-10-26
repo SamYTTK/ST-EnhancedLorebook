@@ -2346,7 +2346,7 @@ async function runAgentNow() {
             statusEl.innerHTML = '<span style="color:var(--success-color,#10b981);">' + msg + extra + '</span>';
         }
     } catch (e) {
-        if (statusEl) statusEl.innerHTML = '<span style="color:var(--danger-color);">Error: ' + e.message + '</span>';
+        if (statusEl) statusEl.innerHTML = '<span style="color:var(--danger-color);">Error: ' + _escapeHtml(String((e && e.message) || e)) + '</span>';
     } finally {
         if (runBtn) {
             runBtn.disabled = false;

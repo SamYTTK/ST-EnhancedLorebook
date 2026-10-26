@@ -35,7 +35,7 @@ const EL_PROPOSAL_CONTRACT = Object.freeze({
         'depth', 'probability', 'selective', 'constant', 'disable',
         'excludeRecursion', 'preventRecursion', 'vectorized', 'group',
         'groupWeight', 'groupOverride', 'sticky', 'cooldown', 'delay',
-        'selectiveLogic', 'role', 'outletName'],
+        'selectiveLogic', 'role', 'outletName', 'extensions'],
 });
 
 // ── Canonical entry field list (FIX A/B) ──

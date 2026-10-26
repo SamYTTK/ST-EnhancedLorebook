@@ -3275,6 +3275,7 @@ function openAddItemModal(parentFolderId = null) {
     document.getElementById('quick-entry-disable').checked = false;
     document.getElementById('quick-entry-exclude').checked = false;
     document.getElementById('quick-entry-prevent').checked = false;
+    try { EL_fillTypeSelect(document.getElementById('quick-entry-type'), 'none'); } catch (e) {}
 
     document.getElementById('quick-folder-names').value = '';
     document.getElementById('quick-folder-order').value = '100';
@@ -3336,6 +3337,7 @@ function openAddItemModal(parentFolderId = null) {
     });
     document.getElementById('adv-settings-general').style.display = 'flex';
     document.getElementById('adv-settings-individual').style.display = 'none';
+    try { EL_fillTypeSelect(document.getElementById('g-type'), EL_selectVal('g-type', 'none')); } catch (e) {}
 
     // Remove peek mode
     document.getElementById('add-item-modal').classList.remove('peek-mode');
@@ -3869,6 +3871,7 @@ async function createItems() {
             const selectedOption = positionSelect.selectedOptions[0];
             const position = parseInt(selectedOption.value) || 0;
             const role = selectedOption.dataset.role !== '' ? parseInt(selectedOption.dataset.role) : null;
+            const quickTypeId = EL_selectVal('quick-entry-type', 'none');
 
             const newUids = [];
             for (let i = 0; i < count; i++) {
@@ -3876,7 +3879,7 @@ async function createItems() {
                 if (newUid === null) { console.error('Enhanced Lorebook: Couldn\'t assign UID'); break; }
                 const entryComment = commentsList[i] || '';
                 
-                currentLorebookData.entries[newUid] = {
+                let quickEntry = {
                     uid: newUid,
                     key: [...keys],
                     keysecondary: [],
@@ -3896,6 +3899,8 @@ async function createItems() {
                     depth: depth,
                     probability: probability,
                 };
+                quickEntry = EL_applyCreateType(quickEntry, quickTypeId);
+                currentLorebookData.entries[newUid] = quickEntry;
                 newUids.push(String(newUid));
             }
 
@@ -3942,6 +3947,8 @@ async function createItems() {
         const disableVal = document.getElementById('g-disable').checked;
         const excludeRecursionVal = document.getElementById('g-exclude').checked;
         const preventRecursionVal = document.getElementById('g-prevent').checked;
+        let advTypeId = 'none';
+        try { advTypeId = (document.getElementById('g-apply-type') || {}).checked ? EL_selectVal('g-type', 'none') : 'none'; } catch (e) { advTypeId = 'none'; }
 
         for (let i = 0; i < advancedRows.length; i++) {
             const newUid = getFreeWorldEntryUid(currentLorebookData);
@@ -3983,7 +3990,7 @@ async function createItems() {
                 };
             }
 
-            currentLorebookData.entries[newUid] = {
+            currentLorebookData.entries[newUid] = EL_applyCreateType({
                 uid: newUid,
                 key: keys,
                 keysecondary: keysecondary,
@@ -3992,7 +3999,7 @@ async function createItems() {
                 selectiveLogic: 0,
                 delay: 0,
                 ...entrySettings
-            };
+            }, advTypeId);
             newUids.push(String(newUid));
         }
 
@@ -4136,6 +4143,7 @@ function createNewEntries() {
 function openBatchModal() {
     document.getElementById('batch-selected-count').textContent = selectedEntries.size;
     EL_batchPendingPlan = null;
+    try { EL_fillTypeSelect(document.getElementById('batch-type-val'), EL_selectVal('batch-type-val', 'none')); } catch (e) {}
     
     // Populate searchable batch folder picker
     const hiddenInput = document.getElementById('batch-folder-val');
@@ -4207,6 +4215,270 @@ function openBatchModal() {
  * confirms. After a successful apply the previous values are kept for one
  * undo, restored through the same ELG_guardSave path.
  */
+
+/**
+ * Entry types (Track A4): typed entries through the whole write pipeline.
+ * Types live in extensionSettings.entryTypes (plain id -> type object, as
+ * lib/type-registry.js expects); missing builtins are seeded on first access.
+ * Every save still goes through ELG_guardSave — these helpers only shape data.
+ */
+
+/**
+ * Type store for ELTypeRegistry, seeded with builtins for missing ids only
+ * (never overwrites a user-edited type).
+ * @returns {object}
+ */
+function EL_getTypeStore() {
+    try {
+        if (!extensionSettings || typeof extensionSettings !== 'object') return {};
+        if (!extensionSettings.entryTypes || typeof extensionSettings.entryTypes !== 'object' || Array.isArray(extensionSettings.entryTypes)) {
+            extensionSettings.entryTypes = {};
+        }
+        const store = extensionSettings.entryTypes;
+        try {
+            const reg = (typeof ELTypeRegistry !== 'undefined') ? ELTypeRegistry : (typeof window !== 'undefined' ? window.ELTypeRegistry : null);
+            if (reg && reg.BUILTIN_TYPES && typeof reg.putType === 'function') {
+                let seeded = false;
+                for (const id of Object.keys(reg.BUILTIN_TYPES)) {
+                    if (!Object.prototype.hasOwnProperty.call(store, id)) {
+                        try { reg.putType(store, reg.BUILTIN_TYPES[id]); seeded = true; } catch (e) {}
+                    }
+                }
+                if (seeded) { try { if (typeof saveSettings === 'function') saveSettings(); } catch (e) {} }
+            }
+        } catch (e) {}
+        return store;
+    } catch (e) { return {}; }
+}
+
+/**
+ * All known types (store first, builtins as fallback when the registry is absent).
+ * @returns {Array}
+ */
+function EL_listEntryTypes() {
+    try {
+        const reg = (typeof ELTypeRegistry !== 'undefined') ? ELTypeRegistry : (typeof window !== 'undefined' ? window.ELTypeRegistry : null);
+        if (reg && typeof reg.listTypes === 'function') {
+            const list = reg.listTypes(EL_getTypeStore()) || [];
+            if (list.length) return list;
+            if (reg.BUILTIN_TYPES) return Object.keys(reg.BUILTIN_TYPES).map(k => reg.BUILTIN_TYPES[k]);
+        }
+    } catch (e) {}
+    return [];
+}
+
+/**
+ * One type by id (deep clone via the registry; null for 'none'/missing).
+ * @param {string} id
+ * @returns {object|null}
+ */
+function EL_getEntryType(id) {
+    const key = (id === undefined || id === null) ? '' : String(id);
+    if (!key || key === 'none') return null;
+    try {
+        const reg = (typeof ELTypeRegistry !== 'undefined') ? ELTypeRegistry : (typeof window !== 'undefined' ? window.ELTypeRegistry : null);
+        if (reg && typeof reg.getType === 'function') {
+            const t = reg.getType(EL_getTypeStore(), key);
+            if (t) return t;
+            if (reg.BUILTIN_TYPES && reg.BUILTIN_TYPES[key]) {
+                try { return JSON.parse(JSON.stringify(reg.BUILTIN_TYPES[key])); }
+                catch (e) { return reg.BUILTIN_TYPES[key]; }
+            }
+        }
+    } catch (e) {}
+    return null;
+}
+
+/**
+ * Human label for a type id ('None' when untyped, raw id when missing).
+ * @param {string} id
+ * @returns {string}
+ */
+function EL_entryTypeLabel(id) {
+    const key = (id === undefined || id === null) ? '' : String(id);
+    if (!key) return 'None';
+    try {
+        const t = EL_getEntryType(key);
+        if (t) return String(t.name || key);
+    } catch (e) {}
+    return key + ' (missing)';
+}
+
+/**
+ * Stored type id of one entry ('' when untyped).
+ * @param {object} entry
+ * @returns {string}
+ */
+function EL_oldTypeId(entry) {
+    try {
+        const t = entry && entry.extensions && entry.extensions.el && entry.extensions.el.type;
+        return (typeof t === 'string' && t) ? t : '';
+    } catch (e) { return ''; }
+}
+
+/**
+ * Read a select/string value input with fallback.
+ * @param {string} id Element id.
+ * @param {string} fb Fallback.
+ * @returns {string}
+ */
+function EL_selectVal(id, fb) {
+    try {
+        const el = document.getElementById(id);
+        if (!el) return fb;
+        return String(el.value ?? fb);
+    } catch (e) { return fb; }
+}
+
+/**
+ * Fill a type <select> (None + registry types, name-sorted).
+ * @param {Element|null} sel
+ * @param {string} selected
+ */
+function EL_fillTypeSelect(sel, selected) {
+    if (!sel) return;
+    try {
+        const want = (selected === undefined || selected === null) ? 'none' : String(selected);
+        const types = EL_listEntryTypes().slice().sort((a, b) => String(a.name || a.id).localeCompare(String(b.name || b.id)));
+        let html = '<option value="none">None (plain entry)</option>';
+        for (const t of types) {
+            const tid = String((t && t.id) || '');
+            if (!tid) continue;
+            html += '<option value="' + escapeHtml(tid) + '"' + (tid === want ? ' selected' : '') + '>' + escapeHtml(String((t && t.name) || tid)) + '</option>';
+        }
+        sel.innerHTML = html;
+        try { sel.value = want; } catch (e) {}
+    } catch (e) {}
+}
+
+/**
+ * Apply a type to a fresh entry at creation time (blank content renders the
+ * labeled skeleton; user-supplied content is merged by label extraction).
+ * Returns the (possibly new) entry; never throws; 'none'/unknown → unchanged.
+ * @param {object} entry
+ * @param {string} typeId
+ * @returns {object}
+ */
+function EL_applyCreateType(entry, typeId) {
+    try {
+        if (!typeId || typeId === 'none') return entry;
+        const type = EL_getEntryType(typeId);
+        const CC = (typeof ELCompile !== 'undefined') ? ELCompile : (typeof window !== 'undefined' ? window.ELCompile : null);
+        if (!type || !CC || typeof CC.applyType !== 'function') return entry;
+        const r = CC.applyType(entry, type, {});
+        if (r && r.entry && typeof r.entry === 'object') return r.entry;
+    } catch (e) {}
+    return entry;
+}
+
+/**
+ * Batch set(type) writes for one entry via ELCompile (reorder per type).
+ * Null when the type id is unknown (entry skipped, never throws).
+ * @param {object} entry
+ * @param {string} typeId
+ * @returns {object|null}
+ */
+function EL_batchTypeSetWrites(entry, typeId) {
+    try {
+        const type = EL_getEntryType(typeId);
+        const CC = (typeof ELCompile !== 'undefined') ? ELCompile : (typeof window !== 'undefined' ? window.ELCompile : null);
+        if (!type || !CC || typeof CC.applyType !== 'function') return null;
+        const r = CC.applyType(entry || {}, type, {});
+        if (!r || !r.entry || typeof r.entry !== 'object') return null;
+        return { content: r.entry.content, key: r.entry.key, keysecondary: r.entry.keysecondary, extensions: r.entry.extensions };
+    } catch (e) { return null; }
+}
+
+/**
+ * Batch reset writes for one entry: strip limiter lines to plain text and
+ * drop extensions.el while keeping every other extensions.* key.
+ * @param {object} entry
+ * @returns {object|null}
+ */
+function EL_batchTypeResetWrites(entry) {
+    try {
+        const e = entry || {};
+        const writes = {};
+        try {
+            const CC = (typeof ELCompile !== 'undefined') ? ELCompile : (typeof window !== 'undefined' ? window.ELCompile : null);
+            if (CC && typeof CC.detachToPlain === 'function') {
+                const d = CC.detachToPlain(e);
+                if (d && typeof d.content === 'string') writes.content = d.content;
+            }
+        } catch (err) {}
+        const ext = (e.extensions && typeof e.extensions === 'object' && !Array.isArray(e.extensions)) ? e.extensions : null;
+        if (ext) {
+            const next = {};
+            for (const k of Object.keys(ext)) {
+                if (k === 'el' || k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
+                try { next[k] = EL_cloneBatchValue(ext[k]); } catch (err) { next[k] = ext[k]; }
+            }
+            writes.extensions = next;
+        }
+        return writes;
+    } catch (e) { return null; }
+}
+
+/**
+ * Line count for the content-change summary in the batch preview.
+ * @param {*} s
+ * @returns {number}
+ */
+function EL_lineCount(s) {
+    try {
+        const t = String(s ?? '');
+        if (!t) return 0;
+        return t.replace(/\r\n/g, '\n').split('\n').length;
+    } catch (e) { return 0; }
+}
+
+/**
+ * Diff one entry for the batch type op: old→new type row plus a line-count
+ * content summary row (never the full text). Unknown type ids are recorded
+ * on plan.typeSkips for the preview note; the entry is left unaffected.
+ */
+function EL_batchDiffTypeOp(plan, op, entry, uid, changes, statMap) {
+    try {
+        if (!Array.isArray(plan.typeSkips)) plan.typeSkips = [];
+        const oldId = EL_oldTypeId(entry);
+        const oldLabel = oldId ? EL_entryTypeLabel(oldId) : 'None';
+        let w = null;
+        let newLabel = 'None';
+        if (op.mode === 'set') {
+            const t = EL_getEntryType(op.typeId);
+            if (!t) {
+                plan.typeSkips.push({ uid: String(uid), label: EL_batchEntryLabel(uid, entry), typeId: String(op.typeId || '') });
+                return;
+            }
+            newLabel = EL_entryTypeLabel(op.typeId);
+            w = EL_batchTypeSetWrites(entry, op.typeId) || {};
+        } else {
+            w = EL_batchTypeResetWrites(entry) || {};
+        }
+        let touched = false;
+        const newId = (op.mode === 'set') ? String(op.typeId || '') : '';
+        if (oldId !== newId) {
+            changes.push({ field: 'extensions', label: op.label, from: oldLabel, to: newLabel });
+            touched = true;
+        }
+        if (w && Object.prototype.hasOwnProperty.call(w, 'content') && !EL_batchValuesEqual(entry.content, w.content)) {
+            changes.push({ field: 'content', label: 'Content', from: EL_lineCount(entry.content) + ' lines', to: EL_lineCount(w.content) + ' lines' });
+            touched = true;
+        }
+        if (w) {
+            for (const f of ['key', 'keysecondary']) {
+                if (Object.prototype.hasOwnProperty.call(w, f) && !EL_batchValuesEqual(entry[f], w[f])) {
+                    changes.push({ field: f, label: op.label, from: EL_batchDisplayValue(f, entry[f]), to: EL_batchDisplayValue(f, w[f]) });
+                    touched = true;
+                }
+            }
+        }
+        if (touched) {
+            statMap[op.label] = statMap[op.label] || { label: op.label, target: EL_batchTargetDesc(op), affected: 0 };
+            statMap[op.label].affected++;
+        }
+    } catch (e) {}
+}
 
 let EL_batchUndoState = null;
 let EL_batchPendingPlan = null;
@@ -4527,6 +4799,20 @@ function EL_batchCollectPlan() {
         });
     }
 
+    const mType = modeOf('type');
+    if (mType === 'set') {
+        const typeId = EL_selectVal('batch-type-val', 'none');
+        ops.push({
+            short: 'type', label: 'Entry Type', valId: 'batch-type-val', mode: mType, typeId,
+            compute: (entry) => EL_batchTypeSetWrites(entry, typeId),
+        });
+    } else if (mType === 'reset') {
+        ops.push({
+            short: 'type', label: 'Entry Type', valId: 'batch-type-val', mode: mType,
+            compute: (entry) => EL_batchTypeResetWrites(entry),
+        });
+    }
+
     const boolFields = [
         { short: 'use-probability', label: 'Use Probability', valId: 'batch-use-probability-val', field: 'useProbability', dk: 'useProbability', fb: true },
         { short: 'constant', label: 'Constant', valId: 'batch-constant-val', field: 'constant', dk: 'constant', fb: false },
@@ -4693,6 +4979,10 @@ function EL_batchCollectPlan() {
  */
 function EL_batchTargetDesc(op) {
     try {
+        if (op.short === 'type') {
+            if (op.mode === 'reset') return 'Reset to plain (no type)';
+            try { return EL_entryTypeLabel(op.typeId); } catch (e) { return ''; }
+        }
         if (op.mode === 'reset') return 'Reset to default';
         const el = document.getElementById(op.valId || '');
         if (!el) return '';
@@ -4719,11 +5009,16 @@ function EL_batchBuildDiff(plan) {
     const rows = [];
     let unaffected = 0;
     const statMap = {};
+    if (!Array.isArray(plan.typeSkips)) plan.typeSkips = [];
     for (const uid of plan.uids) {
         const entry = currentLorebookData.entries[uid];
         if (!entry) { unaffected++; continue; }
         const changes = [];
         for (const op of plan.ops) {
+            if (op.short === 'type') {
+                EL_batchDiffTypeOp(plan, op, entry, uid, changes, statMap);
+                continue;
+            }
             let writes = null;
             try { writes = op.compute(entry) || null; } catch (e) { writes = null; }
             if (!writes) continue;
@@ -4788,6 +5083,12 @@ function EL_batchRenderPreview(plan) {
         html += '</tbody></table>';
     } else {
         html += '<p class="el-batch-preview-empty">Nothing would change — every selected entry already matches.</p>';
+    }
+    if (Array.isArray(plan.typeSkips) && plan.typeSkips.length) {
+        const names = plan.typeSkips.slice(0, 10).map(s => s.label || ('Entry ' + s.uid));
+        html += '<p class="el-batch-preview-note">Skipped ' + plan.typeSkips.length + ' entr' + (plan.typeSkips.length === 1 ? 'y' : 'ies')
+            + ' (unknown type "' + escapeHtml(String((plan.typeSkips[0] && plan.typeSkips[0].typeId) || '')) + '"): '
+            + escapeHtml(names.join(', ')) + (plan.typeSkips.length > 10 ? ', …' : '') + '.</p>';
     }
     const MAX_ROWS = 60;
     if (diff.rows.length) {

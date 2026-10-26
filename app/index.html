@@ -1215,6 +1215,13 @@
                         </select>
                     </div>
                     <div class="form-group row">
+                        <select id="batch-mode-type" class="batch-mode" title="Leave unchanged, set a value, or reset to default"><option value="leave">Leave unchanged</option><option value="set">Set to</option><option value="reset">Reset to default</option></select>
+                        <label for="batch-mode-type">Entry Type:</label>
+                        <select id="batch-type-val">
+                            <option value="none">None (plain entry)</option>
+                        </select>
+                    </div>
+                    <div class="form-group row">
                         <select id="batch-mode-depth" class="batch-mode" title="Leave unchanged, set a value, or reset to default"><option value="leave">Leave unchanged</option><option value="set">Set to</option><option value="reset">Reset to default</option></select>
                         <label for="batch-mode-depth">Insertion Depth:</label>
                         <input type="number" id="batch-depth-val" value="4">
@@ -1544,6 +1551,12 @@
                                     <label>Trigger Probability (%)</label>
                                     <input type="number" id="quick-entry-probability" value="100" min="0" max="100">
                                 </div>
+                                <div class="form-group">
+                                    <label>Entry Type</label>
+                                    <select id="quick-entry-type">
+                                        <option value="none">None (plain entry)</option>
+                                    </select>
+                                </div>
                             </div>
                             <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; margin-top: 12px;">
                                 <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size: 0.85rem;"><input type="checkbox" id="quick-entry-constant"> Constant</label>
@@ -1645,6 +1658,13 @@
                                         <input type="checkbox" id="g-apply-probability" style="width: 16px; height: 16px;">
                                         <label for="g-apply-probability" style="min-width: 100px; font-size: 0.85rem;">Probability:</label>
                                         <input type="number" id="g-probability" value="100" min="0" max="100" style="flex:1; padding: 4px 8px; font-size: 0.85rem;">
+                                    </div>
+                                    <div class="form-group row" style="margin-bottom: 0; gap: 8px;">
+                                        <input type="checkbox" id="g-apply-type" style="width: 16px; height: 16px;">
+                                        <label for="g-apply-type" style="min-width: 100px; font-size: 0.85rem;">Type:</label>
+                                        <select id="g-type" style="flex:1; padding: 4px 8px; font-size: 0.85rem;">
+                                            <option value="none">None (plain entry)</option>
+                                        </select>
                                     </div>
                                 </div>
                                 <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; margin-top: 6px; padding-top: 8px; border-top: 1px dashed var(--panel-border);">

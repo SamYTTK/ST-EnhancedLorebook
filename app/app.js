@@ -204,6 +204,9 @@ async function init() {
     if (!extensionSettings.sidebarPanelHeights) extensionSettings.sidebarPanelHeights = {};
     if (!extensionSettings.sidebarPanelsCollapsed) extensionSettings.sidebarPanelsCollapsed = {};
     if (typeof extensionSettings.themeMode !== 'string' || ['dark', 'light', 'follow'].indexOf(extensionSettings.themeMode) === -1) extensionSettings.themeMode = 'dark';
+    if (!extensionSettings.appearance || typeof extensionSettings.appearance !== 'object' || Array.isArray(extensionSettings.appearance)) extensionSettings.appearance = {};
+    if (typeof extensionSettings.appearance.bgImage !== 'string') extensionSettings.appearance.bgImage = '';
+    if (typeof extensionSettings.appearance.perSurface !== 'boolean') extensionSettings.appearance.perSurface = false;
     if (!extensionSettings.sync) extensionSettings.sync = {};
     // Logging prefs: batched + relevance-filtered (verbose off by default)
     if (typeof extensionSettings.sync.logLevel !== 'string' || !['OFF','ERROR','WARN','INFO','DEBUG'].includes(extensionSettings.sync.logLevel.toUpperCase())) {
@@ -261,6 +264,8 @@ async function init() {
             scheduleRegion(SYNC_REGIONS.ACTIVE_CHAR);
         } else if (msg.type === 'el-agent-periodic-trigger') {
             handlePeriodicTriggerFromHost(msg);
+        } else if (msg.type === 'el-worldinfo-activated') {
+            try { EL_b6NoteActivated(msg.book, msg.uids); } catch (e) {}
         } else if (msg.type === 'el-agent-settings-sync') {
             // Host pushed agent list (e.g. after save in main window). Refresh UI.
             try {
@@ -410,6 +415,22 @@ function applyColors() {
         if (colors.primary) root.style.setProperty('--primary-color', colors.primary);
     }
     EL_applyThemeMode();
+    try {
+        const cs = getComputedStyle(document.documentElement);
+        const pick = (k, fb) => {
+            try {
+                const v = (cs.getPropertyValue(k) || '').trim();
+                return v || fb;
+            } catch (e) { return fb; }
+        };
+        root.style.setProperty('--el-bg-page', pick('--bg-color', '#0f111a'));
+        root.style.setProperty('--el-bg-surface', pick('--panel-bg', '#1a1c29'));
+        root.style.setProperty('--el-fg', pick('--text-color', '#e2e8f0'));
+        root.style.setProperty('--el-fg-muted', pick('--text-muted', '#94a3b8'));
+        root.style.setProperty('--el-border', pick('--panel-border', 'rgba(255, 255, 255, 0.08)'));
+        root.style.setProperty('--el-primary', pick('--primary-color', '#6366f1'));
+    } catch (e) {}
+    try { if (typeof EL_b6ApplyBackground === 'function') EL_b6ApplyBackground(); } catch (e) {}
 }
 
 /**
@@ -537,11 +558,17 @@ function EL_applyFollowTheme() {
 }
 
 function openSettings() {
+    try { EL_b6SettingsShow('general'); } catch (e) {}
+    try { EL_b6SettingsPaintTypes(); } catch (e) {}
+    try { EL_b6SettingsPaintSections(); } catch (e) {}
+    try { EL_b6SettingsPaintRules(); } catch (e) {}
+    try { EL_b6SettingsPaintHub(); } catch (e) {}
     const colors = extensionSettings.colors || {};
     document.getElementById('color-bg').value = colors.bg || '#0f111a';
     document.getElementById('color-panel').value = colors.panel || '#1a1c29'; /* Simplified */
     document.getElementById('color-text').value = colors.text || '#e2e8f0';
     document.getElementById('color-primary').value = colors.primary || '#6366f1';
+    try { EL_b6PaintHex(); } catch (e) {}
     const themeModeSelect = document.getElementById('setting-theme-mode');
     if (themeModeSelect) themeModeSelect.value = EL_themeMode();
     const syncEnabled = document.getElementById('sync-enabled');
@@ -554,6 +581,12 @@ function openSettings() {
     if (syncVerbose) syncVerbose.checked = !!extensionSettings.sync?.verbose;
     const dragDrop = document.getElementById('setting-drag-drop');
     if (dragDrop) dragDrop.checked = extensionSettings.dragAndDrop !== false;
+    try {
+        const bg = document.getElementById('el-set-bgimage');
+        if (bg) bg.value = (extensionSettings.appearance && extensionSettings.appearance.bgImage) || '';
+        const ps = document.getElementById('el-set-bg-surface');
+        if (ps) ps.setAttribute('aria-checked', (extensionSettings.appearance && extensionSettings.appearance.perSurface) ? 'true' : 'false');
+    } catch (e) {}
     EL_modalOpen(els.settingsModal);
 }
 
@@ -561,6 +594,12 @@ function updateColor(key, cssVar, value) {
     if (!extensionSettings.colors) extensionSettings.colors = {};
     extensionSettings.colors[key] = value;
     document.documentElement.style.setProperty(cssVar, value);
+    try {
+        const tokenMirror = { '--bg-color': '--el-bg-page', '--panel-bg': '--el-bg-surface', '--text-color': '--el-fg', '--primary-color': '--el-primary' };
+        const tok = tokenMirror[cssVar];
+        if (tok) document.documentElement.style.setProperty(tok, value);
+    } catch (e) {}
+    try { if (typeof EL_b6PaintHex === 'function') EL_b6PaintHex(); } catch (e) {}
     saveSettings();
 }
 
@@ -1527,6 +1566,7 @@ async function openLorebook(name) {
     try { EL_restoreExpandedFolders(); } catch (e) { try { expandedFolders.clear(); } catch (_e) {} }
     updateBatchButton();
     EL_batchClearUndo();
+    try { if (typeof EL_b6ClearActive === 'function') EL_b6ClearActive(name); } catch (e) {}
 
     document.querySelectorAll('.agent-sidebar-item').forEach(i => i.classList.remove('active'));
     hideAgentPanels();
@@ -2458,19 +2498,45 @@ function renderEntries() {
             return 0;
         };
 
+        try { if (typeof EL_b6RenderFilterBar === 'function') EL_b6RenderFilterBar(); } catch (e) {}
+
         let rootItems = getRootItems();
         if (sortMode === 'search' && query) {
             rootItems = rootItems.filter(item => {
                 return getItemMaxScore(item, query) > 0;
             });
         }
+        try {
+            if (typeof EL_b6TypeMatches === 'function' && EL_b6Filter && EL_b6Filter.type && EL_b6Filter.type !== 'all') {
+                rootItems = rootItems.filter(item => {
+                    if (item.type === 'folder') return true;
+                    try {
+                        const e = currentLorebookData.entries[item.uid];
+                        return EL_b6TypeMatches(e ? EL_oldTypeId(e) : '', EL_b6Filter.type);
+                    } catch (_e) { return true; }
+                });
+            }
+        } catch (e) {}
         rootItems.sort(sortFn);
 
+        let _b6LastGroup = null;
         rootItems.forEach(item => {
             if (item.type === 'folder') {
                 const fDiv = createFolderElement(item.data, item.uids);
                 els.entriesContainer.appendChild(fDiv);
             } else {
+                try {
+                    if (EL_b6Filter && EL_b6Filter.grouped && typeof EL_b6GroupLabel === 'function') {
+                        const g = EL_b6GroupLabel(item.uid);
+                        if (g !== _b6LastGroup) {
+                            _b6LastGroup = g;
+                            const gh = document.createElement('div');
+                            gh.className = 'el-b6-grouphead';
+                            gh.textContent = g;
+                            els.entriesContainer.appendChild(gh);
+                        }
+                    }
+                } catch (e) {}
                 const card = createEntryCard(item.uid);
                 if (card) els.entriesContainer.appendChild(card);
             }
@@ -2729,6 +2795,14 @@ function createEntryCard(uid) {
     const card = document.createElement('div');
     card.className = `entry-card ${selectedEntries.has(String(uid)) ? 'selected' : ''}`;
     card.dataset.uid = String(uid);
+    let _b6ctx = null;
+    try { _b6ctx = EL_b6CardContext(entry, uid); } catch (e) { _b6ctx = null; }
+    if (_b6ctx) {
+        card.className += ' el-b6-card';
+        if (_b6ctx.accent) { try { card.style.setProperty('--el-card-accent', EL_b6SafeAccent(_b6ctx.accent)); } catch (e) {} }
+        if (_b6ctx.constant) card.className += ' el-b6-constant';
+        if (_b6ctx.firing) card.className += ' el-b6-firing';
+    }
 
     const keysStr = safeJoin(entry.key, ', ');
     const secondaryKeysStr = safeJoin(entry.keysecondary, ', ');
@@ -2785,23 +2859,27 @@ function createEntryCard(uid) {
     const _secKeysHtml = _hlKeys ? EL_escapeAndHighlight(secondaryKeysStr, _hlQuery) : escapeHtml(secondaryKeysStr);
     const _contentHtml = _hlContent ? EL_escapeAndHighlight(entry.content || 'Empty Entry...', _hlQuery) : escapeHtml(entry.content || 'Empty Entry...');
 
+    const _b6TypeTag = (_b6ctx && _b6ctx.typeTagHtml) ? _b6ctx.typeTagHtml : '';
+    const _b6Name = (_b6ctx && _b6ctx.nameHtml) ? _b6ctx.nameHtml : (_keysHtml || '<em>No Primary Keys</em>');
+    const _b6Chips = (_b6ctx && _b6ctx.chipsHtml) ? _b6ctx.chipsHtml : '';
+    const _b6Status = (_b6ctx && _b6ctx.statusHtml) ? _b6ctx.statusHtml : '';
     card.innerHTML = `
         <div class="entry-header" style="align-items: center;">
-            <div style="display:flex; flex-direction:column; gap: 4px; flex: 1;">
-                <div class="entry-keys" title="${escapeHtml(keysStr)}" style="display:flex; align-items:center;">
-                    ${iconHtml}
-                    ${entry.comment ? `<span style="color:var(--text-muted)">[${_commentHtml}]</span> ` : ''}
-                    ${_keysHtml || '<em>No Primary Keys</em>'}
-                </div>
-                ${secondaryKeysStr ? `<div style="font-size: 0.8rem; color:var(--text-muted)">Sec: ${_secKeysHtml}</div>` : ''}
+            <div class="el-b6-typerow" style="flex: 1;">
+                ${iconHtml}
+                ${_b6TypeTag}
+                ${entry.comment ? `<span style="color:var(--text-muted)">[${_commentHtml}]</span> ` : ''}
+                <span class="el-b6-cardname entry-keys" title="${escapeHtml(keysStr)}">${_b6Name}</span>
             </div>
             <div class="entry-badges" style="flex-wrap: wrap; justify-content: flex-end; max-width: 250px; align-items: center; gap: 8px;">
-                ${badges.join('')}
+                ${badges.join('')}${_b6Status}
                 <input type="checkbox" class="entry-select-checkbox" style="width: 18px; height: 18px; cursor: pointer; margin: 0;">
             </div>
         </div>
-        <div class="entry-content" style="-webkit-line-clamp: 2;">${_contentHtml}</div>
-        <div class="entry-meta" style="font-size: 0.8rem; color: var(--text-muted); display:flex; gap: 16px; justify-content: flex-start; margin-top: 12px; flex-wrap: wrap; border-top: 1px solid var(--panel-border); padding-top: 8px;">
+        ${_b6Chips ? `<div class="el-b6-keychips">${_b6Chips}</div>` : ''}
+        ${secondaryKeysStr ? `<div style="font-size: 0.8rem; color:var(--text-muted); padding: 0 12px 8px;">Sec: ${_secKeysHtml}</div>` : ''}
+        <div class="entry-content el-b6-preview">${_contentHtml}</div>
+        <div class="entry-meta el-b6-quickedit" style="font-size: 0.8rem; color: var(--text-muted); display:flex; gap: 16px; justify-content: flex-start; margin-top: 12px; flex-wrap: wrap; border-top: 1px solid var(--panel-border); padding-top: 8px;">
             <div style="display:flex; align-items:center; gap:4px;"><i class="fa-solid fa-sort-numeric-down"></i> Order: <input type="number" class="inline-edit inline-entry-order" value="${entry.order ?? 100}" style="width:60px;"></div>
             <div style="display:flex; align-items:center; gap:4px;"><i class="fa-solid fa-layer-group"></i> Depth: <input type="number" class="inline-edit inline-entry-depth" value="${entry.depth ?? 4}" style="width:50px;" min="0"></div>
             <div style="display:flex; align-items:center; gap:4px;"><i class="fa-solid fa-map-pin"></i> Pos: <select class="inline-edit inline-entry-pos">${posOptions}</select></div>
@@ -7478,6 +7556,9 @@ function setupEventListeners() {
     });
 
     els.btnSettings.addEventListener('click', openSettings);
+    const btnSettingsFooter = document.getElementById('btn-settings-footer');
+    if (btnSettingsFooter) btnSettingsFooter.addEventListener('click', openSettings);
+    try { if (typeof EL_b6Bind === 'function') EL_b6Bind(); } catch (e) {}
     els.btnRefresh.addEventListener('click', refreshSidebar);
 
     // Auto-refresh (dynamic sync) controls
@@ -11044,4 +11125,466 @@ async function EL_sectionRun(id) {
     } catch (e) {
         EL_error('section run failed', e);
     }
+}
+
+// ==========================================
+// EL-REVAMP B6: Familiar-style settings, token theming, new list,
+// in-prompt highlight, background preview.
+// All persistence goes through extensionSettings + saveSettings().
+// No save/guard behavior changes; badges never block.
+// ==========================================
+var EL_b6Filter = { type: 'all', grouped: false };
+var EL_b6ActiveByBook = {};
+var EL_b6SettingsPage = 'general';
+var EL_b6SettingsQuery = '';
+var EL_b6Bound = false;
+
+function EL_b6NormType(s) {
+    try {
+        return String(s === undefined || s === null ? '' : s).toLowerCase().replace(/[\s_]+/g, '').replace(/s$/, '');
+    } catch (e) { return ''; }
+}
+
+function EL_b6TypeMatches(entryTid, filter) {
+    try {
+        const f = String(filter || 'all');
+        if (f === 'all') return true;
+        const t = String(entryTid || '');
+        if (f === 'none') return !t;
+        return EL_b6NormType(t) === EL_b6NormType(f);
+    } catch (e) { return true; }
+}
+
+function EL_b6SafeAccent(v) {
+    try {
+        const s = String(v || '').trim();
+        if (/^#[0-9a-fA-F]{3,8}$/.test(s)) return s;
+        if (/^(?:rgb|rgba|hsl|hsla)\(\s*[\d\s,.\-%/]+\s*\)$/i.test(s)) return s;
+    } catch (e) {}
+    return '#7aa2ff';
+}
+
+function EL_b6TypeAccent(entryTid) {
+    try {
+        if (entryTid && typeof EL_getEntryType === 'function') {
+            const t = EL_getEntryType(entryTid);
+            if (t && typeof t.accent === 'string' && t.accent.trim()) return EL_b6SafeAccent(t.accent.trim());
+        }
+    } catch (e) {}
+    return '';
+}
+
+function EL_b6IsFiring(uid) {
+    try {
+        if (!currentLorebookName) return false;
+        const rec = EL_b6ActiveByBook[currentLorebookName];
+        if (!rec) return false;
+        try {
+            if (!rec.ts || (Date.now() - Number(rec.ts)) > 5 * 60 * 1000) {
+                try { delete EL_b6ActiveByBook[currentLorebookName]; } catch (e) {}
+                return false;
+            }
+        } catch (e) {}
+        return !!(Array.isArray(rec.uids) && rec.uids.indexOf(String(uid)) !== -1);
+    } catch (e) { return false; }
+}
+
+function EL_b6NoteActivated(book, uids) {
+    try {
+        const b = (typeof book === 'string' && book) ? book : currentLorebookName;
+        if (!b || !Array.isArray(uids)) return;
+        EL_b6ActiveByBook[b] = { uids: uids.map(u => String(u)).filter(s => s.length >= 1 && s.length <= 64).slice(0, 500), ts: Date.now() };
+        if (b === currentLorebookName && currentViewMode === 'lorebook') {
+            try { renderEntries(); } catch (e) {}
+        }
+    } catch (e) {}
+}
+
+function EL_b6ClearActive(book) {
+    try { if (book && EL_b6ActiveByBook[book]) delete EL_b6ActiveByBook[book]; } catch (e) {}
+}
+
+function EL_b6FolderLabel(uid) {
+    try {
+        if (typeof EL_getFolderIdForUid !== 'function') return '';
+        const fid = EL_getFolderIdForUid(uid, currentLorebookName);
+        if (!fid) return '';
+        if (typeof getFolderPathName === 'function') return getFolderPathName(fid) || '';
+        return '';
+    } catch (e) { return ''; }
+}
+
+function EL_b6ExtraCount(entry, entryTid) {
+    try {
+        if (!entryTid || typeof EL_getEntryType !== 'function') return 0;
+        const type = EL_getEntryType(entryTid);
+        if (!type) return 0;
+        const CC = (typeof ELCompile !== 'undefined') ? ELCompile : null;
+        const ELS = (typeof ELSlots !== 'undefined') ? ELSlots : null;
+        if (!CC || !ELS || typeof CC.typeToAst !== 'function' || typeof ELS.extractValues !== 'function') return 0;
+        const ex = ELS.extractValues(String((entry && entry.content) || ''), CC.typeToAst(type));
+        if (ex && Array.isArray(ex.extra)) return ex.extra.length;
+    } catch (e) {}
+    return 0;
+}
+
+function EL_b6CardName(entry) {
+    try {
+        if (entry && Array.isArray(entry.key)) {
+            for (const k of entry.key) { if (String(k || '').trim()) return String(k).trim(); }
+        }
+        if (entry && entry.comment && String(entry.comment).trim()) return String(entry.comment).trim();
+    } catch (e) {}
+    return '';
+}
+
+function EL_b6CardContext(entry, uid) {
+    const tid = EL_oldTypeId(entry);
+    const label = EL_entryTypeLabel(tid);
+    const accent = EL_b6TypeAccent(tid);
+    const constant = !!(entry && entry.constant);
+    const firing = EL_b6IsFiring(uid);
+    const name = EL_b6CardName(entry) || keysPreview(entry);
+    let chips = '';
+    try {
+        const folder = EL_b6FolderLabel(uid);
+        if (folder) chips += `<span class="el-b6-kchip" title="${escapeHtml(folder)}">▤ ${escapeHtml(folder)}</span>`;
+        const keys = (entry && Array.isArray(entry.key)) ? entry.key.filter(k => String(k || '').trim()) : [];
+        const shown = keys.slice(0, 8);
+        for (const k of shown) chips += `<span class="el-b6-kchip">${escapeHtml(String(k))}</span>`;
+        if (keys.length > shown.length) chips += `<span class="el-b6-kchip">+${keys.length - shown.length} more</span>`;
+        if (!keys.length && !folder) chips += '<span class="el-b6-kchip">no keys</span>';
+    } catch (e) {}
+    let status = '';
+    try {
+        if (constant) status += '<span class="badge el-b6-badge-gold">constant</span>';
+        if (firing) status += '<span class="badge el-b6-badge-fire">● in prompt</span>';
+        if (tid && EL_b6ExtraCount(entry, tid) > 0) status += '<span class="badge el-b6-badge-warn" title="Some content lines match no slot of this type. Displayed as-is; nothing is blocked.">⚠ type mismatch</span>';
+    } catch (e) {}
+    return {
+        accent,
+        constant,
+        firing,
+        typeTagHtml: `<span class="el-b6-typetag">${escapeHtml(tid ? label : 'None')}</span>`,
+        nameHtml: escapeHtml(name || 'Untitled entry'),
+        chipsHtml: chips,
+        statusHtml: status,
+    };
+}
+
+function keysPreview(entry) {
+    try {
+        const k = (entry && Array.isArray(entry.key)) ? entry.key.filter(x => String(x || '').trim()) : [];
+        if (k.length) return k.slice(0, 3).join(', ');
+        if (entry && entry.comment) return String(entry.comment);
+    } catch (e) {}
+    return '';
+}
+
+function EL_b6GroupLabel(uid) {
+    try {
+        const entry = currentLorebookData.entries[uid];
+        return EL_entryTypeLabel(entry ? EL_oldTypeId(entry) : '');
+    } catch (e) { return 'None'; }
+}
+
+function EL_b6ListTypes() {
+    try {
+        if (typeof EL_listEntryTypes === 'function') {
+            const list = EL_listEntryTypes() || [];
+            return list.slice().sort((a, b) => String((a && a.name) || (a && a.id) || '').localeCompare(String((b && b.name) || (b && b.id) || '')));
+        }
+    } catch (e) {}
+    return [];
+}
+
+function EL_b6RenderFilterBar() {
+    try {
+        const bar = document.getElementById('el-b6-filterbar');
+        if (!bar) return;
+        if (!currentLorebookName || !currentLorebookData || !currentLorebookData.entries) {
+            bar.hidden = true;
+            bar.innerHTML = '';
+            return;
+        }
+        const entries = Object.entries(currentLorebookData.entries);
+        const perType = {};
+        let noneCount = 0;
+        for (const [, e] of entries) {
+            const tid = EL_oldTypeId(e);
+            if (!tid) noneCount++;
+            else perType[tid] = (perType[tid] || 0) + 1;
+        }
+        const types = EL_b6ListTypes().filter(t => perType[String(t.id)]);
+        bar.hidden = false;
+        let html = `<button class="el-b6-fchip${EL_b6Filter.type === 'all' ? ' on' : ''}" data-elb6="all">All</button>`;
+        html += `<button class="el-b6-fchip${EL_b6Filter.grouped ? ' on' : ''}" data-elb6="__grouped" title="Toggle section grouping">▤ Grouped</button>`;
+        for (const t of types) {
+            const id = String(t.id);
+            const ac = (t.accent && String(t.accent).trim()) ? EL_b6SafeAccent(String(t.accent).trim()) : '';
+            html += `<button class="el-b6-fchip${EL_b6Filter.type === id ? ' on' : ''}" data-elb6="${escapeHtml(id)}"${ac ? ` style="--c:${escapeHtml(ac)}"` : ''}><i></i>${escapeHtml(t.name || id)}</button>`;
+        }
+        html += `<button class="el-b6-fchip plain${EL_b6Filter.type === 'none' ? ' on' : ''}" data-elb6="none">None</button>`;
+        const firing = (EL_b6ActiveByBook[currentLorebookName] && EL_b6ActiveByBook[currentLorebookName].uids.length) || 0;
+        html += `<span class="el-b6-fcount">${entries.length} entries${firing ? ` · ${firing} firing now` : ''}</span>`;
+        bar.innerHTML = html;
+    } catch (e) {}
+}
+
+function EL_b6OnFilterClick(e) {
+    try {
+        const btn = e.target && e.target.closest ? e.target.closest('[data-elb6]') : null;
+        if (!btn) return;
+        const v = btn.getAttribute('data-elb6');
+        if (v === '__grouped') EL_b6Filter.grouped = !EL_b6Filter.grouped;
+        else EL_b6Filter.type = v;
+        renderEntries();
+    } catch (err) {}
+}
+
+function EL_b6SettingsPages() {
+    return [
+        { id: 'general', group: 'Lorebook', title: 'General', icon: '⚙', keywords: 'saves guard default type delete confirm sync refresh folders log verbose' },
+        { id: 'types', group: 'Lorebook', title: 'Entry Types', icon: '◈', keywords: 'type template builder slots workshop reorder labels accent' },
+        { id: 'sections', group: 'Lorebook', title: 'Sections', icon: '☰', keywords: 'section order range position placement batch recipe' },
+        { id: 'map', group: 'Lorebook', title: 'Map', icon: '🗺', keywords: 'map canvas schematic background location pin current' },
+        { id: 'rules', group: 'Lorebook', title: 'Rules', icon: '⏱', keywords: 'rules schedule system trigger clock manual update' },
+        { id: 'appear', group: 'Workspace', title: 'Appearance', icon: '🎨', keywords: 'theme accent color colour background surface text font size dark light' },
+        { id: 'panels', group: 'Workspace', title: 'Panels', icon: '▦', keywords: 'panels collapse expand sidebar hide reorder' },
+        { id: 'about', group: 'Workspace', title: 'About', icon: 'ⓘ', keywords: 'version requesthub hub status' },
+    ];
+}
+
+function EL_b6SettingsMatches(pg, q) {
+    try {
+        const hay = (pg.title + ' ' + pg.group + ' ' + (pg.keywords || '')).toLowerCase();
+        return String(q || '').toLowerCase().split(/\s+/).every(w => !w || hay.indexOf(w) !== -1);
+    } catch (e) { return true; }
+}
+
+function EL_b6SettingsShow(id) {
+    try {
+        EL_b6SettingsPage = String(id || 'general');
+        const nav = document.getElementById('el-set-nav');
+        if (nav) {
+            const pages = EL_b6SettingsPages();
+            const shown = EL_b6SettingsQuery ? pages.filter(p => EL_b6SettingsMatches(p, EL_b6SettingsQuery)) : pages;
+            let html = '';
+            if (!shown.length) html = '<p class="el-b6-navempty">No matching settings</p>';
+            else {
+                let group = null;
+                for (const pg of shown) {
+                    if (pg.group !== group) { group = pg.group; html += `<div class="el-b6-navgrp">${escapeHtml(group)}</div>`; }
+                    html += `<button type="button" class="el-b6-navitem${pg.id === EL_b6SettingsPage ? ' on' : ''}" data-elset="${escapeHtml(pg.id)}" title="${escapeHtml(pg.title)}"><span class="ic">${escapeHtml(pg.icon)}</span><span class="lb">${escapeHtml(pg.title)}</span></button>`;
+                }
+            }
+            nav.innerHTML = html;
+        }
+        document.querySelectorAll('#el-set-body .el-b6-settings-page').forEach(sec => {
+            sec.hidden = sec.getAttribute('data-page') !== EL_b6SettingsPage;
+        });
+    } catch (e) {}
+}
+
+function EL_b6SettingsPaintTypes() {
+    try {
+        const host = document.getElementById('el-set-types');
+        if (!host) return;
+        const types = EL_b6ListTypes();
+        if (!types.length) {
+            host.innerHTML = '<p class="el-b6-note">No types yet — open the workshop to create one.</p>';
+            return;
+        }
+        host.innerHTML = types.map(t => {
+            const id = String(t.id || '');
+            const slots = Array.isArray(t.slots) ? t.slots.length : (Array.isArray(t.sections) ? t.sections.reduce((n, s) => n + (Array.isArray(s.slots) ? s.slots.length : 0), 0) : 0);
+            return `<div class="el-b6-frow"><div><span class="el-b6-fl-t">${escapeHtml(t.name || id)}</span><span class="el-b6-fl-h">${slots} slots · reorder ${t.reorder === false ? 'off' : 'on'}</span></div><div class="el-b6-fc"><button class="btn btn-secondary btn-sm" data-elset-type="${escapeHtml(id)}">Open builder</button></div></div>`;
+        }).join('');
+    } catch (e) {}
+}
+
+function EL_b6SettingsPaintSections() {
+    try {
+        const host = document.getElementById('el-set-sections');
+        if (!host) return;
+        let list = [];
+        try { if (typeof EL_sectionsForBook === 'function' && currentLorebookName) list = EL_sectionsForBook(currentLorebookName) || []; } catch (e) {}
+        if (!list.length) {
+            host.innerHTML = '<p class="el-b6-note">No sections yet. Recipes seed from types and apply real order + position values.</p>';
+            return;
+        }
+        host.innerHTML = list.map(s => `<div class="el-b6-frow"><div><span class="el-b6-fl-t">${escapeHtml(s.name || s.id || 'Section')}</span><span class="el-b6-fl-h">order ${escapeHtml(String(s.lo ?? '?'))}–${escapeHtml(String(s.hi ?? '?'))}</span></div><div class="el-b6-fc"><button class="btn btn-secondary btn-sm" data-elset-sections="1">Run</button></div></div>`).join('');
+    } catch (e) {}
+}
+
+function EL_b6SettingsPaintRules() {
+    try {
+        const host = document.getElementById('el-set-rules');
+        if (!host) return;
+        let names = [];
+        try {
+            if (typeof EL_rulesStore === 'function') {
+                const store = EL_rulesStore() || {};
+                names = Object.keys(store);
+            } else if (extensionSettings && extensionSettings.rules && typeof extensionSettings.rules === 'object') {
+                names = Object.keys(extensionSettings.rules);
+            }
+        } catch (e) {}
+        host.innerHTML = names.length
+            ? names.map(n => `<div class="el-b6-frow"><div><span class="el-b6-fl-t">${escapeHtml(n)}</span></div><div class="el-b6-fc"><button class="btn btn-secondary btn-sm" data-elset-rules="1">Configure</button></div></div>`).join('')
+            : '<p class="el-b6-note">No rule systems yet. Each entry holds its own condition → value rows.</p>';
+    } catch (e) {}
+}
+
+function EL_b6SettingsPaintHub() {
+    try {
+        const el = document.getElementById('el-set-hub');
+        if (!el) return;
+        let status = '—';
+        try {
+            if (typeof EL_hubStatus === 'function') status = String(EL_hubStatus() || '—');
+            else if (typeof EL_isHubReady === 'function') status = EL_isHubReady() ? 'ready' : 'not configured';
+        } catch (e) {}
+        el.textContent = status;
+    } catch (e) {}
+}
+
+function EL_b6PaintHex() {
+    try {
+        const colors = (extensionSettings && extensionSettings.colors) || {};
+        const map = { bg: '#0f111a', panel: '#1a1c29', text: '#e2e8f0', primary: '#6366f1' };
+        for (const k of Object.keys(map)) {
+            const el = document.getElementById('color-' + k + '-hex');
+            if (el) el.textContent = colors[k] || map[k];
+        }
+    } catch (e) {}
+}
+
+function EL_b6ApplyBackground() {
+    try {
+        const ap = (extensionSettings && extensionSettings.appearance) || {};
+        const path = (ap.bgImage && String(ap.bgImage).trim()) ? String(ap.bgImage).trim() : '';
+        const root = document.documentElement;
+        if (path) {
+            root.style.setProperty('--el-bg-image', `url("${path.replace(/"/g, '')}")`);
+            document.body.classList.add('el-b6-has-bg');
+        } else {
+            root.style.setProperty('--el-bg-image', 'none');
+            document.body.classList.remove('el-b6-has-bg');
+        }
+        document.body.classList.toggle('el-b6-per-surface', !!(path && ap.perSurface));
+    } catch (e) {}
+}
+
+function EL_b6UploadStub() {
+    try {
+        if (typeof EL_toast === 'function') EL_toast('Background upload arrives in Track C2 — enter a path manually for now.', 'warning');
+        else if (typeof showToast === 'function') showToast('Background upload arrives in Track C2 — enter a path manually for now.');
+    } catch (e) {}
+}
+
+function EL_b6Bind() {
+    if (EL_b6Bound) return;
+    EL_b6Bound = true;
+    try {
+        const bar = document.getElementById('el-b6-filterbar');
+        if (bar) bar.addEventListener('click', EL_b6OnFilterClick);
+    } catch (e) {}
+    try {
+        const nav = document.getElementById('el-set-nav');
+        if (nav) nav.addEventListener('click', (e) => {
+            const b = e.target && e.target.closest ? e.target.closest('[data-elset]') : null;
+            if (!b) return;
+            EL_b6SettingsShow(b.getAttribute('data-elset'));
+        });
+    } catch (e) {}
+    try {
+        const search = document.getElementById('el-set-search');
+        if (search) {
+            search.addEventListener('input', () => {
+                EL_b6SettingsQuery = (search.value || '').trim().toLowerCase();
+                EL_b6SettingsShow(EL_b6SettingsPage);
+            });
+            search.addEventListener('keydown', (e) => e.stopPropagation());
+        }
+    } catch (e) {}
+    try {
+        const body = document.getElementById('el-set-body');
+        if (body) body.addEventListener('click', (e) => {
+            const t = e.target && e.target.closest ? e.target.closest('[data-elset-type]') : null;
+            if (t) {
+                try { EL_modalClose(els.settingsModal); } catch (_e) {}
+                try {
+                    if (typeof EL_workshopOpen === 'function') EL_workshopOpen(t.getAttribute('data-elset-type'));
+                    else switchToView('type-workshop');
+                } catch (_e) { try { switchToView('type-workshop'); } catch (__e) {} }
+                return;
+            }
+            const go = (sel, fn) => {
+                const b = e.target && e.target.closest ? e.target.closest(sel) : null;
+                if (!b) return false;
+                try { EL_modalClose(els.settingsModal); } catch (_e) {}
+                try { fn(); } catch (_e) {}
+                return true;
+            };
+            if (go('#el-set-open-workshop', () => { if (typeof EL_workshopOpen === 'function') EL_workshopOpen(); else switchToView('type-workshop'); })) return;
+            if (go('#el-set-open-sections', () => { if (typeof EL_sectionsOpen === 'function') EL_sectionsOpen(); })) return;
+            if (go('#el-set-open-map', () => switchToView('map'))) return;
+            if (go('#el-set-open-rules', () => switchToView('rules'))) return;
+            if (go('[data-elset-sections]', () => { if (typeof EL_sectionsOpen === 'function') EL_sectionsOpen(); })) return;
+            if (go('[data-elset-rules]', () => switchToView('rules'))) return;
+            if (go('#el-set-bg-upload', EL_b6UploadStub)) return;
+            if (go('#el-set-collapse-all', () => {
+                try {
+                    document.querySelectorAll('#sidebar-panels .panel').forEach(p => p.classList.add('collapsed'));
+                    if (extensionSettings) {
+                        extensionSettings.sidebarPanelsCollapsed = extensionSettings.sidebarPanelsCollapsed || {};
+                        document.querySelectorAll('#sidebar-panels .panel').forEach(p => { if (p.id) extensionSettings.sidebarPanelsCollapsed[p.id] = true; });
+                        saveSettings();
+                    }
+                } catch (_e) {}
+            })) return;
+            if (go('#el-set-expand-all', () => {
+                try {
+                    document.querySelectorAll('#sidebar-panels .panel').forEach(p => p.classList.remove('collapsed'));
+                    if (extensionSettings) {
+                        extensionSettings.sidebarPanelsCollapsed = extensionSettings.sidebarPanelsCollapsed || {};
+                        document.querySelectorAll('#sidebar-panels .panel').forEach(p => { if (p.id) extensionSettings.sidebarPanelsCollapsed[p.id] = false; });
+                        saveSettings();
+                    }
+                } catch (_e) {}
+            })) return;
+        });
+    } catch (e) {}
+    try {
+        const ps = document.getElementById('el-set-bg-surface');
+        if (ps) ps.addEventListener('click', () => {
+            try {
+                const on = ps.getAttribute('aria-checked') !== 'true';
+                ps.setAttribute('aria-checked', on ? 'true' : 'false');
+                if (!extensionSettings.appearance || typeof extensionSettings.appearance !== 'object') extensionSettings.appearance = {};
+                extensionSettings.appearance.perSurface = on;
+                saveSettings();
+                EL_b6ApplyBackground();
+            } catch (_e) {}
+        });
+    } catch (e) {}
+    try {
+        const bg = document.getElementById('el-set-bgimage');
+        if (bg) bg.addEventListener('change', () => {
+            try {
+                if (!extensionSettings.appearance || typeof extensionSettings.appearance !== 'object') extensionSettings.appearance = {};
+                extensionSettings.appearance.bgImage = bg.value || '';
+                saveSettings();
+                EL_b6ApplyBackground();
+            } catch (_e) {}
+        });
+    } catch (e) {}
+    try {
+        document.addEventListener('input', (e) => {
+            try {
+                if (e && e.target && typeof e.target.id === 'string' && /^color-(bg|panel|text|primary)$/.test(e.target.id)) EL_b6PaintHex();
+            } catch (_e) {}
+        });
+    } catch (e) {}
 }

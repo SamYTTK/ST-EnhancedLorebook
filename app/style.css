@@ -1,3 +1,48 @@
+/* ============================================================
+ * EL-REVAMP B6: design tokens (--el-*).
+ * Single source for the revamp surfaces (settings, filter bar, card
+ * anatomy, workshop, sections, map, rules, entry editor). Legacy
+ * --bg-*/--panel-* variables alias to these tokens below so the
+ * existing dark/light/follow logic flows through untouched.
+ * ============================================================ */
+:root {
+    --el-bg-page: #0f111a;
+    --el-bg-surface: #1a1c29;
+    --el-bg-elevated: #232733;
+    --el-bg-input: #12141a;
+    --el-bg-rail: #181b22;
+    --el-fg: #e2e8f0;
+    --el-fg-muted: #94a3b8;
+    --el-fg-faint: #6b7186;
+    --el-border: rgba(255, 255, 255, 0.08);
+    --el-border-soft: #262b38;
+    --el-primary: #6366f1;
+    --el-primary-hover: #4f46e5;
+    --el-success: #10b981;
+    --el-warning: #f59e0b;
+    --el-danger: #ef4444;
+    --el-info: #38bdf8;
+    --el-radius: 12px;
+    --el-radius-sm: 8px;
+    --el-font: system-ui, -apple-system, sans-serif;
+    --el-mono: ui-monospace, Consolas, monospace;
+    --el-text-size: 0.84rem;
+    --el-bg-image: none;
+}
+
+body.el-theme-light {
+    --el-bg-page: #f1f3f9;
+    --el-bg-surface: #ffffff;
+    --el-bg-elevated: #eef1f7;
+    --el-bg-input: #e9edf5;
+    --el-bg-rail: #e4e8f1;
+    --el-fg: #1c2333;
+    --el-fg-muted: #5b6579;
+    --el-fg-faint: #8a94a8;
+    --el-border: rgba(20, 30, 60, 0.12);
+    --el-border-soft: #dfe4ee;
+}
+
 :root {
     --bg-color: #0f111a;
     --panel-bg: rgba(26, 28, 41, 0.7);
@@ -4112,4 +4157,598 @@ body.el-theme-light textarea::placeholder {
     color: var(--text-muted);
     font-style: italic;
     padding: 12px;
+}
+
+/* ============================================================
+ * EL-REVAMP B6: Familiar-style settings, token-driven list,
+ * six-part card anatomy, in-prompt highlight, mobile.
+ * All colours below ride --el-* tokens (see top of file).
+ * Legacy surfaces above this block are intentionally untouched.
+ * ============================================================ */
+
+/* ---- workshop accent rides the token (was --primary-color) ---- */
+.el-tw-cols,
+.el-tw-bar,
+#type-workshop-panel,
+#map-panel,
+#rules-panel {
+    --el-tw-accent: var(--el-primary);
+}
+
+/* ---- sidebar footer (gear, lower-left) ---- */
+.sidebar {
+    display: flex;
+    flex-direction: column;
+}
+.sidebar-footer {
+    border-top: 1px solid var(--el-border);
+    padding: 8px 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--el-bg-surface);
+    margin-top: auto;
+}
+.sidebar-footer .footer-gear {
+    width: 32px;
+    height: 32px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--el-radius-sm);
+    border: 1px solid var(--el-border);
+    background: var(--el-bg-elevated);
+    color: var(--el-fg-muted);
+    cursor: pointer;
+    font-size: 0.95rem;
+}
+.sidebar-footer .footer-gear:hover {
+    color: var(--el-fg);
+    border-color: var(--el-fg-faint);
+}
+.sidebar-footer .footer-label {
+    font-size: 0.74rem;
+    color: var(--el-fg-muted);
+}
+
+/* ---- B6 settings modal (wide, Familiar-style) ---- */
+.el-b6-settings {
+    width: min(1020px, 94vw);
+    height: min(620px, 88vh);
+    max-width: 94vw;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+.el-b6-settings-grid {
+    display: grid;
+    grid-template-columns: 264px minmax(0, 1fr);
+    min-height: 0;
+    flex: 1;
+}
+.el-b6-settings-nav {
+    border-right: 1px solid var(--el-border);
+    background: var(--el-bg-rail);
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+}
+.el-b6-settings-search {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+    margin: 10px;
+    padding: 0 8px;
+    height: 32px;
+    border: 1px solid var(--el-border);
+    border-radius: var(--el-radius-sm);
+    background: var(--el-bg-elevated);
+    color: var(--el-fg-muted);
+}
+.el-b6-settings-search:focus-within {
+    box-shadow: 0 0 0 2px rgba(122, 162, 255, 0.4);
+}
+.el-b6-settings-search input {
+    flex: 1;
+    min-width: 0;
+    border: 0;
+    background: transparent;
+    color: var(--el-fg);
+    font-family: var(--el-font);
+    font-size: 0.8rem;
+    outline: none;
+}
+.el-b6-settings-search input::placeholder {
+    color: var(--el-fg-faint);
+}
+#el-set-nav {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 0 8px 16px;
+}
+.el-b6-navgrp {
+    margin: 14px 0 4px;
+    padding: 0 8px;
+    color: var(--el-fg-muted);
+    font-size: 0.64rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+.el-b6-navgrp:first-child {
+    margin-top: 4px;
+}
+.el-b6-navitem {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    min-height: 36px;
+    padding: 0 8px;
+    border-radius: var(--el-radius-sm);
+    border: 0;
+    background: transparent;
+    color: var(--el-fg);
+    font-size: 0.82rem;
+    text-align: left;
+    cursor: pointer;
+}
+.el-b6-navitem:hover {
+    background: rgba(127, 140, 180, 0.12);
+}
+.el-b6-navitem.on {
+    background: rgba(122, 162, 255, 0.16);
+    color: #cfe0ff;
+}
+body.el-theme-light .el-b6-navitem.on {
+    color: var(--el-primary);
+}
+.el-b6-navitem .ic {
+    color: var(--el-fg-muted);
+    width: 18px;
+    text-align: center;
+}
+.el-b6-navitem.on .ic {
+    color: var(--el-primary);
+}
+.el-b6-navitem .lb {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.el-b6-navempty {
+    padding: 16px 8px;
+    color: var(--el-fg-muted);
+    font-size: 0.78rem;
+    text-align: center;
+}
+.el-b6-settings-body {
+    min-width: 0;
+    overflow-y: auto;
+    padding: 22px 24px 32px;
+    background: var(--el-bg-surface);
+}
+.el-b6-settings-page {
+    max-width: 840px;
+    margin: 0 auto;
+}
+.el-b6-page-title {
+    margin: 0 0 4px;
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: var(--el-fg);
+}
+.el-b6-page-desc {
+    margin: 0 0 4px;
+    color: var(--el-fg-muted);
+    font-size: 0.8rem;
+}
+.el-b6-sec {
+    padding: 20px 0;
+    border-top: 1px solid var(--el-border);
+}
+.el-b6-sec:first-of-type {
+    padding-top: 8px;
+    border-top: 0;
+}
+.el-b6-sec-t {
+    margin: 0 0 8px;
+    color: var(--el-fg-muted);
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+}
+.el-b6-frow {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 320px);
+    gap: 8px 24px;
+    align-items: center;
+    padding: 10px 0;
+}
+.el-b6-fl-t {
+    display: block;
+    font-size: 0.82rem;
+    color: var(--el-fg);
+}
+.el-b6-fl-h {
+    display: block;
+    margin-top: 2px;
+    color: var(--el-fg-faint);
+    font-size: 0.7rem;
+    line-height: 1.45;
+}
+.el-b6-fc {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    min-width: 0;
+}
+.el-b6-fc > * {
+    min-width: 0;
+}
+.el-b6-read {
+    color: var(--el-fg-muted);
+    font-size: 0.8rem;
+    text-align: right;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.el-b6-hex {
+    font-family: var(--el-mono);
+    font-size: 0.75rem;
+    color: var(--el-fg-muted);
+    min-width: 64px;
+}
+.el-b6-note {
+    margin: 4px 0;
+    color: var(--el-fg-muted);
+    font-size: 0.75rem;
+    line-height: 1.5;
+}
+.el-b6-sw {
+    width: 38px;
+    height: 21px;
+    border-radius: 12px;
+    border: 0;
+    background: #3a4054;
+    position: relative;
+    transition: background 0.15s;
+    flex: 0 0 auto;
+    cursor: pointer;
+    padding: 0;
+}
+.el-b6-sw::after {
+    content: "";
+    position: absolute;
+    top: 2.5px;
+    left: 3px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #cfd4e4;
+    transition: left 0.15s;
+}
+.el-b6-sw[aria-checked="true"] {
+    background: var(--el-primary);
+}
+.el-b6-sw[aria-checked="true"]::after {
+    left: 19px;
+}
+.el-b6-sw:disabled {
+    opacity: 0.6;
+    cursor: default;
+}
+
+/* ---- B6 filter bar (type chips + grouped toggle) ---- */
+.el-b6-filterbar {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--el-border-soft);
+    flex-wrap: wrap;
+    background: var(--el-bg-surface);
+}
+.el-b6-filterbar[hidden] {
+    display: none;
+}
+.el-b6-fchip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.74rem;
+    padding: 3px 10px;
+    min-height: 28px;
+    border-radius: 20px;
+    border: 1px solid var(--el-border);
+    color: var(--el-fg-muted);
+    background: var(--el-bg-surface);
+    cursor: pointer;
+    font-family: var(--el-font);
+}
+.el-b6-fchip i {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--c, var(--el-fg-faint));
+    font-style: normal;
+}
+.el-b6-fchip:hover {
+    color: var(--el-fg);
+}
+.el-b6-fchip.on {
+    border-color: var(--el-primary);
+    color: #cfe0ff;
+    background: rgba(122, 162, 255, 0.12);
+}
+body.el-theme-light .el-b6-fchip.on {
+    color: var(--el-primary);
+}
+.el-b6-fchip.plain {
+    border-style: dashed;
+}
+.el-b6-fcount {
+    margin-left: auto;
+    font-size: 0.7rem;
+    color: var(--el-fg-faint);
+}
+.el-b6-grouphead {
+    font-size: 0.66rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--el-fg-faint);
+    margin: 8px 2px -4px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.el-b6-grouphead::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--el-border-soft);
+}
+
+/* ---- B6 six-part card anatomy (reuses .entry-card B1 shell) ---- */
+.entry-card.el-b6-card {
+    border-left: 3px solid var(--el-card-accent, var(--el-border));
+}
+.entry-card.el-b6-constant {
+    box-shadow: 0 0 0 1px rgba(227, 179, 65, 0.35), 0 0 14px rgba(227, 179, 65, 0.12);
+}
+.entry-card.el-b6-firing {
+    border-color: rgba(92, 201, 147, 0.55);
+    border-left-color: var(--el-success);
+    box-shadow: 0 0 12px rgba(92, 201, 147, 0.14);
+}
+.el-b6-typerow {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+.el-b6-typetag {
+    font-family: var(--el-mono);
+    font-size: 0.66rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--el-card-accent, var(--el-fg-muted));
+    border: 1px solid var(--el-card-accent, var(--el-border));
+    border-radius: 5px;
+    padding: 1px 7px;
+    white-space: nowrap;
+}
+.el-b6-cardname {
+    font-weight: 650;
+    font-size: 0.86rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+}
+.el-b6-keychips {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    padding: 0 12px 8px;
+}
+.el-b6-kchip {
+    font-family: var(--el-mono);
+    font-size: 0.68rem;
+    color: var(--el-fg-muted);
+    background: var(--el-bg-input);
+    border: 1px solid var(--el-border-soft);
+    border-radius: 5px;
+    padding: 1px 7px;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.el-b6-preview {
+    margin: 0 12px 10px;
+    padding: 8px 10px;
+    background: var(--el-bg-input);
+    border: 1px solid var(--el-border-soft);
+    border-radius: 7px;
+    font-size: 0.78rem;
+    color: var(--el-fg-muted);
+    line-height: 1.55;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+}
+.el-b6-quickedit {
+    font-size: 0.8rem;
+    color: var(--el-fg-muted);
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    justify-content: flex-start;
+    margin: 0 12px 10px;
+    padding-top: 8px;
+    border-top: 1px solid var(--el-border-soft);
+    flex-wrap: wrap;
+}
+.el-b6-badge-fire {
+    color: #bdf0d8;
+    border-color: rgba(92, 201, 147, 0.5);
+    background: rgba(92, 201, 147, 0.1);
+}
+body.el-theme-light .el-b6-badge-fire {
+    color: #0d7a52;
+}
+.el-b6-badge-gold {
+    color: #f2d894;
+    border-color: rgba(227, 179, 65, 0.5);
+    background: rgba(227, 179, 65, 0.08);
+}
+body.el-theme-light .el-b6-badge-gold {
+    color: #8a6a1c;
+}
+.el-b6-badge-warn {
+    color: #f0c9c9;
+    border-color: rgba(229, 107, 107, 0.5);
+    background: rgba(229, 107, 107, 0.08);
+}
+body.el-theme-light .el-b6-badge-warn {
+    color: #a33a3a;
+}
+
+/* ---- B6 background image (preview only; upload/serving is Track C2) ---- */
+body.el-b6-has-bg {
+    background-image: var(--el-bg-image);
+    background-size: cover;
+    background-position: center;
+    background-attachment: fixed;
+}
+body.el-b6-per-surface .sidebar,
+body.el-b6-per-surface .main-content,
+body.el-b6-per-surface .entry-card.el-b6-card {
+    background-image: var(--el-bg-image);
+    background-size: cover;
+    background-position: center;
+}
+
+/* ============================================================
+ * EL-REVAMP B6: mobile. Every new surface scrolls inside;
+ * modals go full-screen; touch targets >= 36px.
+ * (The app has no icon rail — the mockup-only rail concept maps
+ * to the toolbar/filter rows, which wrap and stay reachable.)
+ * ============================================================ */
+@media (max-width: 760px) {
+    .glass-container {
+        flex-direction: column;
+    }
+    .sidebar {
+        width: 100%;
+        max-height: 32vh;
+        border-right: 0;
+        border-bottom: 1px solid var(--el-border);
+    }
+    #sidebar-resizer {
+        display: none;
+    }
+    .main-content {
+        min-width: 0;
+        flex: 1;
+        min-height: 0;
+    }
+    .main-header {
+        flex-wrap: wrap;
+    }
+    #main-toolbar {
+        flex-wrap: wrap;
+        position: sticky;
+        top: 0;
+        z-index: 5;
+    }
+    .el-b6-filterbar {
+        padding: 8px 10px;
+    }
+    .el-b6-fchip {
+        min-height: 36px;
+        padding: 6px 14px;
+    }
+    #entries-container {
+        padding: 10px;
+    }
+    .entry-card.el-b6-card {
+        width: 100%;
+    }
+    .modal-content.el-b6-settings {
+        width: 100%;
+        height: 100%;
+        max-width: none;
+        max-height: none;
+        border-radius: 0;
+    }
+    #settings-modal.modal {
+        padding: 0;
+    }
+    .el-b6-settings-grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+    .el-b6-settings-nav {
+        border-right: 0;
+        border-bottom: 1px solid var(--el-border);
+        max-height: 30vh;
+    }
+    .el-b6-frow {
+        grid-template-columns: minmax(0, 1fr);
+    }
+    .el-b6-fc {
+        justify-content: flex-start;
+    }
+    .el-b6-settings-body {
+        padding: 16px 14px 28px;
+    }
+    .el-b6-navitem,
+    .modal .btn,
+    .el-b6-fc button,
+    .el-b6-fc select,
+    .el-b6-fc input {
+        min-height: 36px;
+    }
+    .entry-card .entry-select-checkbox {
+        width: 36px !important;
+        height: 36px !important;
+    }
+    .el-b6-quickedit .inline-edit {
+        min-height: 36px;
+    }
+    .type-workshop-panel .el-tw-cols {
+        grid-template-columns: minmax(0, 1fr);
+    }
+    .type-workshop-panel .el-tw-listcol,
+    .type-workshop-panel .el-tw-buildcol,
+    .type-workshop-panel .el-tw-sidecol {
+        min-width: 0;
+    }
+    #map-panel,
+    #rules-panel,
+    #type-workshop-panel,
+    #agent-feed-panel,
+    .agent-feed-panel {
+        padding: 14px;
+    }
+    #edit-entry-modal .modal-content,
+    #sections-modal .modal-content,
+    #add-item-modal .modal-content,
+    #batch-options-modal .modal-content {
+        width: 100%;
+        max-width: none;
+        height: 100%;
+        max-height: none;
+        border-radius: 0;
+    }
 }

@@ -1704,6 +1704,36 @@ function _elOnChatChanged() {
     sendChatChangedToApp();
 }
 
+function _elCollectActivatedUids(data) {
+    const out = { book: '', uids: [] };
+    try {
+        if (!data || typeof data !== 'object') return out;
+        if (typeof data.book === 'string' && data.book) out.book = data.book;
+        else if (typeof data.world === 'string' && data.world) out.book = data.world;
+        else if (typeof data.name === 'string' && data.name) out.book = data.name;
+        const cand = data.uids || data.entries || data.activated || data.ids;
+        if (Array.isArray(cand)) {
+            for (const e of cand) {
+                const u = (e && typeof e === 'object') ? (e.uid ?? e.id) : e;
+                if (u !== undefined && u !== null && String(u) !== '') out.uids.push(String(u));
+            }
+        } else if (cand && typeof cand === 'object') {
+            for (const k of Object.keys(cand)) out.uids.push(String(k));
+        }
+    } catch (e) {}
+    return out;
+}
+
+function _elOnWorldInfoActivated(data) {
+    try {
+        const hit = _elCollectActivatedUids(data);
+        if (!hit.uids.length) return;
+        if (appWindow && !appWindow.closed) {
+            appWindow.postMessage({ source: 'enhanced-lorebook', type: 'el-worldinfo-activated', nonce: _bridgeNonce, book: hit.book, uids: hit.uids }, window.location.origin);
+        }
+    } catch (e) {}
+}
+
 function setupElEventSubscriptions() {
     if (_elEventsReady) return;
     try {
@@ -1714,6 +1744,16 @@ function setupElEventSubscriptions() {
         // Track A2 note: a future WORLDINFO_UPDATED subscription will live here
         // (host-side dep-index refresh). No listener is added in A2 — host
         // behavior must not change.
+        // EL-REVAMP B6: in-prompt highlight. WORLD_INFO_ACTIVATED is read-only
+        // here — the host forwards the activated uid set to the app window
+        // through the existing postMessage bridge shape. Missing event type
+        // (older ST) or a closed app window is a silent no-op.
+        try {
+            const et = context.event_types || {};
+            if (et.WORLD_INFO_ACTIVATED) {
+                _elOn(context.eventSource, et.WORLD_INFO_ACTIVATED, _elOnWorldInfoActivated);
+            }
+        } catch (e) { /* older host without WORLD_INFO_ACTIVATED: silent no-op */ }
         _elEventsReady = true;
     } catch (e) {
         console.error('Enhanced Lorebook: failed to subscribe to events', e);

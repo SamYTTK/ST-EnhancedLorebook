@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Enhanced Lorebook UI</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link rel="stylesheet" href="style.css?v=4">
+    <link rel="stylesheet" href="style.css?v=5">
 </head>
 <body>
     <div id="app" class="glass-container">
@@ -147,6 +147,10 @@
                     </div>
                 </section>
             </div>
+            <div class="sidebar-footer">
+                <button id="btn-settings-footer" class="footer-gear" title="Settings"><i class="fa-solid fa-cog"></i></button>
+                <span class="footer-label">Settings</span>
+            </div>
         </aside>
         <div id="sidebar-resizer" class="resizer"></div>
 
@@ -186,6 +190,7 @@
                 </div>
             </div>
 
+            <div id="el-b6-filterbar" class="el-b6-filterbar" hidden></div>
             <div id="entries-container" class="entries-container">
                 <div class="empty-state">
                     <i class="fa-solid fa-book-open fa-3x"></i>
@@ -731,89 +736,113 @@
     </div>
 
     <!-- Modals -->
-    <!-- Settings Modal -->
+    <!-- Settings Modal (EL-REVAMP B6: Familiar-style wide modal, left nav + field rows) -->
     <div id="settings-modal" class="modal">
-        <div class="modal-content glass-panel">
+        <div class="modal-content glass-panel el-b6-settings">
             <div class="modal-header">
-                <h3>UI Configuration</h3>
+                <h3>Settings</h3>
                 <button class="close-modal"><i class="fa-solid fa-xmark"></i></button>
             </div>
-            <div class="modal-body">
-                <div class="form-group">
-                    <label>Background Color</label>
-                    <input type="color" id="color-bg" value="#0f111a">
+            <div class="el-b6-settings-grid">
+                <div class="el-b6-settings-nav">
+                    <div class="el-b6-settings-search"><i class="fa-solid fa-search"></i><input id="el-set-search" type="search" placeholder="Search settings" autocomplete="off" aria-label="Search settings"></div>
+                    <nav id="el-set-nav" aria-label="Settings sections"></nav>
                 </div>
-                <div class="form-group">
-                    <label>Panel Background (Glass)</label>
-                    <input type="color" id="color-panel" value="#1a1c29">
-                </div>
-                <div class="form-group">
-                    <label>Text Color</label>
-                    <input type="color" id="color-text" value="#e2e8f0">
-                </div>
-                <div class="form-group">
-                    <label>Primary Accent</label>
-                    <input type="color" id="color-primary" value="#6366f1">
-                </div>
-                <div class="form-group">
-                    <label for="setting-theme-mode">Theme</label>
-                    <select id="setting-theme-mode">
-                        <option value="dark">Dark</option>
-                        <option value="light">Light</option>
-                        <option value="follow">Follow SillyTavern</option>
-                    </select>
-                </div>
-                <button id="btn-reset-colors" class="btn btn-secondary mt-4">Reset to Defaults</button>
-                <hr style="border:none;border-top:1px solid var(--panel-border);margin:16px 0;">
-                <div class="form-group">
-                    <label><i class="fa-solid fa-rotate" style="margin-right:6px;"></i>Auto-Refresh</label>
-                    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
-                        <label style="display:flex;align-items:center;gap:6px;font-size:0.85rem;cursor:pointer;">
-                            <input type="checkbox" id="sync-enabled"> Enabled
-                        </label>
-                        <label style="display:flex;align-items:center;gap:6px;font-size:0.85rem;">
-                            Interval (s)
-                            <input type="number" id="sync-interval" min="1" max="300" style="width:70px;background:rgba(0,0,0,0.3);border:1px solid var(--panel-border);color:var(--text-color);padding:4px 8px;border-radius:6px;">
-                        </label>
-                        <button id="sync-refresh-now" class="btn btn-secondary btn-sm"><i class="fa-solid fa-rotate"></i> Refresh Now</button>
-                    </div>
-                    <p style="font-size:0.75rem;color:var(--text-muted);margin-top:6px;">
-                        Updates the sidebar and open lorebook automatically when something changes elsewhere. Events make ST-internal edits instant; the lightweight poll catches external edits (other extensions, direct saves).
-                    </p>
-                </div>
-                <hr style="border:none;border-top:1px solid var(--panel-border);margin:16px 0;">
-                <div class="form-group">
-                    <label><i class="fa-solid fa-folder" style="margin-right:6px;"></i>Folders</label>
-                    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:8px;">
-                        <label style="display:flex;align-items:center;gap:6px;font-size:0.85rem;cursor:pointer;">
-                            <input type="checkbox" id="setting-drag-drop"> Drag-and-drop (entries &amp; folders)
-                        </label>
-                    </div>
-                    <p style="font-size:0.75rem;color:var(--text-muted);margin-top:6px;">
-                        Move entries and folders with the grip handle. Turn it off to keep the list static.
-                    </p>
-                </div>
-                <hr style="border:none;border-top:1px solid var(--panel-border);margin:16px 0;">
-                <div class="form-group">
-                    <label><i class="fa-solid fa-bug" style="margin-right:6px;"></i>Logging (batched, relevance-filtered)</label>
-                    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:8px;">
-                        <label style="display:flex;align-items:center;gap:6px;font-size:0.85rem;">
-                            Level
-                            <select id="sync-loglevel" style="background:rgba(0,0,0,0.3);border:1px solid var(--panel-border);color:var(--text-color);padding:4px 8px;border-radius:6px;">
-                                <option value="OFF">OFF</option>
-                                <option value="ERROR">ERROR</option>
-                                <option value="WARN">WARN</option>
-                                <option value="INFO">INFO</option>
-                                <option value="DEBUG">DEBUG</option>
-                            </select>
-                        </label>
-                        <label style="display:flex;align-items:center;gap:6px;font-size:0.85rem;cursor:pointer;">
-                            <input type="checkbox" id="sync-verbose"> Verbose (folder/prompt/poll spam)
-                        </label>
-                    </div>
-                    <p style="font-size:0.75rem;color:var(--text-muted);margin-top:6px;">
-                        <code>INFO</code> = lorebook moves/creates/deletes + generation summary (one per reply, no per-token). <code>DEBUG+Verbose</code> also logs folder URLs, prompt previews &amp; poll details. File is batched every 2s to avoid lag.
-                    </p>
+                <div class="el-b6-settings-body" id="el-set-body">
+                    <section class="el-b6-settings-page" data-page="general">
+                        <h2 class="el-b6-page-title">General</h2>
+                        <p class="el-b6-page-desc">Lorebook safety and workspace sync. Saves go through the existing settings path.</p>
+                        <div class="el-b6-sec">
+                            <h3 class="el-b6-sec-t">Safety</h3>
+                            <div class="el-b6-frow"><div><span class="el-b6-fl-t">Fail-closed saves</span><span class="el-b6-fl-h">Block the write if the file changed underneath you. Always on.</span></div><div class="el-b6-fc"><button class="el-b6-sw" role="switch" aria-checked="true" disabled title="Always on"></button></div></div>
+                            <div class="el-b6-frow"><div><span class="el-b6-fl-t">Confirm before delete</span><span class="el-b6-fl-h">Deleted entries go to Trash first regardless.</span></div><div class="el-b6-fc"><button class="el-b6-sw" role="switch" aria-checked="true" disabled title="Always on"></button></div></div>
+                        </div>
+                        <div class="el-b6-sec">
+                            <h3 class="el-b6-sec-t">Defaults</h3>
+                            <div class="el-b6-frow"><div><span class="el-b6-fl-t">Default entry type</span><span class="el-b6-fl-h">New entries start as None. No last-used memory, by decision.</span></div><div class="el-b6-fc"><span class="el-b6-read">None</span></div></div>
+                        </div>
+                        <div class="el-b6-sec">
+                            <h3 class="el-b6-sec-t"><i class="fa-solid fa-rotate" style="margin-right:6px;"></i>Auto-Refresh</h3>
+                            <div class="el-b6-frow"><div><span class="el-b6-fl-t">Enabled</span><span class="el-b6-fl-h">Updates the sidebar and open lorebook automatically. Events make ST-internal edits instant; the lightweight poll catches external edits.</span></div><div class="el-b6-fc"><label style="display:flex;align-items:center;gap:6px;font-size:0.85rem;cursor:pointer;"><input type="checkbox" id="sync-enabled"> Enabled</label></div></div>
+                            <div class="el-b6-frow"><div><span class="el-b6-fl-t">Interval (s)</span></div><div class="el-b6-fc"><input type="number" id="sync-interval" min="1" max="300" style="width:70px;background:rgba(0,0,0,0.3);border:1px solid var(--panel-border);color:var(--text-color);padding:6px 8px;border-radius:6px;"><button id="sync-refresh-now" class="btn btn-secondary btn-sm"><i class="fa-solid fa-rotate"></i> Refresh Now</button></div></div>
+                        </div>
+                        <div class="el-b6-sec">
+                            <h3 class="el-b6-sec-t"><i class="fa-solid fa-folder" style="margin-right:6px;"></i>Folders</h3>
+                            <div class="el-b6-frow"><div><span class="el-b6-fl-t">Drag-and-drop</span><span class="el-b6-fl-h">Move entries and folders with the grip handle. Turn it off to keep the list static.</span></div><div class="el-b6-fc"><label style="display:flex;align-items:center;gap:6px;font-size:0.85rem;cursor:pointer;"><input type="checkbox" id="setting-drag-drop"> Drag-and-drop (entries &amp; folders)</label></div></div>
+                        </div>
+                        <div class="el-b6-sec">
+                            <h3 class="el-b6-sec-t"><i class="fa-solid fa-bug" style="margin-right:6px;"></i>Logging (batched, relevance-filtered)</h3>
+                            <div class="el-b6-frow"><div><span class="el-b6-fl-t">Level</span><span class="el-b6-fl-h"><code>INFO</code> = lorebook moves/creates/deletes + generation summary (one per reply, no per-token). <code>DEBUG+Verbose</code> also logs folder URLs, prompt previews &amp; poll details.</span></div><div class="el-b6-fc"><select id="sync-loglevel" style="background:rgba(0,0,0,0.3);border:1px solid var(--panel-border);color:var(--text-color);padding:6px 8px;border-radius:6px;"><option value="OFF">OFF</option><option value="ERROR">ERROR</option><option value="WARN">WARN</option><option value="INFO">INFO</option><option value="DEBUG">DEBUG</option></select><label style="display:flex;align-items:center;gap:6px;font-size:0.85rem;cursor:pointer;"><input type="checkbox" id="sync-verbose"> Verbose</label></div></div>
+                        </div>
+                    </section>
+                    <section class="el-b6-settings-page" data-page="types" hidden>
+                        <h2 class="el-b6-page-title">Entry Types</h2>
+                        <p class="el-b6-page-desc">The workshop builds the template; the raw <code>|| kind:label ||</code> syntax stays visible underneath.</p>
+                        <div class="el-b6-sec"><h3 class="el-b6-sec-t">Types</h3><div id="el-set-types"></div></div>
+                        <div class="el-b6-frow"><div><span class="el-b6-fl-t">Type Workshop</span><span class="el-b6-fl-h">Builder, live preview, inspector. Renaming a limiter warns how many entries it will touch.</span></div><div class="el-b6-fc"><button id="el-set-open-workshop" class="btn btn-secondary btn-sm"><i class="fa-solid fa-shapes"></i> Open builder</button></div></div>
+                    </section>
+                    <section class="el-b6-settings-page" data-page="sections" hidden>
+                        <h2 class="el-b6-page-title">Sections</h2>
+                        <p class="el-b6-page-desc">One-shot recipes: applying writes real order + position values. Re-applying is idempotent.</p>
+                        <div class="el-b6-sec"><h3 class="el-b6-sec-t">Recipes</h3><div id="el-set-sections"></div></div>
+                        <div class="el-b6-frow"><div><span class="el-b6-fl-t">Sections</span><span class="el-b6-fl-h">Seeded from types, hand-picked members, explicit apply.</span></div><div class="el-b6-fc"><button id="el-set-open-sections" class="btn btn-secondary btn-sm"><i class="fa-solid fa-list-ol"></i> Open Sections</button></div></div>
+                    </section>
+                    <section class="el-b6-settings-page" data-page="map" hidden>
+                        <h2 class="el-b6-page-title">Map</h2>
+                        <p class="el-b6-page-desc">Schematic canvas. Never auto-populated — you place everything.</p>
+                        <div class="el-b6-sec"><h3 class="el-b6-sec-t">Canvas</h3>
+                            <div class="el-b6-frow"><div><span class="el-b6-fl-t">Enable map</span><span class="el-b6-fl-h">Pins for characters and locations; Current_Location variables on placement.</span></div><div class="el-b6-fc"><button id="el-set-open-map" class="btn btn-secondary btn-sm"><i class="fa-solid fa-map"></i> Open Map</button></div></div>
+                        </div>
+                        <p class="el-b6-note">Extra lorebooks are explicit opt-in. Background upload/serving arrives in Track C2 — see Appearance for the preview-only path field.</p>
+                    </section>
+                    <section class="el-b6-settings-page" data-page="rules" hidden>
+                        <h2 class="el-b6-page-title">Rules</h2>
+                        <p class="el-b6-page-desc">A system is a reusable rule-bundle; each entry holds its own condition → value rows.</p>
+                        <div class="el-b6-sec"><h3 class="el-b6-sec-t">Systems</h3><div id="el-set-rules"></div></div>
+                        <div class="el-b6-frow"><div><span class="el-b6-fl-t">Rules</span><span class="el-b6-fl-h">Clock + manual triggers, no chaining. Held-edit protection: updates wait if you are inside the entry.</span></div><div class="el-b6-fc"><button id="el-set-open-rules" class="btn btn-secondary btn-sm"><i class="fa-solid fa-hourglass-half"></i> Open Rules</button></div></div>
+                    </section>
+                    <section class="el-b6-settings-page" data-page="appear" hidden>
+                        <h2 class="el-b6-page-title">Appearance</h2>
+                        <p class="el-b6-page-desc">Themes are variable sets — switching never rebuilds the entry list. Pure CSS only, by decision.</p>
+                        <div class="el-b6-sec">
+                            <h3 class="el-b6-sec-t">Theme</h3>
+                            <div class="el-b6-frow"><div><span class="el-b6-fl-t">Theme</span><span class="el-b6-fl-h">Follow mirrors SillyTavern's SmartTheme colours.</span></div><div class="el-b6-fc"><select id="setting-theme-mode"><option value="dark">Dark</option><option value="light">Light</option><option value="follow">Follow SillyTavern</option></select></div></div>
+                        </div>
+                        <div class="el-b6-sec">
+                            <h3 class="el-b6-sec-t">Accent</h3>
+                            <div class="el-b6-frow"><div><span class="el-b6-fl-t">Background Color</span></div><div class="el-b6-fc"><input type="color" id="color-bg" value="#0f111a"><span class="el-b6-hex" id="color-bg-hex">#0f111a</span></div></div>
+                            <div class="el-b6-frow"><div><span class="el-b6-fl-t">Panel Background (Glass)</span></div><div class="el-b6-fc"><input type="color" id="color-panel" value="#1a1c29"><span class="el-b6-hex" id="color-panel-hex">#1a1c29</span></div></div>
+                            <div class="el-b6-frow"><div><span class="el-b6-fl-t">Text Color</span></div><div class="el-b6-fc"><input type="color" id="color-text" value="#e2e8f0"><span class="el-b6-hex" id="color-text-hex">#e2e8f0</span></div></div>
+                            <div class="el-b6-frow"><div><span class="el-b6-fl-t">Primary Accent</span></div><div class="el-b6-fc"><input type="color" id="color-primary" value="#6366f1"><span class="el-b6-hex" id="color-primary-hex">#6366f1</span></div></div>
+                            <div class="el-b6-frow"><div><span class="el-b6-fl-t">Reset</span></div><div class="el-b6-fc"><button id="btn-reset-colors" class="btn btn-secondary btn-sm">Reset to Defaults</button></div></div>
+                        </div>
+                        <div class="el-b6-sec">
+                            <h3 class="el-b6-sec-t">Background</h3>
+                            <div class="el-b6-frow"><div><span class="el-b6-fl-t">Global image path</span><span class="el-b6-fl-h">Preview only — upload/serving arrives in Track C2, which will fill this in.</span></div><div class="el-b6-fc"><input type="text" id="el-set-bgimage" placeholder="e.g. blackmoor-sketch.png" style="width:100%;max-width:260px;background:rgba(0,0,0,0.3);border:1px solid var(--panel-border);color:var(--text-color);padding:6px 8px;border-radius:6px;"><button id="el-set-bg-upload" class="btn btn-secondary btn-sm" title="Upload (Track C2)"><i class="fa-solid fa-upload"></i> Upload</button></div></div>
+                            <div class="el-b6-frow"><div><span class="el-b6-fl-t">Allow per-surface backgrounds</span><span class="el-b6-fl-h">Sidebar, panels and cards share the global image when on.</span></div><div class="el-b6-fc"><button id="el-set-bg-surface" class="el-b6-sw" role="switch" aria-checked="false"></button></div></div>
+                        </div>
+                        <div class="el-b6-sec">
+                            <h3 class="el-b6-sec-t">Text</h3>
+                            <div class="el-b6-frow"><div><span class="el-b6-fl-t">Interface size</span><span class="el-b6-fl-h">Global. The entry editor keeps its own size.</span></div><div class="el-b6-fc"><span class="el-b6-read">Default</span></div></div>
+                        </div>
+                    </section>
+                    <section class="el-b6-settings-page" data-page="panels" hidden>
+                        <h2 class="el-b6-page-title">Panels</h2>
+                        <p class="el-b6-page-desc">Collapse is for the day, hide is for never.</p>
+                        <div class="el-b6-sec">
+                            <h3 class="el-b6-sec-t">Sidebar panels</h3>
+                            <div class="el-b6-frow"><div><span class="el-b6-fl-t">Collapse all</span><span class="el-b6-fl-h">Headers toggle individually too — click any panel header.</span></div><div class="el-b6-fc"><button id="el-set-collapse-all" class="btn btn-secondary btn-sm">Collapse all</button><button id="el-set-expand-all" class="btn btn-secondary btn-sm">Expand all</button></div></div>
+                        </div>
+                    </section>
+                    <section class="el-b6-settings-page" data-page="about" hidden>
+                        <h2 class="el-b6-page-title">About</h2>
+                        <p class="el-b6-page-desc">Versions and service status.</p>
+                        <div class="el-b6-sec">
+                            <h3 class="el-b6-sec-t">Versions</h3>
+                            <div class="el-b6-frow"><div><span class="el-b6-fl-t">Enhanced Lorebook</span></div><div class="el-b6-fc"><span class="el-b6-read">revamp (el-revamp)</span></div></div>
+                            <div class="el-b6-frow"><div><span class="el-b6-fl-t">ST-RequestHub</span></div><div class="el-b6-fc"><span class="el-b6-read" id="el-set-hub">—</span></div></div>
+                        </div>
+                    </section>
                 </div>
             </div>
         </div>
@@ -1994,7 +2023,7 @@
     <script src="folder-url.js?v=6"></script>
     <script src="map.js?v=1"></script>
     <script src="rules-ui.js?v=1"></script>
-    <script src="app.js?v=14"></script>
+    <script src="app.js?v=15"></script>
     <script src="agent-ui.js?v=12"></script>
     <script src="el.js?v=2"></script>
 </body>

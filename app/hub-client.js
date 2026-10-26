@@ -186,6 +186,14 @@ function EL_installBridgeListener() {
                     } catch (err) { console.error('Enhanced Lorebook: proposal refresh failed', err); }
                     return;
                 }
+                if (msg.type === 'el-rules-refresh') {
+                    // The host window ran the rules engine (write landed or was
+                    // blocked/held and queued): log it and re-render the panel.
+                    try {
+                        if (typeof EL_rulesOnHostRefresh === 'function') EL_rulesOnHostRefresh(msg);
+                    } catch (err) { console.error('Enhanced Lorebook: rules refresh failed', err); }
+                    return;
+                }
                 if ((msg.type === 'el-agent-dynamic-scan-result' || msg.type === 'el-agent-chat-books') && msg.requestId != null) {
                     const pending = _elBridgePending.get(msg.requestId);
                     if (pending) {

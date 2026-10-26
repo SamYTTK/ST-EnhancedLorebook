@@ -239,6 +239,13 @@ async function getActiveCharacterLorebooks() {
 
 function handleNewMessage() {
     messageCounter++;
+    try {
+        Promise.resolve()
+            .then(() => elRulesOnMessage())
+            .catch((e) => { console.error('Enhanced Lorebook: rules on-message error', e); });
+    } catch (e) {
+        console.error('Enhanced Lorebook: rules on-message error', e);
+    }
     // Reset per-agent counters when chat changes so intervals stay per-chat.
     try {
         const context = SillyTavern.getContext();
@@ -269,6 +276,330 @@ function handleNewMessage() {
     } catch (e) {
         console.error('Enhanced Lorebook: handleNewMessage error', e);
     }
+}
+
+// ── EL-REVAMP B5: user-built systems, per-entry rows, message-received run ──
+// Systems live in extensionSettings.systems [{id, name, check, n, target}]
+// (check: 'message' | 'every-n' | 'manual'; target: entry content label to
+// set, default 'Current_Location'). Per-entry rows live in
+// extensionSettings.rules {'<book>|<uid>': {systemId, enabled, rows}} — row
+// shape and evaluation come from lib/rules.js (ELRules), shared with the app
+// window. Writes are set-field-text only (no toggle-flip/chain actions exist
+// — see the assert comment in lib/rules.js) and go through
+// EL.guard.guardSave, so the pre-write re-read (guard TOCTOU) protects them.
+// A blocked write, or a write to an entry the app window currently holds
+// open for editing, is queued app-side-persisted in
+// extensionSettings.rulePending {key: [{target, value, at}]} and retried on
+// subsequent messages / app open — the same pattern as the map queue.
+// No polling timers anywhere here: clock values are read at evaluation time.
+const EL_RULES_MAX_WRITES_PER_MESSAGE = 10;
+const elRulesHeld = new Set(); // ruleKeys ('book|uid') the app window holds open
+const elRulesMsgCounters = {}; // per-system message counters for 'every-n'
+const _elLibPromises = {};
+
+function elLoadLibScript(name, globalName) {
+    if (window[globalName]) return Promise.resolve(window[globalName]);
+    if (_elLibPromises[name]) return _elLibPromises[name];
+    _elLibPromises[name] = new Promise((resolve, reject) => {
+        try {
+            const script = document.createElement('script');
+            script.id = 'el-lib-' + String(name).replace(/[^a-z0-9]+/gi, '-');
+            script.src = `/${getExtensionUrl()}/lib/${name}?v=1`;
+            script.async = true;
+            script.onload = () => {
+                if (window[globalName]) resolve(window[globalName]);
+                else reject(new Error(name + ' did not publish ' + globalName));
+            };
+            script.onerror = () => reject(new Error('could not load lib/' + name));
+            (document.head || document.body).appendChild(script);
+        } catch (e) {
+            reject(e);
+        }
+    }).catch((e) => {
+        delete _elLibPromises[name];
+        console.error('Enhanced Lorebook: lib failed to load', name, e);
+        throw e;
+    });
+    return _elLibPromises[name];
+}
+
+function elLoadRulesLibs() {
+    return elLoadLibScript('type-registry.js', 'ELTypeRegistry')
+        .then(() => elLoadLibScript('slot-parse.js', 'ELSlots'))
+        .then(() => elLoadLibScript('type-compiler.js', 'ELCompile'))
+        .then(() => elLoadLibScript('rules.js', 'ELRules'));
+}
+
+function elRulesStore() {
+    const ctx = elHostContext();
+    const ext = ctx?.extensionSettings?.SillyTavernEnhancedLorebook;
+    if (!ext) return null;
+    let seeded = false;
+    if (!Array.isArray(ext.systems)) { ext.systems = []; seeded = true; }
+    const hasSystem = ext.systems.some((s) => s && typeof s === 'object' && typeof s.id === 'string' && s.id);
+    if (!hasSystem) {
+        ext.systems.unshift({ id: 'schedule', name: 'Schedule system', check: 'message', n: 2, target: 'Current_Location' });
+        seeded = true;
+    }
+    if (!ext.rules || typeof ext.rules !== 'object' || Array.isArray(ext.rules)) { ext.rules = {}; seeded = true; }
+    if (!ext.rulePending || typeof ext.rulePending !== 'object' || Array.isArray(ext.rulePending)) { ext.rulePending = {}; seeded = true; }
+    if (seeded) {
+        try { ctx.saveSettingsDebounced(); } catch (e) { /* seeding persists best-effort */ }
+    }
+    return ext;
+}
+
+function elRulesTypeForHost(entry) {
+    try {
+        const tid = entry && entry.extensions && entry.extensions.el && entry.extensions.el.type;
+        if (!tid || typeof tid !== 'string') return null;
+        const reg = window.ELTypeRegistry;
+        if (!reg || typeof reg.getType !== 'function') return null;
+        const ctx = elHostContext();
+        const store = ctx?.extensionSettings?.SillyTavernEnhancedLorebook?.entryTypes;
+        if (store && typeof store === 'object') {
+            try {
+                const t = reg.getType(store, tid);
+                if (t) return t;
+            } catch (e) { /* fall through to builtins */ }
+        }
+        if (reg.BUILTIN_TYPES && reg.BUILTIN_TYPES[tid]) {
+            try { return JSON.parse(JSON.stringify(reg.BUILTIN_TYPES[tid])); } catch (e) { return reg.BUILTIN_TYPES[tid]; }
+        }
+    } catch (e) { /* untyped */ }
+    return null;
+}
+
+// Clock values are read at evaluation time — no timers. dow: 0 = Sunday.
+function elRulesBuildCtx(entry, book, uid) {
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    let fieldValues = {};
+    try {
+        if (window.ELRules && typeof window.ELRules.parseFieldLines === 'function') {
+            fieldValues = window.ELRules.parseFieldLines((entry && entry.content) || '');
+        }
+    } catch (e) { fieldValues = {}; }
+    let mapPlaced = false;
+    try {
+        const ctx = elHostContext();
+        const pins = ctx?.extensionSettings?.SillyTavernEnhancedLorebook?.maps?.[book]?.pins;
+        mapPlaced = !!(pins && typeof pins === 'object' && Object.prototype.hasOwnProperty.call(pins, String(uid)));
+    } catch (e) { mapPlaced = false; }
+    let relations = [];
+    try {
+        const ctx = elHostContext();
+        const rel = ctx?.extensionSettings?.SillyTavernEnhancedLorebook?.relations;
+        if (Array.isArray(rel)) relations = rel;
+    } catch (e) { relations = []; }
+    return {
+        time: pad(now.getHours()) + ':' + pad(now.getMinutes()),
+        dow: now.getDay(),
+        fieldValues,
+        mapPlaced,
+        relations,
+    };
+}
+
+function elRulesQueueWrites(ext, key, writes) {
+    try {
+        const list = (writes || [])
+            .map((w) => ({ target: String((w && w.target) || '').trim(), value: w ? String(w.value ?? '') : '' }))
+            .filter((w) => !!w.target);
+        if (!list.length) return;
+        const cur = Array.isArray(ext.rulePending[key]) ? ext.rulePending[key].filter((q) => q && typeof q === 'object') : [];
+        for (const w of list) {
+            const rec = { target: w.target, value: w.value, at: Date.now() };
+            const i = cur.findIndex((q) => q && q.target === w.target);
+            if (i !== -1) cur[i] = rec;
+            else cur.push(rec);
+        }
+        ext.rulePending[key] = cur;
+    } catch (e) { /* queueing is best-effort */ }
+}
+
+function elRulesClearPending(ext, key) {
+    try { delete ext.rulePending[key]; } catch (e) { /* tolerate */ }
+}
+
+function elRulesNotifyApp(payload) {
+    try {
+        if (appWindow && !appWindow.closed) {
+            appWindow.postMessage({ source: 'enhanced-lorebook', type: 'el-rules-refresh', nonce: _bridgeNonce, ...(payload || {}) }, window.location.origin);
+        }
+    } catch (e) {
+        console.error('Enhanced Lorebook: could not notify the app window of a rules write', e);
+    }
+}
+
+// Apply a write list to one entry (in memory), then land it with one guarded
+// save. Returns 'landed' | 'blocked' | 'skipped'. A null compute (or a
+// missing guard) counts as blocked so the write retries instead of
+// half-landing; the guard's own pre-write re-read is the held-edit TOCTOU.
+async function elRulesApplyWrites(book, uid, fresh, writes) {
+    try {
+        const ELR = window.ELRules;
+        if (!ELR) return 'blocked';
+        const entry = fresh && fresh.entries ? fresh.entries[String(uid)] : null;
+        if (!entry || typeof entry.content !== 'string') return 'skipped';
+        const list = Array.isArray(writes) ? writes : [];
+        if (!list.length) return 'skipped';
+        let next = entry.content;
+        for (const w of list) {
+            let type = null;
+            try { type = elRulesTypeForHost(entry); } catch (e) { type = null; }
+            const probe = { ...entry, content: next };
+            let out = null;
+            try { out = ELR.computeFieldContent(probe, type, w.target, w.value); } catch (e) { out = null; }
+            if (out === null || typeof out !== 'string') return 'blocked';
+            if (out !== next) next = out;
+        }
+        if (next === entry.content) return 'landed';
+        entry.content = next;
+        const guard = elHostGuard();
+        if (!guard) return 'blocked';
+        let ok = false;
+        try {
+            ok = await guard.guardSave(book, fresh, { explicitDelete: false, source: 'rules', note: 'Rules write' });
+        } catch (e) { ok = false; }
+        return ok ? 'landed' : 'blocked';
+    } catch (e) {
+        return 'blocked';
+    }
+}
+
+async function elRulesLoadFreshCached(ctx, book, cache) {
+    if (cache[book]) return cache[book];
+    let fresh = null;
+    try { fresh = await ctx.loadWorldInfo(book); } catch (e) { fresh = null; }
+    if (fresh && fresh.entries && typeof fresh.entries === 'object') cache[book] = fresh;
+    return cache[book] || null;
+}
+
+// Retry one queued key (non-held). Used by the message flush and by the
+// app→host held-release signal. Returns the number of field-writes landed
+async function elRulesFlushKey(key, maxWrites) {
+    try {
+        await elLoadRulesLibs();
+    } catch (e) { return 0; }
+    const ELR = window.ELRules;
+    if (!ELR) return 0;
+    const ctx = elHostContext();
+    if (!ctx || typeof ctx.loadWorldInfo !== 'function') return 0;
+    const ext = elRulesStore();
+    if (!ext) return 0;
+    const queued = ext.rulePending[key];
+    if (!Array.isArray(queued) || !queued.length) {
+        elRulesClearPending(ext, key);
+        return 0;
+    }
+    if (elRulesHeld.has(key)) return 0;
+    const cap = (maxWrites === undefined || maxWrites === null)
+        ? EL_RULES_MAX_WRITES_PER_MESSAGE
+        : Math.max(0, Math.floor(Number(maxWrites)));
+    if (cap <= 0) return 0;
+    const { book, uid } = ELR.parseRuleKey(key);
+    if (!book || !uid) {
+        elRulesClearPending(ext, key);
+        try { ctx.saveSettingsDebounced(); } catch (e) { /* tolerate */ }
+        return 0;
+    }
+    const slice = queued.slice(0, cap);
+    const fresh = await elRulesLoadFreshCached(ctx, book, {});
+    if (!fresh || !fresh.entries || !fresh.entries[String(uid)]) {
+        // Entry gone underneath: drop the queue, nothing left to retry against.
+        elRulesClearPending(ext, key);
+        try { ctx.saveSettingsDebounced(); } catch (e) { /* tolerate */ }
+        return true;
+    }
+    const res = await elRulesApplyWrites(book, uid, fresh, slice.map((q) => ({ target: q.target, value: q.value })));
+    if (res === 'landed') {
+        const rest = queued.slice(slice.length);
+        if (rest.length) ext.rulePending[key] = rest;
+        else elRulesClearPending(ext, key);
+        try { ctx.saveSettingsDebounced(); } catch (e) { /* tolerate */ }
+        elRulesNotifyApp({ key, book, uid, ok: true, retried: true });
+        return slice.length;
+    }
+    return 0;
+}
+
+async function elRulesOnMessage() {
+    try {
+        await elLoadRulesLibs();
+    } catch (e) {
+        console.warn('Enhanced Lorebook: rules libs unavailable, skipping message run');
+        return;
+    }
+    const ELR = window.ELRules;
+    if (!ELR) return;
+    const ctx = elHostContext();
+    if (!ctx || typeof ctx.loadWorldInfo !== 'function') return;
+    const ext = elRulesStore();
+    if (!ext) return;
+    const systems = (ext.systems || []).filter((s) => s && typeof s === 'object' && typeof s.id === 'string' && s.id);
+    const sysById = {};
+    for (const s of systems) sysById[String(s.id)] = s;
+    let writesUsed = 0;
+    const freshCache = {};
+    for (const key of Object.keys(ext.rulePending || {})) {
+        const budget = EL_RULES_MAX_WRITES_PER_MESSAGE - writesUsed;
+        if (budget <= 0) break;
+        try {
+            const landed = await elRulesFlushKey(key, budget);
+            writesUsed += Math.max(0, Number(landed) || 0);
+        } catch (e) { /* one stuck key must not stop the run */ }
+    }
+    const dueBySystem = {};
+    for (const s of systems) {
+        if (String(s.check || 'message') === 'every-n') {
+            const n = Math.max(1, Number(s.n) || 2);
+            elRulesMsgCounters[String(s.id)] = (elRulesMsgCounters[String(s.id)] || 0) + 1;
+            dueBySystem[String(s.id)] = (elRulesMsgCounters[String(s.id)] % n === 0);
+        }
+    }
+    for (const key of Object.keys(ext.rules || {})) {
+        let rec = null;
+        try { rec = ELR.sanitizeEntryRules(ext.rules[key]); } catch (e) { continue; }
+        if (!rec || !rec.enabled || !rec.rows.length) continue;
+        const sys = sysById[String(rec.systemId || '')] || null;
+        const check = sys ? String(sys.check || 'message') : 'message';
+        if (check === 'manual') continue;
+        if (check === 'every-n' && sys && dueBySystem[String(sys.id)] !== true) continue;
+        const { book, uid } = ELR.parseRuleKey(key);
+        if (!book || !uid) continue;
+        let fresh = null;
+        try { fresh = await elRulesLoadFreshCached(ctx, book, freshCache); } catch (e) { fresh = null; }
+        if (!fresh || !fresh.entries || !fresh.entries[String(uid)]) continue;
+        const rctx = elRulesBuildCtx(fresh.entries[String(uid)], book, uid);
+        const target = (sys && typeof sys.target === 'string' && sys.target.trim()) ? sys.target.trim() : 'Current_Location';
+        let resolved = null;
+        try { resolved = ELR.resolveSystem(rec, rctx, target); } catch (e) { continue; }
+        if (!resolved || !resolved.writes || !resolved.writes.length) continue;
+        const budget = EL_RULES_MAX_WRITES_PER_MESSAGE - writesUsed;
+        if (budget <= 0) {
+            console.log('Enhanced Lorebook: rules write cap reached (10) for this message — remaining entries skipped.');
+            break;
+        }
+        const wb = resolved.writes.slice(0, budget);
+        if (!wb.length) continue;
+        if (elRulesHeld.has(key)) {
+            elRulesQueueWrites(ext, key, wb);
+            elRulesNotifyApp({ key, book, uid, ok: false, held: true });
+            continue;
+        }
+        let res = 'blocked';
+        try { res = await elRulesApplyWrites(book, uid, fresh, wb); } catch (e) { res = 'blocked'; }
+        if (res === 'landed') {
+            writesUsed += wb.length;
+            elRulesClearPending(ext, key);
+            elRulesNotifyApp({ key, book, uid, ok: true, value: String(wb[0].value ?? '') });
+        } else if (res === 'blocked') {
+            elRulesQueueWrites(ext, key, wb);
+            elRulesNotifyApp({ key, book, uid, ok: false, held: false });
+        }
+    }
+    try { ctx.saveSettingsDebounced(); } catch (e) { /* persist best-effort */ }
 }
 
 // e.source binding is the substantive fix: only the popup window this host
@@ -329,6 +660,28 @@ async function _elOnBridgeMessage(e) {
                 const triggered = (ctx.extensionSettings?.SillyTavernEnhancedLorebook?.agents || []).some(a => a.enabled && a.mode === 'periodic' && isAgentActiveForChat(a, ctx));
                 if (triggered) {
                     handleNewMessage();
+                }
+                break;
+            }
+            case 'el-rules-held': {
+                // The app window holds an entry open for editing (held:true) or
+                // released it (held:false — retry that key's queue on top of the
+                // saved state). Same bridge envelope as every other case here.
+                const heldKey = (msg && typeof msg.book === 'string' && typeof msg.uid === 'string' && msg.book && msg.uid)
+                    ? msg.book + '|' + msg.uid
+                    : '';
+                if (!heldKey) break;
+                if (msg.held === true) {
+                    elRulesHeld.add(heldKey);
+                } else {
+                    elRulesHeld.delete(heldKey);
+                    try {
+                        Promise.resolve()
+                            .then(() => elRulesFlushKey(heldKey))
+                            .catch((e) => { console.error('Enhanced Lorebook: rules flush error', e); });
+                    } catch (e) {
+                        console.error('Enhanced Lorebook: rules flush error', e);
+                    }
                 }
                 break;
             }
@@ -1346,6 +1699,7 @@ function _elOnUserMessageRendered() {
 
 function _elOnChatChanged() {
     for (const k of Object.keys(periodicCounters)) delete periodicCounters[k];
+    for (const k of Object.keys(elRulesMsgCounters)) delete elRulesMsgCounters[k];
     messageCounter = 0;
     sendChatChangedToApp();
 }
@@ -1767,6 +2121,11 @@ _elHostNamespace.guard = Object.assign(_elHostNamespace.guard || {}, {
         const guard = elHostGuard();
         return guard ? guard.guardSave(bookName, data, options) : Promise.resolve(false);
     },
+});
+_elHostNamespace.rules = Object.assign(_elHostNamespace.rules || {}, {
+    onMessage: () => elRulesOnMessage(),
+    flushKey: (key) => elRulesFlushKey(key),
+    held: elRulesHeld,
 });
 _elHostNamespace.ready = elLoadApplyCore().catch(() => null);
 

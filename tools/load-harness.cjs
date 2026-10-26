@@ -18,10 +18,10 @@ const APP = path.join(__dirname, '..', 'app');
 // The shared core (lib/apply-core.js) is loaded first: it is the file the
 // HOST window loads too, so a load-time failure there breaks both windows.
 const ORDER = [
-  '../lib/apply-core.js', '../lib/type-registry.js', '../lib/slot-parse.js', '../lib/dep-index.js', '../lib/type-compiler.js', '../lib/sections.js',
+  '../lib/apply-core.js', '../lib/type-registry.js', '../lib/slot-parse.js', '../lib/dep-index.js', '../lib/type-compiler.js', '../lib/sections.js', '../lib/rules.js',
   'toast.js', 'modal.js', 'logger.js', 'agent-config-schema.js', 'context-builder.js',
   'hub-client.js', 'hub-tools.js', 'agent-chat.js', 'agent-manager.js', 'agent-backup.js',
-  'worldinfo-guard.js', 'folder-url.js', 'map.js', 'app.js', 'agent-ui.js', 'el.js',
+  'worldinfo-guard.js', 'folder-url.js', 'map.js', 'rules-ui.js', 'app.js', 'agent-ui.js', 'el.js',
 ];
 
 function makeElement(tag) {
@@ -169,6 +169,7 @@ const EXPECT = [
   'ELG_guardSave', 'ELG_loadFresh', 'ELG_toast', 'ELG_listTrash', 'ELG_restoreSnapshot',
   'ELG_diff', 'EL_buildLineDiffHtml',
   'EL_mapRender', 'EL_mapUpsertLocationLine', 'EL_mapKindOf', 'EL_mapPin', 'EL_mapUnpin',
+  'ELRules', 'EL_rulesRender', 'EL_rulesCheckNow', 'EL_rulesOnHostRefresh',
   'ELFolderUrl', 'EL_getUrlForUid', 'EL_ensureFolderByPath',
   'openEditEntryModal', 'EL_setLorebookData',
   // NOTE: EL_terminalBadge is assigned lazily inside initTerminalPanel(), so it is
@@ -427,6 +428,78 @@ try {
 } catch (e) {
   failed++;
   console.log('  FAIL  map tests threw: ' + e.message);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RULES EVALUATION TESTS (B5)
+// ELRules is the only rule-evaluation path the host and the app share: pure,
+// DOM-free, no fetch, never throws. If/otherwise/while resolution, every
+// operand source, and the label-parameterized line upsert (the minimal edit
+// the host uses to land set-field-text writes) must all behave here, or the
+// message-received run cannot be trusted.
+// ─────────────────────────────────────────────────────────────────────────────
+const RULES_TEST = `
+(function () {
+    const out = [];
+    function eq(label, got, want) { out.push([label, got === want]); }
+    const R = ELRules;
+    const ctx = function (over) {
+        return Object.assign({
+            time: '09:30', dow: 2,
+            fieldValues: { mood: 'tense', place: 'Thornwall' },
+            mapPlaced: true, relations: ['ally'],
+        }, over || {});
+    };
+    const ifRow = function (over) {
+        return Object.assign({ kind: 'if', op: '=', left: { src: 'time', ref: '' }, right: '', target: '', value: '' }, over || {});
+    };
+    eq('time = matches HH:MM', R.evaluateRow(ifRow({ right: '09:30' }), ctx()), true);
+    eq('time = tolerates unpadded', R.evaluateRow(ifRow({ right: '9:30' }), ctx()), true);
+    eq('time < compares minutes', R.evaluateRow(ifRow({ op: '<', right: '17:00' }), ctx()), true);
+    eq('dow source reads day', R.evaluateRow(ifRow({ left: { src: 'dow', ref: '' }, op: '=', right: '2' }), ctx()), true);
+    eq('field source reads label', R.evaluateRow(ifRow({ left: { src: 'field', ref: 'Mood' }, op: 'contains', right: 'ten' }), ctx()), true);
+    eq('map source is exists-style', R.evaluateRow(ifRow({ left: { src: 'map', ref: '' }, op: '=', right: 'true' }), ctx()), true);
+    eq('relation source matches kind', R.evaluateRow(ifRow({ left: { src: 'relation', ref: 'ALLY' }, op: '=', right: 'true' }), ctx()), true);
+    eq('unknown kind never matches', R.evaluateRow({ kind: 'nope', op: '=', left: { src: 'time', ref: '' }, right: '09:30' }, ctx()), false);
+    eq('never throws on garbage', R.evaluateRow(null, null), false);
+    eq('empty op tests blank left', R.evaluateRow(ifRow({ left: { src: 'field', ref: 'missing' }, op: 'empty' }), ctx()), true);
+    const rec = { systemId: 'schedule', enabled: true, rows: [
+        ifRow({ right: '08:00', value: 'Early' }),
+        ifRow({ op: 'contains', left: { src: 'field', ref: 'place' }, right: 'thorn', value: 'Market' }),
+        { kind: 'otherwise', op: '=', left: { src: 'time', ref: '' }, right: '', target: '', value: 'Home' },
+        { kind: 'while', op: '=', left: { src: 'time', ref: '' }, right: '', target: 'Status', value: 'Ledger' },
+    ] };
+    const res = R.resolveSystem(rec, ctx(), 'Current_Location');
+    eq('first matching if wins', res.writes.length === 2 && res.writes[0].value === 'Market' && res.writes[0].target === 'Current_Location', true);
+    eq('while always applies as constant', res.writes[1].kind === 'while' && res.writes[1].value === 'Ledger' && res.writes[1].target === 'Status', true);
+    const res2 = R.resolveSystem(rec, ctx({ time: '23:00', fieldValues: {} }), 'Current_Location');
+    eq('otherwise fills the else-branch', res2.writes[0].kind === 'otherwise' && res2.writes[0].value === 'Home', true);
+    eq('disabled resolves nothing', R.resolveSystem({ systemId: 's', enabled: false, rows: rec.rows }, ctx(), 'X').writes.length, 0);
+    eq('upsert replaces label line', R.upsertFieldLine('Name: Anna\\nCurrent_Location: Old', 'Current_Location', 'New'), 'Name: Anna\\nCurrent_Location: New');
+    eq('upsert matches _/case variants', R.upsertFieldLine('current location: Old', 'Current_Location', 'N'), 'Current_Location: N');
+    eq('upsert appends before limiter', R.upsertFieldLine('**<tag>**\\nName: A\\n**</tag>**', 'Status', 'Ledger'), '**<tag>**\\nName: A\\nStatus: Ledger\\n**</tag>**');
+    eq('compute lands via compiler fallback', R.computeFieldContent({ content: 'Name: A' }, null, 'Status', 'Ledger'), 'Name: A\\nStatus: Ledger');
+    eq('compute null on bad entry', R.computeFieldContent(null, null, 'Status', 'X'), null);
+    return out;
+})()
+`;
+
+console.log('\n===== RULES EVALUATION TESTS (B5) =====');
+try {
+  const rulesResults = new vm.Script(RULES_TEST).runInContext(sandbox);
+  const bad = rulesResults.filter(([, ok]) => !ok);
+  for (const [label, ok] of rulesResults) {
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${label}`);
+  }
+  if (bad.length) {
+    failed += bad.length;
+    console.log(`  -> ${bad.length} rules test(s) FAILED`);
+  } else {
+    console.log(`  all ${rulesResults.length} rules assertions passed`);
+  }
+} catch (e) {
+  failed++;
+  console.log('  FAIL  rules tests threw: ' + e.message);
 }
 
 console.log('\n===== FINAL: ' + (failed === 0 ? 'PASS' : failed + ' FAILURE(S)') + ' =====');

@@ -7932,6 +7932,11 @@ function setupEventListeners() {
         navMap.addEventListener('click', function () { switchToView('map'); });
     }
 
+    const navRules = document.getElementById('nav-rules');
+    if (navRules) {
+        navRules.addEventListener('click', function () { switchToView('rules'); });
+    }
+
     // Recovery sub-tab routing
     document.querySelectorAll('.pill-btn[data-recovery-tab]').forEach(btn => {
         btn.addEventListener('click', () => {
@@ -7994,6 +7999,8 @@ function switchToView(view) {
     if (workshopPanel) workshopPanel.classList.add('hidden');
     const mapPanelHide = document.getElementById('map-panel');
     if (mapPanelHide) mapPanelHide.classList.add('hidden');
+    const rulesPanelHide = document.getElementById('rules-panel');
+    if (rulesPanelHide) rulesPanelHide.classList.add('hidden');
 
     if (view === 'agent-dashboard') {
         const nav = document.getElementById('nav-agent-dashboard');
@@ -8051,6 +8058,15 @@ function switchToView(view) {
         els.currentTitle.textContent = 'Map' + (currentLorebookName ? ' — ' + currentLorebookName : '');
         if (typeof EL_mapRender === 'function') {
             EL_mapRender();
+        }
+    } else if (view === 'rules') {
+        const nav = document.getElementById('nav-rules');
+        if (nav) nav.classList.add('active');
+        const rlPanel = document.getElementById('rules-panel');
+        if (rlPanel) rlPanel.classList.remove('hidden');
+        els.currentTitle.textContent = 'Rules' + (currentLorebookName ? ' — ' + currentLorebookName : '');
+        if (typeof EL_rulesRender === 'function') {
+            EL_rulesRender();
         }
     }
 }

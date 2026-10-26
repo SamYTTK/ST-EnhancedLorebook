@@ -3806,3 +3806,310 @@ body.el-theme-light textarea::placeholder {
 .el-map-kid {
     margin: 2px 4px 2px 0;
 }
+
+/* ============================================================
+ * EL-REVAMP B5: user-built systems, per-entry rows sidepanel
+ * Entry picker, system card, applies-to switches, malleable
+ * if/otherwise/while rows, check-now, activity log.
+ * Theme vars only.
+ * ============================================================ */
+#rules-panel {
+    max-width: 860px;
+}
+
+.el-rules-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+}
+
+.el-rules-title {
+    font-weight: 700;
+    font-size: 0.95rem;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-right: auto;
+}
+
+.el-rules-pickrow {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+}
+
+.el-rules-pickrow select {
+    flex: 1;
+    min-width: 140px;
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    color: var(--text-color);
+    font: inherit;
+    font-size: 0.85rem;
+    padding: 6px 9px;
+}
+
+.el-rules-sys {
+    border: 1px solid var(--panel-border);
+    border-radius: 10px;
+    padding: 10px 12px;
+    background: rgba(0, 0, 0, 0.2);
+    margin-bottom: 12px;
+}
+
+.el-rules-syshead {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.el-rules-sysname {
+    font-weight: 700;
+    font-size: 0.85rem;
+    margin-right: auto;
+}
+
+.el-rules-sysdesc {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    margin-top: 2px;
+}
+
+.el-rules-lab {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    margin-top: 8px;
+}
+
+.el-rules-lab input,
+.el-rules-lab select {
+    flex: 1;
+    min-width: 0;
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    color: var(--text-color);
+    font: inherit;
+    font-size: 0.8rem;
+    padding: 5px 8px;
+}
+
+.el-rules-appliesto {
+    margin-top: 10px;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+}
+
+.el-rules-applies {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 4px;
+    max-height: 180px;
+    overflow-y: auto;
+}
+
+.el-rules-applyrow {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.78rem;
+}
+
+.el-rules-applyrow span {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.el-rules-sw {
+    width: 38px;
+    height: 21px;
+    border-radius: 12px;
+    background: #3a4054;
+    border: 0;
+    position: relative;
+    cursor: pointer;
+    flex: 0 0 auto;
+    padding: 0;
+}
+
+.el-rules-sw::after {
+    content: "";
+    position: absolute;
+    top: 2.5px;
+    left: 3px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #cfd4e4;
+    transition: left 0.15s;
+}
+
+.el-rules-sw[aria-checked="true"] {
+    background: var(--primary-color);
+}
+
+.el-rules-sw[aria-checked="true"]::after {
+    left: 19px;
+}
+
+.el-rules-rows {
+    border: 1px solid var(--panel-border);
+    border-radius: 10px;
+    overflow: hidden;
+    margin-bottom: 12px;
+}
+
+.el-rules-rowshead {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--panel-border);
+    background: rgba(0, 0, 0, 0.2);
+    font-size: 0.78rem;
+    font-weight: 700;
+}
+
+.el-rules-rowshead span {
+    margin-right: auto;
+}
+
+.el-rules-rrow {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+    padding: 7px 10px;
+    border-bottom: 1px solid var(--panel-border);
+    background: rgba(255, 255, 255, 0.015);
+    font-size: 0.76rem;
+}
+
+.el-rules-rrow .el-rules-kind {
+    flex: 0 0 86px;
+}
+
+.el-rules-rrow .el-rules-op {
+    flex: 0 0 82px;
+}
+
+.el-rules-rrow .el-rules-src {
+    flex: 0 0 118px;
+}
+
+.el-rules-rrow .el-rules-ref,
+.el-rules-rrow .el-rules-right,
+.el-rules-rrow .el-rules-target,
+.el-rules-rrow .el-rules-value {
+    flex: 1 1 90px;
+}
+
+.el-rules-rrow select,
+.el-rules-rrow input {
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    color: var(--text-color);
+    font: inherit;
+    font-size: 0.76rem;
+    padding: 4px 7px;
+    width: 100%;
+    min-width: 0;
+    outline: none;
+}
+
+.el-rules-rrow select:focus,
+.el-rules-rrow input:focus {
+    border-color: var(--primary-color);
+}
+
+.el-rules-arr {
+    color: var(--text-muted);
+    text-align: center;
+}
+
+.el-rules-else {
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+.el-rules-x {
+    width: 26px;
+    height: 26px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+    color: var(--text-muted);
+    background: transparent;
+    border: 0;
+    cursor: pointer;
+    font-size: 0.9rem;
+}
+
+.el-rules-x:hover {
+    background: var(--hover-bg);
+    color: var(--text-color);
+}
+
+.el-rules-addrow {
+    display: flex;
+    gap: 8px;
+    padding: 8px 10px;
+}
+
+.el-rules-tbtn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    font-size: 0.76rem;
+    color: var(--text-muted);
+    background: rgba(0, 0, 0, 0.2);
+    width: 100%;
+    justify-content: center;
+    cursor: pointer;
+}
+
+.el-rules-tbtn:hover {
+    color: var(--text-color);
+    border-color: var(--text-muted);
+}
+
+.el-rules-note {
+    font-size: 0.74rem;
+    color: var(--text-muted);
+    background: rgba(99, 102, 241, 0.07);
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    padding: 8px 10px;
+    line-height: 1.55;
+    margin-bottom: 12px;
+}
+
+.el-rules-log {
+    font-family: monospace;
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    line-height: 1.7;
+}
+
+.el-rules-empty {
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    font-style: italic;
+    padding: 12px;
+}

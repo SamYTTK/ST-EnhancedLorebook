@@ -1724,6 +1724,126 @@ async function EL_worldinfoDelete(name) {
 }
 
 /**
+ * Track C2 image upload. Files go to the CORE POST /api/images/upload
+ * endpoint (src/endpoints/images.js) with the standard authed headers —
+ * there is no EL plugin static route. An earlier plan (Decision 08a) sketched
+ * a plugin-owned upload/serving route; that idea is REVERSED here: core
+ * already owns image upload and serves user/images/*, so a second route
+ * would only fork storage and auth. This helper only RESOLVES a
+ * client-relative user/images/... path; callers store it through their
+ * existing guarded save flows (form save, map store, settings) — it never
+ * writes lorebooks itself.
+ */
+const EL_C2_MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
+
+function EL_pickImageFile() {
+    return new Promise((resolve) => {
+        try {
+            const inp = document.createElement('input');
+            inp.type = 'file';
+            inp.accept = 'image/png,image/jpeg,image/webp,image/gif';
+            inp.style.display = 'none';
+            let settled = false;
+            let timer = 0;
+            function onFocus() {
+                setTimeout(() => { if (!settled && (!inp.files || !inp.files.length)) done(null); }, 0);
+            }
+            function cleanup() {
+                try { if (timer) clearTimeout(timer); } catch (e) {}
+                try { if (typeof window !== 'undefined' && window && typeof window.removeEventListener === 'function') window.removeEventListener('focus', onFocus); } catch (e) {}
+            }
+            function done(f) {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                try { if (inp.parentNode) inp.parentNode.removeChild(inp); } catch (e) {}
+                resolve(f || null);
+            }
+            inp.addEventListener('change', () => {
+                const f = inp.files && inp.files.length ? inp.files[0] : null;
+                done(f);
+            });
+            try { if (typeof window !== 'undefined' && window && typeof window.addEventListener === 'function') window.addEventListener('focus', onFocus, { once: true }); } catch (e) {}
+            (document.body || document.documentElement).appendChild(inp);
+            inp.click();
+            timer = setTimeout(() => { if (!inp.files || !inp.files.length) done(null); }, 120000);
+        } catch (e) {
+            resolve(null);
+        }
+    });
+}
+
+function EL_uploadFileFormat(file) {
+    try {
+        const t = String((file && file.type) || '').toLowerCase();
+        if (t === 'image/png') return 'png';
+        if (t === 'image/jpeg') return 'jpg';
+        if (t === 'image/webp') return 'webp';
+        if (t === 'image/gif') return 'gif';
+        const n = String((file && file.name) || '').toLowerCase();
+        const m = /\.([a-z0-9]+)$/.exec(n);
+        if (m && ['png', 'jpg', 'jpeg', 'webp', 'gif'].indexOf(m[1]) !== -1) return m[1] === 'jpeg' ? 'jpg' : m[1];
+    } catch (e) {}
+    return '';
+}
+
+function EL_readFileDataUrl(file) {
+    return new Promise((resolve, reject) => {
+        try {
+            const fr = new FileReader();
+            fr.onload = () => resolve(String(fr.result || ''));
+            fr.onerror = () => reject(new Error('read failed'));
+            fr.readAsDataURL(file);
+        } catch (e) {
+            reject(e);
+        }
+    });
+}
+
+async function EL_uploadImageToServer(file) {
+    if (!file) return null;
+    if (file.size > EL_C2_MAX_UPLOAD_BYTES) {
+        try { EL_toast('Image over 5MB — pick a smaller file (client-side compression is a follow-up).', 'warning'); } catch (e) {}
+        return null;
+    }
+    const format = EL_uploadFileFormat(file);
+    if (!format) {
+        try { EL_toast('Unsupported image type — use PNG, JPG, WEBP or GIF.', 'warning'); } catch (e) {}
+        return null;
+    }
+    let durl = '';
+    try { durl = await EL_readFileDataUrl(file); } catch (e) { durl = ''; }
+    if (!durl || durl.indexOf(',') === -1) {
+        try { EL_toast('Could not read that file.', 'error'); } catch (e) {}
+        return null;
+    }
+    const image = durl.slice(durl.indexOf(',') + 1);
+    let resp = null;
+    try {
+        resp = await fetch('/api/images/upload', {
+            method: 'POST',
+            headers: EL_worldinfoHeaders(),
+            body: JSON.stringify({ image: image, format: format }),
+            cache: 'no-cache',
+        });
+    } catch (e) {
+        resp = null;
+    }
+    if (!resp || !resp.ok) {
+        try { EL_toast('Upload failed (HTTP ' + (resp ? resp.status : 'network') + ').', 'error'); } catch (e) {}
+        return null;
+    }
+    let data = null;
+    try { data = await resp.json(); } catch (e) { data = null; }
+    const p = data && typeof data.path === 'string' ? data.path.trim() : '';
+    if (!p) {
+        try { EL_toast('Upload failed (bad response).', 'error'); } catch (e) {}
+        return null;
+    }
+    return p;
+}
+
+/**
  * Clear the open-book view (empty state + hidden toolbar).
  */
 function EL_clearOpenBookView() {
@@ -5709,8 +5829,9 @@ function ELFormFieldHtml(type, label, kind, value, slot) {
         return head +
             '<div class="el-imgrow"><div class="el-thumb" data-el-thumb>' +
             (hasLink ? '<img src="' + escapeHtml(v.trim()) + '" alt="" onerror="this.remove()">' : '<span>no image</span>') +
-            '</div><div class="el-drop">Paste an image link below — preview only in B1, no upload yet.' +
-            '<input type="text" data-el-slot="' + escapeHtml(label) + '" value="' + escapeHtml(v) + '" placeholder="https://… or /user/images/….png"></div></div>' + tail;
+            '</div><div class="el-drop">Paste an image link or upload a file — stored as a user/images/… path.' +
+            '<input type="text" data-el-slot="' + escapeHtml(label) + '" value="' + escapeHtml(v) + '" placeholder="https://… or /user/images/….png">' +
+            '<button type="button" data-el-imgup title="Upload an image file">⤒ upload</button></div></div>' + tail;
     }
     if (kind === 'ref') {
         const names = v.split(/[,\n;]+/).map(n => n.trim()).filter(n => !!n);
@@ -5738,9 +5859,10 @@ function ELFormFieldHtml(type, label, kind, value, slot) {
         const rows = links.map(l =>
             '<div class="el-galrow"><input type="text" data-el-gal value="' + escapeHtml(l) + '" placeholder="https://… image link">' +
             '<button type="button" data-el-galdel title="remove">×</button></div>').join('');
-        const inj = !(slot && (String(slot.inject).toLowerCase() === 'off' || slot.inject === false));
+        const inj = !!(slot && (slot.inject === true || String(slot.inject || '').toLowerCase() === 'on'));
         return head + '<div data-el-gallery="' + escapeHtml(label) + '">' + rows + '</div>' +
             '<div class="el-refrow"><button type="button" data-el-galadd>＋ add image</button>' +
+            '<button type="button" data-el-galup title="Upload an image file">⤒ upload</button>' +
             '<label class="el-inject"><input type="checkbox" data-el-inject' + (inj ? ' checked' : '') + '> send extras to model</label></div>' + tail;
     }
     if (kind === 'radar') {
@@ -5975,6 +6097,8 @@ function ELFormBind(host) {
                     return;
                 }
                 if (t.closest('[data-el-galadd]')) { ELFormGalleryAdd(t); return; }
+                if (t.closest('[data-el-galup]')) { ELFormGalleryUpload(t); return; }
+                if (t.closest('[data-el-imgup]')) { ELFormImgUpload(t); return; }
                 const del = t.closest('[data-el-galdel]');
                 if (del) {
                     const row = del.closest ? del.closest('.el-galrow') : null;
@@ -6028,6 +6152,55 @@ function ELFormGalleryAdd(btn) {
         const inp = row.querySelector ? row.querySelector('input') : null;
         if (inp && inp.focus) inp.focus();
         ELFormTouch();
+    } catch (e) { /* tolerate */ }
+}
+
+async function ELFormGalleryUpload(btn) {
+    try {
+        const field = btn.closest ? btn.closest('[data-el-field]') : null;
+        const box = field ? field.querySelector('[data-el-gallery]') : null;
+        if (!box) return;
+        const f = await EL_pickImageFile();
+        if (!f) return;
+        const path = await EL_uploadImageToServer(f);
+        if (!path) return;
+        try {
+            const rows = box.querySelectorAll ? box.querySelectorAll('[data-el-gal]') : [];
+            let empty = null;
+            for (let i = 0; i < rows.length; i++) {
+                if (!String(rows[i].value || '').trim()) { empty = rows[i]; break; }
+            }
+            if (empty) {
+                empty.value = path;
+            } else {
+                ELFormGalleryAdd(btn);
+                const fresh = box.querySelectorAll ? box.querySelectorAll('[data-el-gal]') : [];
+                if (fresh.length) fresh[fresh.length - 1].value = path;
+            }
+        } catch (e) {
+            ELFormGalleryAdd(btn);
+        }
+        ELFormTouch();
+        try { EL_toast('Image uploaded.', 'success'); } catch (e) {}
+    } catch (e) { /* tolerate */ }
+}
+
+async function ELFormImgUpload(btn) {
+    try {
+        const row = btn.closest ? btn.closest('.el-imgrow') : null;
+        const input = row ? row.querySelector('[data-el-slot]') : null;
+        if (!input) return;
+        const f = await EL_pickImageFile();
+        if (!f) return;
+        const path = await EL_uploadImageToServer(f);
+        if (!path) return;
+        input.value = path;
+        try {
+            const box = row.querySelector ? row.querySelector('[data-el-thumb]') : null;
+            if (box) box.innerHTML = '<img src="' + escapeHtml(path) + '" alt="" onerror="this.remove()">';
+        } catch (e) {}
+        ELFormTouch();
+        try { EL_toast('Image uploaded.', 'success'); } catch (e) {}
     } catch (e) { /* tolerate */ }
 }
 
@@ -11476,11 +11649,20 @@ function EL_b6ApplyBackground() {
     } catch (e) {}
 }
 
-function EL_b6UploadStub() {
+async function EL_b6UploadStub() {
     try {
-        if (typeof EL_toast === 'function') EL_toast('Background upload arrives in Track C2 — enter a path manually for now.', 'warning');
-        else if (typeof showToast === 'function') showToast('Background upload arrives in Track C2 — enter a path manually for now.');
-    } catch (e) {}
+        const f = await EL_pickImageFile();
+        if (!f) return;
+        const path = await EL_uploadImageToServer(f);
+        if (!path) return;
+        if (!extensionSettings.appearance || typeof extensionSettings.appearance !== 'object') extensionSettings.appearance = {};
+        extensionSettings.appearance.bgImage = path;
+        try { saveSettings(); } catch (e) {}
+        EL_b6ApplyBackground();
+        try { EL_toast('Background image set.', 'success'); } catch (e) {}
+    } catch (e) {
+        try { EL_toast('Background upload failed.', 'error'); } catch (_e) {}
+    }
 }
 
 function EL_b6Bind() {

@@ -605,6 +605,178 @@ async function elRulesOnMessage() {
     try { ctx.saveSettingsDebounced(); } catch (e) { /* persist best-effort */ }
 }
 
+// ── EL-REVAMP C2: lore image inlining (host-side, read-only) ──
+// WORLD_INFO_ACTIVATED carries the activated entry objects for this Generate
+// (world-info.js: getWorldInfoPrompt emits AFTER the scan, script.js calls it
+// before prepareOpenAIMessages). CHAT_COMPLETION_PROMPT_READY carries
+// {chat, dryRun} (openai.js). Ordering is stable — WI fires first — so the
+// first handler stashes and the second consumes. Nothing here writes
+// lorebooks; it only appends one system message to the in-flight chat array.
+// Gate: dynamic import of isImageInliningSupported from /scripts/openai.js
+// (same pattern as the host's world-info.js import). The export is verified
+// before calling; a missing export is a silent no-op so text-only
+// generations never break. NOTE: CUSTOM/COMETAPI sources report true
+// unconditionally in core — accepted here; a false positive only adds an
+// image part the backend may ignore.
+const EL_C2_MAX_IMAGES = 3;
+const EL_C2_MAX_INLINE_BYTES = Math.floor(2.5 * 1024 * 1024);
+let _elC2Stash = [];
+
+function _elC2StashActivated(data) {
+    let list = null;
+    if (Array.isArray(data)) list = data;
+    else if (data && Array.isArray(data.entries)) list = data.entries;
+    else if (data && Array.isArray(data.activated)) list = data.activated;
+    if (!list) return;
+    _elC2Stash = list.filter((e) => e && typeof e === 'object');
+}
+
+function _elC2NormLabel(s) {
+    return String(s === undefined || s === null ? '' : s).toLowerCase().replace(/[_\s]+/g, ' ').trim();
+}
+
+function _elC2SlotKinds(type) {
+    const out = {};
+    try {
+        const sections = (type && Array.isArray(type.sections)) ? type.sections : [];
+        for (const sec of sections) {
+            const slots = (sec && Array.isArray(sec.slots)) ? sec.slots : [];
+            for (const sl of slots) {
+                if (!sl || !sl.label) continue;
+                out[_elC2NormLabel(sl.label)] = {
+                    kind: String(sl.kind || 'cont').toLowerCase(),
+                    inject: (sl.inject === true || String(sl.inject || '').toLowerCase() === 'on') ? 'on' : 'off',
+                };
+            }
+        }
+    } catch (e) { /* untyped: empty map */ }
+    return out;
+}
+
+function _elC2LooksLikeImage(v) {
+    const s = String(v === undefined || v === null ? '' : v).trim();
+    if (!s || /\s/.test(s)) return false;
+    if (/^data:image\//i.test(s)) return s.length <= 5 * 1024 * 1024;
+    if (s.length > 2048) return false;
+    if (/^\/?user\/images\//i.test(s)) return true;
+    return /^https?:\/\/\S+\.(png|jpe?g|webp|gif)(\?.*)?$/i.test(s);
+}
+
+async function _elC2ValuesOf(entry) {
+    try {
+        await elLoadRulesLibs();
+    } catch (e) {
+        return { values: {}, kinds: {} };
+    }
+    let type = null;
+    try { type = elRulesTypeForHost(entry); } catch (e) { type = null; }
+    const kinds = _elC2SlotKinds(type);
+    let values = {};
+    try {
+        const CC = window.ELCompile || null;
+        const ELS = window.ELSlots || null;
+        if (CC && ELS && type && typeof CC.typeToAst === 'function' && typeof ELS.extractValues === 'function') {
+            const ex = ELS.extractValues((entry && entry.content) || '', CC.typeToAst(type));
+            if (ex && ex.values && typeof ex.values === 'object') values = ex.values;
+        }
+    } catch (e) { values = {}; }
+    return { values, kinds };
+}
+
+async function _elC2CollectImageUrls(entries) {
+    const out = [];
+    try {
+        for (const entry of (entries || [])) {
+            if (out.length >= EL_C2_MAX_IMAGES) break;
+            if (!entry || typeof entry !== 'object') continue;
+            let bag = null;
+            try { bag = await _elC2ValuesOf(entry); } catch (e) { bag = null; }
+            if (!bag || !bag.values || typeof bag.values !== 'object') continue;
+            for (const label of Object.keys(bag.values)) {
+                if (out.length >= EL_C2_MAX_IMAGES) break;
+                const info = bag.kinds[_elC2NormLabel(label)] || null;
+                const kind = info ? info.kind : '';
+                const raw = bag.values[label];
+                const parts = (kind === 'gallery' && typeof raw === 'string' && raw.indexOf('\n') !== -1)
+                    ? raw.split('\n')
+                    : [raw];
+                for (const p of parts) {
+                    if (out.length >= EL_C2_MAX_IMAGES) break;
+                    const s = String(p === undefined || p === null ? '' : p).trim();
+                    if (!s || !_elC2LooksLikeImage(s)) continue;
+                    if (kind === 'gallery' && (!info || info.inject !== 'on')) continue;
+                    if (kind !== '' && kind !== 'img' && kind !== 'gallery') continue;
+                    if (out.indexOf(s) === -1) out.push(s);
+                }
+            }
+        }
+    } catch (e) { /* collection is best-effort */ }
+    return out.slice(0, EL_C2_MAX_IMAGES);
+}
+
+async function _elC2UrlToDataUrl(url) {
+    const s = String(url || '').trim();
+    if (!s) return null;
+    if (/^data:image\//i.test(s)) return s.length <= 5 * 1024 * 1024 ? s : null;
+    let blob = null;
+    try {
+        const resp = await fetch(s, { method: 'GET', cache: 'force-cache' });
+        if (!resp || !resp.ok) return null;
+        blob = await resp.blob();
+    } catch (e) {
+        return null;
+    }
+    if (!blob || !(blob.size > 0)) return null;
+    if (blob.size > EL_C2_MAX_INLINE_BYTES) {
+        console.log('Enhanced Lorebook: lore image skipped (over 2.5MB): ' + s.slice(0, 120));
+        return null;
+    }
+    try {
+        return await new Promise((resolve) => {
+            const fr = new FileReader();
+            fr.onload = () => resolve(typeof fr.result === 'string' ? fr.result : null);
+            fr.onerror = () => resolve(null);
+            fr.readAsDataURL(blob);
+        });
+    } catch (e) {
+        return null;
+    }
+}
+
+async function _elC2OnPromptReady(data) {
+    try {
+        if (!data || typeof data !== 'object') return;
+        if (data.dryRun) { _elC2Stash = []; return; }
+        const chat = data.chat;
+        if (!Array.isArray(chat) || !chat.length) return;
+        if (!_elC2Stash.length) return;
+        const stash = _elC2Stash;
+        _elC2Stash = [];
+        let inlineOk = false;
+        try {
+            const mod = await import('/scripts/openai.js');
+            if (!mod || typeof mod.isImageInliningSupported !== 'function') return;
+            inlineOk = !!mod.isImageInliningSupported();
+        } catch (e) {
+            return;
+        }
+        if (!inlineOk) return;
+        const urls = await _elC2CollectImageUrls(stash);
+        if (!urls.length) return;
+        const parts = [{ type: 'text', text: 'Lore images (activated entries):' }];
+        for (const u of urls) {
+            let durl = null;
+            try { durl = await _elC2UrlToDataUrl(u); } catch (e) { durl = null; }
+            if (durl) parts.push({ type: 'image_url', image_url: { url: durl } });
+        }
+        if (parts.length < 2) return;
+        const msg = { role: 'system', content: parts };
+        const last = chat[chat.length - 1];
+        if (last && last.role === 'user') chat.splice(chat.length - 1, 0, msg);
+        else chat.push(msg);
+    } catch (e) { /* inlining must never break a generation */ }
+}
+
 // e.source binding is the substantive fix: only the popup window this host
 // opened (appWindow) may drive the bridge. A same-origin script can forge
 // any message *content*, but it cannot forge e.source, which is the
@@ -1729,6 +1901,7 @@ function _elCollectActivatedUids(data) {
 
 function _elOnWorldInfoActivated(data) {
     try {
+        try { _elC2StashActivated(data); } catch (e) {}
         const hit = _elCollectActivatedUids(data);
         if (!hit.uids.length) return;
         if (appWindow && !appWindow.closed) {
@@ -1755,6 +1928,9 @@ function setupElEventSubscriptions() {
             const et = context.event_types || {};
             if (et.WORLD_INFO_ACTIVATED) {
                 _elOn(context.eventSource, et.WORLD_INFO_ACTIVATED, _elOnWorldInfoActivated);
+            }
+            if (et.CHAT_COMPLETION_PROMPT_READY) {
+                _elOn(context.eventSource, et.CHAT_COMPLETION_PROMPT_READY, _elC2OnPromptReady);
             }
         } catch (e) { /* older host without WORLD_INFO_ACTIVATED: silent no-op */ }
         _elEventsReady = true;

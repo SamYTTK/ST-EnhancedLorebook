@@ -526,12 +526,28 @@ async function EL_mapFlushPending(book, m) {
 }
 
 /**
- * TRACK C2 STUB — background image upload/serving route.
- * The map stores only a path string (maps[book].background) and previews it.
- * Real file upload + serving arrives with Track C2; do NOT build it here.
+ * Track C2 background image upload. Files go to the CORE
+ * POST /api/images/upload endpoint with the standard authed headers —
+ * there is no EL plugin static route (the Decision 08a plugin-route idea is
+ * REVERSED: core already owns upload + serves user/images/*). This only
+ * RESOLVES a client-relative user/images/... path and stores it via the
+ * existing EL_mapSetBackground path — it never writes lorebook entries.
  */
-function EL_mapUploadBackground() {
-    try { EL_toast('Background upload arrives in Track C2 — enter a path manually for now.', 'warning'); } catch (e) {}
+async function EL_mapUploadBackground() {
+    try {
+        if (typeof EL_pickImageFile !== 'function' || typeof EL_uploadImageToServer !== 'function') {
+            EL_mapBackgroundPrompt();
+            return;
+        }
+        const f = await EL_pickImageFile();
+        if (!f) return;
+        const path = await EL_uploadImageToServer(f);
+        if (!path) return;
+        EL_mapSetBackground(path);
+        try { EL_toast('Map background set.', 'success'); } catch (e) {}
+    } catch (e) {
+        try { EL_toast('Background upload failed.', 'error'); } catch (_e) {}
+    }
 }
 
 function EL_mapSetBackground(path) {
@@ -732,7 +748,7 @@ async function EL_mapRender() {
         const addBtn = document.getElementById('el-map-add');
         if (addBtn) addBtn.addEventListener('click', () => EL_mapAddPicker());
         const bgBtn = document.getElementById('el-map-bgset');
-        if (bgBtn) bgBtn.addEventListener('click', () => EL_mapBackgroundPrompt());
+        if (bgBtn) bgBtn.addEventListener('click', () => EL_mapUploadBackground());
         const zin = document.getElementById('el-map-zin');
         if (zin) zin.addEventListener('click', () => EL_mapSetZoom(EL_mapZoom() - 1));
         const zout = document.getElementById('el-map-zout');
@@ -1079,7 +1095,7 @@ function EL_mapBackgroundPrompt() {
         const m = EL_mapForBook((typeof currentLorebookName !== 'undefined') ? currentLorebookName : null);
         const cur = (m && m.background) || '';
         let next = null;
-        try { next = prompt('Background image path (preview only — upload arrives in Track C2):', cur); } catch (e) { return; }
+        try { next = prompt('Background image path (or Cancel, then use the Background button to upload a file):', cur); } catch (e) { return; }
         if (next === null || next === undefined) return;
         EL_mapSetBackground(String(next));
     } catch (e) {}

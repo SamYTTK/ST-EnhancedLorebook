@@ -793,7 +793,7 @@
                         <div class="el-b6-sec"><h3 class="el-b6-sec-t">Canvas</h3>
                             <div class="el-b6-frow"><div><span class="el-b6-fl-t">Enable map</span><span class="el-b6-fl-h">Pins for characters and locations; Current_Location variables on placement.</span></div><div class="el-b6-fc"><button id="el-set-open-map" class="btn btn-secondary btn-sm"><i class="fa-solid fa-map"></i> Open Map</button></div></div>
                         </div>
-                        <p class="el-b6-note">Extra lorebooks are explicit opt-in. Background upload/serving arrives in Track C2 — see Appearance for the preview-only path field.</p>
+                        <p class="el-b6-note">Extra lorebooks are explicit opt-in. Backgrounds upload via core POST /api/images/upload (PNG/JPG/WEBP/GIF, 5MB cap) and are served from user/images/ — set the path under Appearance.</p>
                     </section>
                     <section class="el-b6-settings-page" data-page="rules" hidden>
                         <h2 class="el-b6-page-title">Rules</h2>
@@ -818,7 +818,7 @@
                         </div>
                         <div class="el-b6-sec">
                             <h3 class="el-b6-sec-t">Background</h3>
-                            <div class="el-b6-frow"><div><span class="el-b6-fl-t">Global image path</span><span class="el-b6-fl-h">Preview only — upload/serving arrives in Track C2, which will fill this in.</span></div><div class="el-b6-fc"><input type="text" id="el-set-bgimage" placeholder="e.g. blackmoor-sketch.png" style="width:100%;max-width:260px;background:rgba(0,0,0,0.3);border:1px solid var(--panel-border);color:var(--text-color);padding:6px 8px;border-radius:6px;"><button id="el-set-bg-upload" class="btn btn-secondary btn-sm" title="Upload (Track C2)"><i class="fa-solid fa-upload"></i> Upload</button></div></div>
+                            <div class="el-b6-frow"><div><span class="el-b6-fl-t">Global image path</span><span class="el-b6-fl-h">Paste a path or use Upload (stored under user/images/).</span></div><div class="el-b6-fc"><input type="text" id="el-set-bgimage" placeholder="e.g. blackmoor-sketch.png" style="width:100%;max-width:260px;background:rgba(0,0,0,0.3);border:1px solid var(--panel-border);color:var(--text-color);padding:6px 8px;border-radius:6px;"><button id="el-set-bg-upload" class="btn btn-secondary btn-sm" title="Upload an image file"><i class="fa-solid fa-upload"></i> Upload</button></div></div>
                             <div class="el-b6-frow"><div><span class="el-b6-fl-t">Allow per-surface backgrounds</span><span class="el-b6-fl-h">Sidebar, panels and cards share the global image when on.</span></div><div class="el-b6-fc"><button id="el-set-bg-surface" class="el-b6-sw" role="switch" aria-checked="false"></button></div></div>
                         </div>
                         <div class="el-b6-sec">

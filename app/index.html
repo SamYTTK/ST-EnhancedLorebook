@@ -1056,7 +1056,10 @@
 
                 <div class="form-group">
                     <label for="edit-type">Entry type</label>
-                    <select id="edit-type"></select>
+                    <div style="display:flex; gap:8px; align-items:center;">
+                        <select id="edit-type" style="flex:1; min-width:0;"></select>
+                        <button type="button" id="edit-type-reapply" class="btn btn-secondary btn-sm" title="Re-render this entry through the current saved type (picks up type edits). Review, then Save Entry.">Re-apply style</button>
+                    </div>
                 </div>
 
                 <div class="form-group">

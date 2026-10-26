@@ -6398,6 +6398,69 @@ function ELFormOnTypeChange() {
     } catch (e) { /* tolerate */ }
 }
 
+/**
+ * Re-render the open entry through the CURRENT saved type (single entry).
+ * Picks up type edits made since the entry was last applied: match-by-label
+ * re-render, tag migration (Name -> limiter), old Tags: consumption.
+ * Writes into the modal fields only (content/keys/form) — the user reviews
+ * and persists with Save Entry. Never throws; never touches the guard.
+ */
+function ELFormReapplyType() {
+    try {
+        if (typeof ELFormIsTyped !== 'function' || !ELFormIsTyped()) {
+            try { EL_toast('No type set — pick a type first.', 'warning'); } catch (e) {}
+            return;
+        }
+        const type = (typeof ELFormGetType === 'function') ? ELFormGetType() : null;
+        const CC = (typeof ELCompile !== 'undefined') ? ELCompile : null;
+        if (!type || !CC || typeof CC.applyType !== 'function') {
+            try { EL_toast('Type engine unavailable.', 'error'); } catch (e) {}
+            return;
+        }
+        const rawEl = document.getElementById('edit-content');
+        const base = {
+            content: rawEl ? (rawEl.value || '') : '',
+            key: [],
+            keysecondary: [],
+            extensions: { el: { type: String(type.id || '') } },
+        };
+        let formVals = {};
+        try {
+            if (typeof ELFormCollect === 'function') {
+                const c = ELFormCollect();
+                if (c && typeof c === 'object') formVals = c;
+            }
+        } catch (e) { formVals = {}; }
+        let r = null;
+        try {
+            const lookup = (typeof ELFormLookupName === 'function') ? ELFormLookupName : undefined;
+            r = CC.applyType(base, type, { values: formVals, lookupName: lookup });
+        } catch (e) { r = null; }
+        if (!r || !r.entry || typeof r.entry.content !== 'string') {
+            try { EL_toast('Re-apply failed — entry left unchanged.', 'error'); } catch (e) {}
+            return;
+        }
+        if (rawEl) rawEl.value = r.entry.content;
+        try {
+            if (Array.isArray(r.entry.key)) document.getElementById('edit-keys').value = r.entry.key.join(', ');
+            if (Array.isArray(r.entry.keysecondary)) document.getElementById('edit-secondary-keys').value = r.entry.keysecondary.join(', ');
+        } catch (e) {}
+        try {
+            const ex = (typeof ELFormExtract === 'function') ? ELFormExtract(type) : null;
+            if (ex) {
+                ELFormState.values = (ex.values && typeof ex.values === 'object') ? ex.values : {};
+                ELFormState.extra = Array.isArray(ex.extra) ? ex.extra : [];
+            }
+            if (typeof ELFormRenderAll === 'function') ELFormRenderAll();
+        } catch (e) {}
+        try { _elEntryDirty = true; } catch (e) {}
+        const notes = Array.isArray(r.changes) ? r.changes.filter(Boolean) : [];
+        const warns = Array.isArray(r.warnings) ? r.warnings.filter(Boolean) : [];
+        const summary = notes.slice(0, 3).join(' · ') || 'Entry re-rendered through the saved type.';
+        try { EL_toast(summary + (warns.length ? ' (' + warns.length + ' warning' + (warns.length === 1 ? '' : 's') + ')' : '') + ' — review, then Save Entry.', warns.length ? 'warning' : 'success'); } catch (e) {}
+    } catch (e) { /* tolerate */ }
+}
+
 function ELFormOpenFor(entry) {
     ELFormState.uid = document.getElementById('edit-entry-uid').value;
     ELFormState.values = {};
@@ -6414,6 +6477,13 @@ function ELFormOpenFor(entry) {
             storedId = '';
         }
     }
+    try {
+        const rb = document.getElementById('edit-type-reapply');
+        if (rb && !rb.dataset.elBound) {
+            rb.dataset.elBound = '1';
+            rb.addEventListener('click', ELFormReapplyType);
+        }
+    } catch (e) {}
     const btns = document.querySelectorAll ? document.querySelectorAll('#edit-type-tabs .el-tab') : [];
     for (let i = 0; i < btns.length; i++) {
         btns[i].onclick = () => { ELFormSwitchTab(btns[i].getAttribute('data-tab')); };
@@ -10598,10 +10668,16 @@ function EL_workshopRenderUsage() {
     const warn = renamed
         ? '<div class="el-tw-tagwarn">Tag renamed — existing entries will be re-matched by label on save. Entries whose labels no longer match are preserved as extra content.</div>'
         : '';
-    host.innerHTML = '<h4>Usage</h4>' + warn + body + '<button id="el-tw-refresh-usage" class="btn btn-secondary btn-sm" style="margin-top:6px;">Recount</button>';
+    host.innerHTML = '<h4>Usage</h4>' + warn + body
+        + '<div style="display:flex; gap:6px; margin-top:6px; flex-wrap:wrap;">'
+        + '<button id="el-tw-refresh-usage" class="btn btn-secondary btn-sm">Recount</button>'
+        + (u && u.total ? '<button id="el-tw-reapply-all" class="btn btn-secondary btn-sm" title="Re-render every entry of this type through the SAVED type (picks up type edits).">Re-apply style to ' + u.total + '</button>' : '')
+        + '</div>';
     try {
         const rb = document.getElementById('el-tw-refresh-usage');
         if (rb) rb.addEventListener('click', () => EL_workshopRefreshUsage());
+        const ra = document.getElementById('el-tw-reapply-all');
+        if (ra) ra.addEventListener('click', () => EL_workshopAskReapply());
     } catch (e) {}
 }
 
@@ -10854,6 +10930,134 @@ async function EL_workshopDeleteConvert(typeId) {
     }
     try { EL_toast('Type "' + typeName + '" deleted' + (usage.total ? ' — ' + usage.total + ' entries converted to plain text.' : '.'), 'success'); } catch (e) {}
     EL_workshopRender();
+    return true;
+}
+
+/**
+ * Bulk re-apply (workshop): re-render every entry of the selected type
+ * through the SAVED type. Picks up type edits on entries applied earlier
+ * (new slots, tag migration, limiter form). Mirrors the delete-convert
+ * flow: all books preload first (any failure aborts everything), then one
+ * guard save per book. Nothing is deleted; unmatched lines are preserved
+ * as extra content per the compiler contract.
+ */
+function EL_workshopAskReapply() {
+    try {
+        const id = String(EL_workshopSelectedId || '');
+        if (!id) return;
+        const stored = (typeof EL_getEntryType === 'function') ? EL_getEntryType(id) : null;
+        if (!stored) { try { EL_toast('Type not found — nothing to re-apply.', 'error'); } catch (e) {} return; }
+        try {
+            const a = JSON.stringify(EL_workshopDraft);
+            const b = JSON.stringify(stored);
+            if (a !== b) { try { EL_toast('Save the type first — re-apply uses the SAVED type.', 'warning'); } catch (e) {} return; }
+        } catch (e) {}
+        const u = (EL_workshopUsage && EL_workshopUsage.typeId === id) ? EL_workshopUsage : { total: 0, books: [] };
+        if (!u.total) { try { EL_toast('No entries use this type.', 'warning'); } catch (e) {} return; }
+        const name = String(stored.name || id);
+        const bookLines = (u.books || []).length
+            ? u.books.map(b => '<div>' + escapeHtml(b.book) + ' <span style="opacity:0.7;">(' + b.count + ')</span></div>').join('')
+            : '';
+        const ov = document.createElement('div');
+        ov.className = 'modal active';
+        ov.id = 'el-tw-reapply-overlay';
+        ov.innerHTML = '<div class="modal-content glass-panel" style="width:460px;">'
+            + '<div class="modal-header"><h3><i class="fa-solid fa-paint-roller" style="margin-right:8px;"></i>Re-apply type style</h3>'
+            + '<button class="close-modal"><i class="fa-solid fa-xmark"></i></button></div>'
+            + '<div class="modal-body">'
+            + '<p>Re-render <strong>' + u.total + '</strong> entr' + (u.total === 1 ? 'y' : 'ies') + ' through the saved type <strong>' + escapeHtml(name) + '</strong>?</p>'
+            + '<div style="max-height:140px; overflow-y:auto; font-size:0.85rem; margin-bottom:10px;">' + bookLines + '</div>'
+            + '<p style="font-size:0.85rem; opacity:0.85;">Entries are matched by label; new slots fill empty, unmatched lines are preserved. Nothing is deleted. Entries whose content is already current are left untouched.</p>'
+            + '</div>'
+            + '<div class="modal-footer" style="display:flex; gap:8px; justify-content:flex-end;">'
+            + '<button class="btn btn-secondary" data-el-tw-cancel>Cancel</button>'
+            + '<button class="btn btn-primary" data-el-tw-confirm>Re-apply</button>'
+            + '</div></div>';
+        document.body.appendChild(ov);
+        const close = () => { try { EL_modalClose(ov); } catch (e) {} try { if (ov.parentNode) ov.parentNode.removeChild(ov); } catch (e) {} };
+        const cancelBtn = ov.querySelector('[data-el-tw-cancel]');
+        if (cancelBtn) cancelBtn.addEventListener('click', close);
+        const xBtn = ov.querySelector('.close-modal');
+        if (xBtn) xBtn.addEventListener('click', close);
+        const okBtn = ov.querySelector('[data-el-tw-confirm]');
+        if (okBtn) okBtn.addEventListener('click', async () => {
+            okBtn.disabled = true;
+            let r = false;
+            try { r = await EL_workshopReapplyAll(id); } catch (e) { r = false; }
+            close();
+            if (r) { try { EL_workshopRefreshUsage(); } catch (e) {} }
+        });
+        try { EL_modalOpen(ov); } catch (e) {}
+    } catch (e) {}
+}
+
+async function EL_workshopReapplyAll(typeId) {
+    const id = String(typeId);
+    let usage = null;
+    try { usage = await EL_workshopCountUsage(id); } catch (e) { usage = { total: 0, books: [] }; }
+    const affected = (usage.books || []).filter(b => b.count > 0);
+    if (!affected.length) { try { EL_toast('No entries use this type.', 'warning'); } catch (e) {} return true; }
+    let typeName = id;
+    try {
+        const t = (typeof EL_getEntryType === 'function') ? EL_getEntryType(id) : null;
+        if (t && t.name) typeName = String(t.name);
+    } catch (e) {}
+    // All-or-nothing preload: a book we cannot read blocks the whole run,
+    // exactly like the delete-convert flow.
+    const pending = [];
+    for (const b of affected) {
+        let data = null;
+        try { data = await ELG_loadFresh(b.book); } catch (e) { data = null; }
+        if (!data || !data.entries) {
+            try { EL_toast('Could not load "' + b.book + '" — re-apply blocked, nothing changed.', 'error'); } catch (e) {}
+            return false;
+        }
+        pending.push({ book: b.book, data: data });
+    }
+    let changed = 0, kept = 0;
+    for (const b of pending) {
+        const data = b.data;
+        try {
+            for (const uid of Object.keys(data.entries)) {
+                const e = data.entries[uid];
+                let tid = '';
+                try { tid = e && e.extensions && e.extensions.el && e.extensions.el.type; } catch (err) { tid = ''; }
+                if (String(tid || '') !== id) continue;
+                let w = null;
+                try { w = (typeof EL_batchTypeSetWrites === 'function') ? EL_batchTypeSetWrites(e, id) : null; } catch (err) { w = null; }
+                if (!w) { kept++; continue; }
+                const before = String((e && e.content) || '');
+                if (Object.prototype.hasOwnProperty.call(w, 'content') && typeof w.content === 'string') e.content = w.content;
+                if (Object.prototype.hasOwnProperty.call(w, 'key')) e.key = w.key;
+                if (Object.prototype.hasOwnProperty.call(w, 'keysecondary')) e.keysecondary = w.keysecondary;
+                if (Object.prototype.hasOwnProperty.call(w, 'extensions')) e.extensions = w.extensions;
+                if (String((e && e.content) || '') !== before) changed++;
+                else kept++;
+            }
+        } catch (e) {}
+        let ok = false;
+        try {
+            ok = await ELG_guardSave(b.book, data, { explicitDelete: false, source: 'user', note: 'Type "' + typeName + '" re-applied — ' + changed + ' changed, ' + kept + ' already current' });
+        } catch (e) { ok = false; }
+        if (!ok) {
+            try { EL_toast('Save to "' + b.book + '" failed — re-apply blocked, nothing deleted.', 'error'); } catch (e) {}
+            try {
+                if (typeof currentLorebookName !== 'undefined' && b.book === currentLorebookName) {
+                    const fresh = await ELG_loadFresh(b.book);
+                    if (fresh) EL_setLorebookData(fresh, { own: true });
+                    if (typeof renderEntries === 'function') renderEntries();
+                }
+            } catch (e) {}
+            return false;
+        }
+        try {
+            if (typeof currentLorebookName !== 'undefined' && b.book === currentLorebookName && typeof EL_setLorebookData === 'function') {
+                EL_setLorebookData(data, { own: true });
+                if (typeof renderEntries === 'function') renderEntries();
+            }
+        } catch (e) {}
+    }
+    try { EL_toast('Re-applied "' + typeName + '" — ' + changed + ' updated, ' + kept + ' already current.', 'success'); } catch (e) {}
     return true;
 }
 

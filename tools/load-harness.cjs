@@ -21,7 +21,7 @@ const ORDER = [
   '../lib/apply-core.js', '../lib/type-registry.js', '../lib/slot-parse.js', '../lib/dep-index.js', '../lib/type-compiler.js', '../lib/sections.js',
   'toast.js', 'modal.js', 'logger.js', 'agent-config-schema.js', 'context-builder.js',
   'hub-client.js', 'hub-tools.js', 'agent-chat.js', 'agent-manager.js', 'agent-backup.js',
-  'worldinfo-guard.js', 'folder-url.js', 'app.js', 'agent-ui.js', 'el.js',
+  'worldinfo-guard.js', 'folder-url.js', 'map.js', 'app.js', 'agent-ui.js', 'el.js',
 ];
 
 function makeElement(tag) {
@@ -168,6 +168,7 @@ const EXPECT = [
   'AgentChatManager', 'renderAgentChat', 'initAgentChatPanel',
   'ELG_guardSave', 'ELG_loadFresh', 'ELG_toast', 'ELG_listTrash', 'ELG_restoreSnapshot',
   'ELG_diff', 'EL_buildLineDiffHtml',
+  'EL_mapRender', 'EL_mapUpsertLocationLine', 'EL_mapKindOf', 'EL_mapPin', 'EL_mapUnpin',
   'ELFolderUrl', 'EL_getUrlForUid', 'EL_ensureFolderByPath',
   'openEditEntryModal', 'EL_setLorebookData',
   // NOTE: EL_terminalBadge is assigned lazily inside initTerminalPanel(), so it is
@@ -372,6 +373,60 @@ if (dupes.length === 0) {
   failed += dupes.length;
   console.log('  DUPLICATE TOP-LEVEL NAMES:');
   for (const [n, files] of dupes) console.log(`    ${n}  <-  ${[...new Set(files)].join(', ')}`);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MAP LINE-EDIT TESTS (B4)
+// EL_mapUpsertLocationLine is the only lorebook-content mutation the map ever
+// makes outside the typed compiler path. It must replace exactly the
+// Current_Location line and preserve every other byte (including EOL style
+// and closing limiters), or append the line when absent.
+// ─────────────────────────────────────────────────────────────────────────────
+const MAP_TEST = `
+(function () {
+    const out = [];
+    function eq(label, got, want) { out.push([label, got === want]); }
+    eq('replace keeps other lines',
+        EL_mapUpsertLocationLine('Name: Anna\\nCurrent_Location: Old\\nNote: x', 'New Place'),
+        'Name: Anna\\nCurrent_Location: New Place\\nNote: x');
+    eq('replace is case-insensitive on label, canonicalises it',
+        EL_mapUpsertLocationLine('current_location: Old', 'X'),
+        'Current_Location: X');
+    eq('append when absent',
+        EL_mapUpsertLocationLine('Name: Anna', 'Thornwall'),
+        'Name: Anna\\nCurrent_Location: Thornwall');
+    eq('append goes before closing limiter',
+        EL_mapUpsertLocationLine('**<char_name>**\\nName: Anna\\n**</char_name>**', 'Thornwall'),
+        '**<char_name>**\\nName: Anna\\nCurrent_Location: Thornwall\\n**</char_name>**');
+    eq('empty content yields just the line',
+        EL_mapUpsertLocationLine('', '"Unknown"'),
+        'Current_Location: "Unknown"');
+    eq('CRLF style preserved',
+        EL_mapUpsertLocationLine('Name: A\\r\\nCurrent_Location: O\\r\\nNote: x', 'N'),
+        'Name: A\\r\\nCurrent_Location: N\\r\\nNote: x');
+    eq('character heuristic', EL_mapKindOf({ content: 'Name: A\\nCurrent_Location: X' }), 'character');
+    eq('location heuristic', EL_mapKindOf({ content: 'Name: B\\nRegion: Blackmoor' }), 'location');
+    eq('other entry not pinnable', EL_mapKindOf({ content: 'Just prose.' }), null);
+    return out;
+})()
+`;
+
+console.log('\n===== MAP LINE-EDIT TESTS (B4) =====');
+try {
+  const mapResults = new vm.Script(MAP_TEST).runInContext(sandbox);
+  const bad = mapResults.filter(([, ok]) => !ok);
+  for (const [label, ok] of mapResults) {
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${label}`);
+  }
+  if (bad.length) {
+    failed += bad.length;
+    console.log(`  -> ${bad.length} map test(s) FAILED`);
+  } else {
+    console.log(`  all ${mapResults.length} map assertions passed`);
+  }
+} catch (e) {
+  failed++;
+  console.log('  FAIL  map tests threw: ' + e.message);
 }
 
 console.log('\n===== FINAL: ' + (failed === 0 ? 'PASS' : failed + ' FAILURE(S)') + ' =====');

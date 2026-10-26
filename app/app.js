@@ -366,6 +366,7 @@ async function init() {
     else if (initialTab === 'agent-config') switchToView('agent-config');
     else if (initialTab === 'agent-feed') switchToView('agent-feed');
     else if (initialTab === 'agent-chat') switchToView('agent-chat');
+    else if (initialTab === 'map') switchToView('map');
 }
 
 function saveSettings() {
@@ -2480,6 +2481,7 @@ function renderEntries() {
     } finally {
         _elRenderCtx = null;
     }
+    try { if (currentViewMode === 'map' && typeof EL_mapRender === 'function') EL_mapRender(); } catch (e) {}
 }
 
 /* eslint-disable-next-line no-unused-vars */
@@ -2806,6 +2808,7 @@ function createEntryCard(uid) {
             <div style="display:flex; align-items:center; gap:4px;"><i class="fa-solid fa-percent"></i> Prob: <input type="number" class="inline-edit inline-entry-prob" value="${entry.probability ?? 100}" style="width:50px;" min="0" max="100">%</div>
             <span style="display:flex; align-items:center;"><i class="fa-solid fa-filter"></i>&nbsp;Logic: ${logicName}</span>
             ${entry.delay ? `<span style="display:flex; align-items:center;"><i class="fa-solid fa-clock"></i>&nbsp;Delay: ${entry.delay}</span>` : ''}
+            ${((typeof EL_mapKindOf === 'function') && EL_mapKindOf(entry)) ? `<button class="el-map-pinbtn${((typeof EL_mapIsPinned === 'function') && currentLorebookName && EL_mapIsPinned(currentLorebookName, uid)) ? ' on' : ''}" title="Pin to map"><i class="fa-solid fa-thumbtack"></i></button>` : ''}
         </div>
     `;
 
@@ -2907,6 +2910,20 @@ function createEntryCard(uid) {
     });
 
     try { EL_setupEntryDrag(card, String(uid)); } catch (e) {}
+
+    try {
+        const pinBtn = card.querySelector('.el-map-pinbtn');
+        if (pinBtn && typeof EL_mapPin === 'function' && typeof EL_mapUnpin === 'function') {
+            pinBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (typeof EL_mapIsPinned === 'function' && currentLorebookName && EL_mapIsPinned(currentLorebookName, uid)) {
+                    EL_mapUnpin(String(uid));
+                } else {
+                    EL_mapPin(String(uid));
+                }
+            });
+        }
+    } catch (e) {}
 
     return card;
 }
@@ -7910,6 +7927,11 @@ function setupEventListeners() {
         navTypeWorkshop.addEventListener('click', function () { switchToView('type-workshop'); });
     }
 
+    const navMap = document.getElementById('nav-map');
+    if (navMap) {
+        navMap.addEventListener('click', function () { switchToView('map'); });
+    }
+
     // Recovery sub-tab routing
     document.querySelectorAll('.pill-btn[data-recovery-tab]').forEach(btn => {
         btn.addEventListener('click', () => {
@@ -7970,6 +7992,8 @@ function switchToView(view) {
     if (chatPanel) chatPanel.classList.add('hidden');
     const workshopPanel = document.getElementById('type-workshop-panel');
     if (workshopPanel) workshopPanel.classList.add('hidden');
+    const mapPanelHide = document.getElementById('map-panel');
+    if (mapPanelHide) mapPanelHide.classList.add('hidden');
 
     if (view === 'agent-dashboard') {
         const nav = document.getElementById('nav-agent-dashboard');
@@ -8018,6 +8042,15 @@ function switchToView(view) {
         els.currentTitle.textContent = 'Type Workshop';
         if (typeof EL_workshopRender === 'function') {
             EL_workshopRender();
+        }
+    } else if (view === 'map') {
+        const nav = document.getElementById('nav-map');
+        if (nav) nav.classList.add('active');
+        const mpPanel = document.getElementById('map-panel');
+        if (mpPanel) mpPanel.classList.remove('hidden');
+        els.currentTitle.textContent = 'Map' + (currentLorebookName ? ' — ' + currentLorebookName : '');
+        if (typeof EL_mapRender === 'function') {
+            EL_mapRender();
         }
     }
 }

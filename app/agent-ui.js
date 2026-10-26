@@ -2221,6 +2221,8 @@ function hideAgentPanels() {
     if (recoveryPanel) recoveryPanel.classList.add('hidden');
     const workshopPanel = document.getElementById('type-workshop-panel');
     if (workshopPanel) workshopPanel.classList.add('hidden');
+    const mapPanel = document.getElementById('map-panel');
+    if (mapPanel) mapPanel.classList.add('hidden');
 }
 
 async function saveAgentConfig() {

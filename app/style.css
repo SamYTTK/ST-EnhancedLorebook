@@ -3425,3 +3425,384 @@ body.el-theme-light textarea::placeholder {
     font-size: 0.75rem;
     font-family: monospace;
 }
+
+/* ============================================================
+ * EL-REVAMP B4: schematic per-book map
+ * Dotted-grid canvas, waypoint dots, info side panel.
+ * Theme vars only; waypoint accent rides --c (type accent).
+ * ============================================================ */
+#map-panel {
+    --el-map-dot: 13px;
+}
+
+.el-map-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+}
+
+.el-map-title {
+    font-weight: 700;
+    font-size: 0.95rem;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.el-map-count {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.el-map-scale {
+    font-family: monospace;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    background: rgba(0, 0, 0, 0.2);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    padding: 3px 10px;
+}
+
+.el-map-extras {
+    margin-bottom: 12px;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+
+.el-map-extras summary {
+    cursor: pointer;
+}
+
+.el-map-exlist {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.el-map-exitem {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.78rem;
+    border: 1px solid var(--panel-border);
+    border-radius: 16px;
+    padding: 3px 10px;
+    cursor: pointer;
+}
+
+.el-map-cols {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 280px;
+    gap: 0;
+    border: 1px solid var(--panel-border);
+    border-radius: 12px;
+    overflow: hidden;
+    min-height: 480px;
+}
+
+.el-map-canvaswrap {
+    overflow: auto;
+    min-width: 0;
+    background: rgba(0, 0, 0, 0.25);
+}
+
+.el-map-canvas {
+    position: relative;
+    min-height: 480px;
+    min-width: 480px;
+    overflow: hidden;
+    user-select: none;
+    background-image: radial-gradient(rgba(127, 140, 180, 0.28) 1px, transparent 1px);
+    background-size: 22px 22px;
+}
+
+.el-map-bg {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    opacity: 0.35;
+    pointer-events: none;
+}
+
+.el-map-bghint {
+    position: absolute;
+    top: 10px;
+    left: 12px;
+    font-size: 0.68rem;
+    color: var(--text-muted);
+    font-family: monospace;
+    pointer-events: none;
+}
+
+.el-map-wp {
+    position: absolute;
+    transform: translate(-50%, -50%);
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    cursor: grab;
+    z-index: 2;
+    touch-action: none;
+}
+
+.el-map-wp .dot {
+    width: var(--el-map-dot);
+    height: var(--el-map-dot);
+    border-radius: 50%;
+    background: var(--c);
+    border: 2px solid rgba(0, 0, 0, 0.7);
+    box-shadow: 0 0 0 1.5px var(--c);
+    flex: 0 0 auto;
+}
+
+.el-map-wp.char .dot {
+    border-radius: 4px;
+}
+
+.el-map-wp .nm {
+    font-size: 0.76rem;
+    font-weight: 600;
+    background: rgba(0, 0, 0, 0.45);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    padding: 2px 8px;
+    white-space: nowrap;
+    color: var(--text-color);
+}
+
+.el-map-wp.sel .nm {
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.35);
+}
+
+.el-map-wp.dim {
+    opacity: 0.55;
+    cursor: default;
+}
+
+.el-map-wp .cnt {
+    position: absolute;
+    top: -8px;
+    right: -8px;
+    min-width: 16px;
+    height: 16px;
+    border-radius: 9px;
+    background: var(--warning-color, #f59e0b);
+    color: #14161c;
+    font-size: 0.6rem;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 4px;
+}
+
+.el-map-booktag {
+    font-family: monospace;
+    font-size: 0.62rem;
+    color: var(--text-muted);
+    border: 1px solid var(--panel-border);
+    border-radius: 4px;
+    padding: 0 6px;
+    white-space: nowrap;
+}
+
+.el-map-side {
+    border-left: 1px solid var(--panel-border);
+    padding: 14px;
+    background: rgba(0, 0, 0, 0.15);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 0;
+    overflow-y: auto;
+    max-height: 560px;
+}
+
+.el-map-side h3 {
+    margin: 0;
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+}
+
+.el-map-info {
+    border: 1px solid var(--panel-border);
+    border-radius: 10px;
+    padding: 10px 12px;
+    background: rgba(0, 0, 0, 0.2);
+}
+
+.el-map-in-t {
+    font-weight: 700;
+    font-size: 0.84rem;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.el-map-in-t .ty {
+    font-family: monospace;
+    font-size: 0.62rem;
+    color: var(--c);
+    border: 1px solid var(--c);
+    border-radius: 4px;
+    padding: 0 6px;
+}
+
+.el-map-in-r {
+    font-size: 0.76rem;
+    color: var(--text-muted);
+    margin-top: 6px;
+}
+
+.el-map-in-r code {
+    font-family: monospace;
+    color: var(--success-color, #10b981);
+}
+
+.el-map-pins {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.el-map-pinrow {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.78rem;
+    padding: 6px 8px;
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    background: rgba(0, 0, 0, 0.2);
+    cursor: pointer;
+}
+
+.el-map-pinrow .dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    flex: 0 0 auto;
+}
+
+.el-map-pinrow small {
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.66rem;
+}
+
+.el-map-pinrow .ibtn {
+    margin-left: auto;
+    width: 26px;
+    height: 26px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 7px;
+    color: var(--text-muted);
+    background: transparent;
+    border: 0;
+    cursor: pointer;
+}
+
+.el-map-pinrow .ibtn:hover {
+    background: var(--hover-bg);
+    color: var(--text-color);
+}
+
+.el-map-pinrow.dim {
+    opacity: 0.55;
+    cursor: default;
+}
+
+.el-map-legend {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.el-map-fchip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.72rem;
+    padding: 3px 10px;
+    border-radius: 20px;
+    border: 1px solid var(--panel-border);
+    color: var(--text-muted);
+}
+
+.el-map-fchip i {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--c, var(--text-muted));
+    font-style: normal;
+}
+
+.el-map-muted {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+.el-map-picklist {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 320px;
+    overflow-y: auto;
+}
+
+.el-map-pickrow {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.82rem;
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    padding: 7px 10px;
+}
+
+.el-map-pickrow span {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.el-map-pinbtn {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 0.75rem;
+    padding: 2px 7px;
+}
+
+.el-map-pinbtn:hover {
+    background: var(--hover-bg);
+    color: var(--text-color);
+    border-color: var(--panel-border);
+}
+
+.el-map-pinbtn.on {
+    color: var(--primary-color);
+    border-color: var(--primary-color);
+}
+
+.el-map-kid {
+    margin: 2px 4px 2px 0;
+}

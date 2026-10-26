@@ -18,7 +18,7 @@ const APP = path.join(__dirname, '..', 'app');
 // The shared core (lib/apply-core.js) is loaded first: it is the file the
 // HOST window loads too, so a load-time failure there breaks both windows.
 const ORDER = [
-  '../lib/apply-core.js',
+  '../lib/apply-core.js', '../lib/type-registry.js', '../lib/slot-parse.js',
   'toast.js', 'modal.js', 'logger.js', 'agent-config-schema.js', 'context-builder.js',
   'hub-client.js', 'hub-tools.js', 'agent-chat.js', 'agent-manager.js', 'agent-backup.js',
   'worldinfo-guard.js', 'folder-url.js', 'app.js', 'agent-ui.js', 'el.js',

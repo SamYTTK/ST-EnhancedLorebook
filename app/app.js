@@ -3106,7 +3106,7 @@ function createEntryCard(uid) {
                 ][val];
                 if (opt) {
                     entry.position = opt.pos;
-                    entry.role = opt.role !== null ? opt.role : (entry.role ?? null);
+                    entry.role = opt.role;
                 }
             }
             if (e.target.classList.contains('inline-entry-prob')) entry.probability = val;
@@ -11225,18 +11225,11 @@ function EL_b6SettingsPaintRules() {
     try {
         const host = document.getElementById('el-set-rules');
         if (!host) return;
-        let names = [];
-        try {
-            if (typeof EL_rulesStore === 'function') {
-                const store = EL_rulesStore() || {};
-                names = Object.keys(store);
-            } else if (extensionSettings && extensionSettings.rules && typeof extensionSettings.rules === 'object') {
-                names = Object.keys(extensionSettings.rules);
-            }
-        } catch (e) {}
-        host.innerHTML = names.length
-            ? names.map(n => `<div class="el-b6-frow"><div><span class="el-b6-fl-t">${escapeHtml(n)}</span></div><div class="el-b6-fc"><button class="btn btn-secondary btn-sm" data-elset-rules="1">Configure</button></div></div>`).join('')
-            : '<p class="el-b6-note">No rule systems yet. Each entry holds its own condition → value rows.</p>';
+        let systems = [];
+        try { if (typeof EL_rulesSystems === 'function') systems = EL_rulesSystems() || []; } catch (e) { systems = []; }
+        host.innerHTML = systems.length
+            ? systems.map(s => `<div class="el-b6-frow"><div><span class="el-b6-fl-t">${escapeHtml(String(s.name || s.id))}</span><span class="el-b6-fl-h">writes ${escapeHtml(String(s.target || 'Current_Location'))} · ${escapeHtml(String(s.check || 'manual'))}</span></div><div class="el-b6-fc"><button class="btn btn-secondary btn-sm" data-elset-rules="1">Configure</button></div></div>`).join('')
+            : '<p class="el-b6-note">No rule systems yet — open Rules and press ＋ to create one.</p>';
     } catch (e) {}
 }
 

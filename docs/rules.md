@@ -24,7 +24,7 @@ Two things work together:
 - A **system** is a reusable bundle. It has a name, the field it writes to by default (usually `Current_Location`), and when it should check. Systems are shared across your lorebooks — they live in your extension settings, not inside the lorebook file.
 - **Rows** live on an individual entry. Each entry in a system has its own list of rows: a condition, then the value to write.
 
-So one **Schedule system** can serve Anna, Aldric, and the shop, while each of them has completely different rows:
+So one system (say, named **Schedule**) can serve Anna, Aldric, and the shop, while each of them has completely different rows. Nothing is created for you — press **＋** next to the system picker to make one:
 
 | Entry | Its rows (short version) |
 | --- | --- |
@@ -159,7 +159,7 @@ Worth knowing up front, so you don't fight the tool:
 
 ### (a) Anna's day
 
-System: **Schedule system**, writes to `Current_Location`, checks on every message. Anna is switched on under **Applies to**.
+System: one you created (e.g. **Schedule**), writes to `Current_Location`, checks on every message. Anna is switched on under **Applies to**.
 
 | Kind | Condition | → Value |
 | --- | --- | --- |
@@ -177,7 +177,7 @@ Add the summer row only if your story tracks seasons — without a `Season:` lin
 
 ### (b) Is the shop open?
 
-Thornwall's entry gets a `Market` line. System: the same Schedule system, or its own with **Write to field** set to `Market`.
+Thornwall's entry gets a `Market` line. System: the same Schedule system, or its own with **Writes to field** set to `Market`.
 
 | Kind | Condition | → Value |
 | --- | --- | --- |

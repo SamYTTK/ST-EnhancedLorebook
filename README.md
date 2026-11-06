@@ -29,9 +29,9 @@ The sidebar shows you, in one place:
 
 Click any lorebook to see its entries. You can search inside by keys, content,
 comments, or entry type, narrow the search to just one of those fields with the
-dropdown next to the search box, and sort them however you like. Matching words are
-highlighted on the entry cards, and a small count tells you how many entries
-match.
+dropdown next to the search box, and sort them however you like. Matching words
+in keys, comments and content are highlighted on the entry cards, and a small
+count tells you how many entries match.
 
 ## Managing your lorebooks
 

@@ -28,8 +28,8 @@ The sidebar shows you, in one place:
 - Every lorebook you have, with a search box to find one fast.
 
 Click any lorebook to see its entries. You can search inside by keys, content,
-or comments, narrow the search to just one of those fields with the dropdown
-next to the search box, and sort them however you like. Matching words are
+comments, or entry type, narrow the search to just one of those fields with the
+dropdown next to the search box, and sort them however you like. Matching words are
 highlighted on the entry cards, and a small count tells you how many entries
 match.
 

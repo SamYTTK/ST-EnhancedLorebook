@@ -2216,7 +2216,7 @@ async function EL_importLorebookFile(file) {
 
 /**
  * Current entry-search field scope, read from the toolbar control.
- * @returns {string} 'all', 'keys', 'content' or 'comments'.
+ * @returns {string} 'all', 'keys', 'content', 'comments' or 'type'.
  */
 function EL_getSearchScope() {
     try {
@@ -2225,6 +2225,7 @@ function EL_getSearchScope() {
         if (v === 'keys' || v === 'key') return 'keys';
         if (v === 'content') return 'content';
         if (v === 'comments' || v === 'comment') return 'comments';
+        if (v === 'type') return 'type';
         return 'all';
     } catch (e) {
         return 'all';
@@ -2545,18 +2546,34 @@ function getMatchScore(item, query) {
         const inKeys = (scope === 'all' || scope === 'keys');
         const inComments = (scope === 'all' || scope === 'comments');
         const inContent = (scope === 'all' || scope === 'content');
+        const inType = (scope === 'all' || scope === 'type');
+        let typeName = '';
+        let typeId = '';
+        if (inType) {
+            try {
+                typeId = String(EL_oldTypeId(entry) || '').toLowerCase();
+                typeName = String(EL_entryTypeLabel(typeId) || '').toLowerCase();
+            } catch (e) { typeName = ''; typeId = ''; }
+        }
+        const typeText = (typeName + ' ' + typeId).trim();
         const comment = (entry.comment || '').toLowerCase();
         const keys = (Array.isArray(entry.key) ? entry.key : []).map(k => String(k).toLowerCase());
         const keysSecondary = (Array.isArray(entry.keysecondary) ? entry.keysecondary : []).map(k => String(k).toLowerCase());
 
-        if ((inComments && comment === term) || (inKeys && (keys.includes(term) || keysSecondary.includes(term)))) return 10000;
+        if ((inComments && comment === term) || (inKeys && (keys.includes(term) || keysSecondary.includes(term)))
+            || (inType && typeText && (typeName === term || typeId === term))) return 10000;
 
         const startsKeys = inKeys && (keys.some(k => startsWithRegex.test(k)) || keysSecondary.some(k => startsWithRegex.test(k)));
-        if ((inComments && startsWithRegex.test(comment)) || startsKeys) return 5000;
+        if ((inComments && startsWithRegex.test(comment)) || startsKeys
+            || (inType && typeText && startsWithRegex.test(typeText))) return 5000;
         const containsKeys = inKeys && (keys.some(k => containsRegex.test(k)) || keysSecondary.some(k => containsRegex.test(k)));
-        if ((inComments && containsRegex.test(comment)) || containsKeys) return 2000;
+        if ((inComments && containsRegex.test(comment)) || containsKeys
+            || (inType && typeText && containsRegex.test(typeText))) return 2000;
         const includesKeys = inKeys && (keys.some(k => k.includes(term)) || keysSecondary.some(k => k.includes(term)));
-        if ((inComments && comment.includes(term)) || includesKeys) return 1000;
+        if ((inComments && comment.includes(term)) || includesKeys
+            || (inType && typeText && typeText.indexOf(term) !== -1)) return 1000;
+
+        if (scope === 'type') return 0;
 
         if (!inContent) return 0;
         const content = (entry.content || '').toLowerCase();

@@ -882,5 +882,93 @@ try {
   console.log('  FAIL  rules-store tests threw: ' + e.message);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ENTRY SEARCH TYPE SCOPE TESTS
+// The search box gained a Type scope. In that scope the score must come from
+// the entry's type name/id only — keys, comment and content must never be read
+// (the "character" in a plain entry's body is content, not a type). The 'all'
+// scope includes the type name/id alongside everything else.
+// ─────────────────────────────────────────────────────────────────────────────
+const SEARCH_SCOPE_TEST = `
+(function () {
+    const out = [];
+    function eq(label, got, want) { out.push([label, got === want]); }
+    function ok(label, cond) { out.push([label, !!cond]); }
+
+    const origGetById = document.getElementById;
+    const savedData = currentLorebookData;
+    try {
+        // ── EL_getSearchScope mapping ───────────────────────────────────────
+        function scopeFor(value) {
+            document.getElementById = function (id) {
+                return (id === 'search-scope') ? { value: value } : null;
+            };
+            return EL_getSearchScope();
+        }
+        eq("scope 'type' maps to type", scopeFor('type'), 'type');
+        eq("scope 'keys' maps to keys", scopeFor('keys'), 'keys');
+        eq("scope 'content' maps to content", scopeFor('content'), 'content');
+        eq("scope 'comments' maps to comments", scopeFor('comments'), 'comments');
+        eq("scope 'key' alias maps to keys", scopeFor('key'), 'keys');
+        eq('unknown scope falls back to all', scopeFor('bogus'), 'all');
+        eq('empty scope falls back to all', scopeFor(''), 'all');
+        document.getElementById = function () { return null; };
+        eq('missing scope element falls back to all', EL_getSearchScope(), 'all');
+
+        // ── scoring per scope ──────────────────────────────────────────────
+        currentLorebookData = { entries: {
+            '1': { key: ['Anna'], comment: 'Anna', content: 'nothing', extensions: { el: { type: 'character' } } },
+            '2': { key: ['Tavern'], content: 'character' },
+        } };
+        var scope = 'type';
+        document.getElementById = function (id) {
+            return (id === 'search-scope') ? { value: scope } : null;
+        };
+        function score(uid, q) { return getMatchScore({ type: 'entry', uid: uid }, q); }
+
+        ok('type scope matches entry 1 by type name', score('1', 'character') > 0);
+        eq('type scope ignores content-only "character" (entry 2)', score('2', 'character') > 0, false);
+        eq('type scope matches neither for nonsense', score('1', 'nonsense') + score('2', 'nonsense'), 0);
+        eq('type scope scores a type-name exact match highest', score('1', 'character'), 10000);
+
+        scope = 'all';
+        ok('all scope matches entry 1 by type', score('1', 'character') > 0);
+        ok('all scope matches entry 2 by content', score('2', 'character') > 0);
+        eq('all scope still matches the type name exactly', score('1', 'character'), 10000);
+
+        scope = 'keys';
+        eq('keys scope ignores the type name (entry 1)', score('1', 'character'), 0);
+        eq('keys scope ignores content (entry 2)', score('2', 'character'), 0);
+
+        // Type-name prefix/word-boundary/contains tiers stay ordered.
+        currentLorebookData.entries['3'] = { key: ['x'], content: '', extensions: { el: { type: 'character' } } };
+        scope = 'type';
+        eq('type scope exact still 10000 with several typed entries', score('3', 'character'), 10000);
+    } finally {
+        currentLorebookData = savedData;
+        document.getElementById = origGetById;
+    }
+    return out;
+})()
+`;
+
+console.log('\n===== ENTRY SEARCH TYPE SCOPE TESTS =====');
+try {
+  const searchResults = new vm.Script(SEARCH_SCOPE_TEST).runInContext(sandbox);
+  const bad = searchResults.filter(([, ok]) => !ok);
+  for (const [label, ok] of searchResults) {
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${label}`);
+  }
+  if (bad.length) {
+    failed += bad.length;
+    console.log(`  -> ${bad.length} search-scope test(s) FAILED`);
+  } else {
+    console.log(`  all ${searchResults.length} search-scope assertions passed`);
+  }
+} catch (e) {
+  failed++;
+  console.log('  FAIL  search-scope tests threw: ' + e.message);
+}
+
 console.log('\n===== FINAL: ' + (failed === 0 ? 'PASS' : failed + ' FAILURE(S)') + ' =====');
 process.exit(failed === 0 ? 0 : 1);

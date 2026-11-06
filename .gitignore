@@ -11,3 +11,11 @@ node_modules/
 # agent chats). These can contain user chat content and must never be
 # committed. Written to <plugin>/../../data/enhanced-lorebook-agent/.
 data/
+extension.log*
+*.corrupt-*
+
+# Local config / manual exports (agents contain personal tasks,
+# character/chat bindings, profile names)
+*.local.json
+*-export.json
+*agent*export*.json

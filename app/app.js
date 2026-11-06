@@ -2802,6 +2802,7 @@ function createFolderElement(folder, filteredUids, isRoot = false) {
             <button title="Move Folder" class="btn-move-folder"><i class="fa-solid fa-arrow-right-arrow-left"></i></button>
             <button title="Add Sub-item" class="btn-add-sub-item"><i class="fa-solid fa-circle-plus"></i></button>
             <button title="Select All Entries" class="btn-select-folder-entries"><i class="fa-solid fa-check-double"></i></button>
+            <button title="Select All Entries (Recursive — includes Subfolders)" class="btn-select-folder-entries-recursive"><i class="fa-solid fa-folder-tree"></i></button>
             <button title="Deselect All Entries" class="btn-deselect-folder-entries"><i class="fa-solid fa-xmark"></i></button>
             <button title="Rename" class="btn-rename-folder"><i class="fa-solid fa-pencil"></i></button>
             <button title="Delete Folder" class="btn-delete-folder"><i class="fa-solid fa-trash"></i></button>
@@ -2825,6 +2826,27 @@ function createFolderElement(folder, filteredUids, isRoot = false) {
                 });
                 updateBatchButton();
             }
+        });
+        actions.querySelector('.btn-select-folder-entries-recursive').addEventListener('click', (e) => {
+            e.stopPropagation();
+            const folders = extensionSettings.folders[currentLorebookName] || [];
+            function collectFolderUids(folderId) {
+                const target = folders.find(f => f.id === folderId);
+                if (!target) return [];
+                let uids = [...target.entries];
+                folders.forEach(f => {
+                    if (f.parentId === folderId) {
+                        uids = uids.concat(collectFolderUids(f.id));
+                    }
+                });
+                return uids;
+            }
+            const uidsToSelect = collectFolderUids(folder.id);
+            uidsToSelect.forEach(uid => selectedEntries.add(String(uid)));
+            document.querySelectorAll('.entry-card').forEach(c => {
+                if (selectedEntries.has(c.dataset.uid)) c.classList.add('selected');
+            });
+            updateBatchButton();
         });
         actions.querySelector('.btn-deselect-folder-entries').addEventListener('click', (e) => {
             e.stopPropagation();
@@ -4558,7 +4580,7 @@ function EL_getEntryType(id) {
  */
 function EL_entryTypeLabel(id) {
     const key = (id === undefined || id === null) ? '' : String(id);
-    if (!key) return 'None';
+    if (!key || key === 'none') return 'None';
     try {
         const t = EL_getEntryType(key);
         if (t) return String(t.name || key);
@@ -4636,13 +4658,22 @@ function EL_applyCreateType(entry, typeId) {
 /**
  * Batch set(type) writes for one entry via ELCompile (reorder per type).
  * Null when the type id is unknown (entry skipped, never throws).
+ * 'none'/empty detaches to plain (same as reset) so "Set to None" clears
+ * the type instead of silently skipping.
  * @param {object} entry
  * @param {string} typeId
  * @returns {object|null}
  */
 function EL_batchTypeSetWrites(entry, typeId) {
     try {
-        const type = EL_getEntryType(typeId);
+        const key = (typeId === undefined || typeId === null) ? '' : String(typeId);
+        if (!key || key === 'none') {
+            try {
+                if (typeof EL_batchTypeResetWrites === 'function') return EL_batchTypeResetWrites(entry);
+            } catch (e) { return null; }
+            return null;
+        }
+        const type = EL_getEntryType(key);
         const CC = (typeof ELCompile !== 'undefined') ? ELCompile : (typeof window !== 'undefined' ? window.ELCompile : null);
         if (!type || !CC || typeof CC.applyType !== 'function') return null;
         const r = CC.applyType(entry || {}, type, {});
@@ -4707,18 +4738,25 @@ function EL_batchDiffTypeOp(plan, op, entry, uid, changes, statMap) {
         let w = null;
         let newLabel = 'None';
         if (op.mode === 'set') {
-            const t = EL_getEntryType(op.typeId);
-            if (!t) {
-                plan.typeSkips.push({ uid: String(uid), label: EL_batchEntryLabel(uid, entry), typeId: String(op.typeId || '') });
-                return;
+            const setKey = (op.typeId === undefined || op.typeId === null) ? '' : String(op.typeId);
+            if (!setKey || setKey === 'none') {
+                newLabel = 'None';
+                w = EL_batchTypeResetWrites(entry) || {};
+            } else {
+                const t = EL_getEntryType(setKey);
+                if (!t) {
+                    plan.typeSkips.push({ uid: String(uid), label: EL_batchEntryLabel(uid, entry), typeId: String(op.typeId || '') });
+                    return;
+                }
+                newLabel = EL_entryTypeLabel(setKey);
+                w = EL_batchTypeSetWrites(entry, setKey) || {};
             }
-            newLabel = EL_entryTypeLabel(op.typeId);
-            w = EL_batchTypeSetWrites(entry, op.typeId) || {};
         } else {
             w = EL_batchTypeResetWrites(entry) || {};
         }
         let touched = false;
-        const newId = (op.mode === 'set') ? String(op.typeId || '') : '';
+        const _setKeyForId = (op.mode === 'set' && op.typeId !== undefined && op.typeId !== null) ? String(op.typeId) : '';
+        const newId = (op.mode === 'set') ? ((_setKeyForId === 'none' || !_setKeyForId) ? '' : _setKeyForId) : '';
         if (oldId !== newId) {
             changes.push({ field: 'extensions', label: op.label, from: oldLabel, to: newLabel });
             touched = true;
@@ -6715,7 +6753,8 @@ async function saveEditedEntry() {
 
     /* EL-REVAMP B1: typed save. Form values are compiled through the type
        (content/keys/el refs), then the EXISTING guard save below persists the
-       book unchanged. Untyped entries skip this block entirely. */
+       book unchanged. Switching back to None detaches to plain and clears
+       extensions.el so the entry stays untyped (reopen keeps showing None). */
     try {
         if (ELFormIsTyped() && String(document.getElementById('edit-entry-uid').value) === String(uid)) {
             const b1type = ELFormGetType();
@@ -6731,6 +6770,26 @@ async function saveEditedEntry() {
                     if (r.entry.extensions) entry.extensions = r.entry.extensions;
                 }
             }
+        } else if (String(document.getElementById('edit-entry-uid').value) === String(uid)) {
+            try {
+                const oldTid = (typeof EL_oldTypeId === 'function')
+                    ? EL_oldTypeId(entry)
+                    : ((entry && entry.extensions && entry.extensions.el && entry.extensions.el.type) || '');
+                if (oldTid) {
+                    let w = null;
+                    try { w = (typeof EL_batchTypeResetWrites === 'function') ? EL_batchTypeResetWrites(entry) : null; } catch (e2) { w = null; }
+                    if (w) {
+                        if (Object.prototype.hasOwnProperty.call(w, 'content') && typeof w.content === 'string') entry.content = w.content;
+                        if (Object.prototype.hasOwnProperty.call(w, 'extensions')) entry.extensions = w.extensions;
+                        else if (entry.extensions && typeof entry.extensions === 'object') {
+                            try { delete entry.extensions.el; } catch (e2) {}
+                        }
+                    } else if (entry.extensions && typeof entry.extensions === 'object') {
+                        try { delete entry.extensions.el; } catch (e2) {}
+                    }
+                    try { document.getElementById('edit-content').value = entry.content; } catch (e2) {}
+                }
+            } catch (e2) { /* detach is best-effort; classic field values still save */ }
         }
     } catch (e) { EL_warn('typed save compile failed — kept classic field values', e); }
 

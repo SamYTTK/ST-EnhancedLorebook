@@ -36,14 +36,8 @@ function EL_rulesStoreApp() {
     try {
         if (typeof extensionSettings !== 'object' || !extensionSettings) return null;
         if (!Array.isArray(extensionSettings.systems)) extensionSettings.systems = [];
-        var hasSystem = extensionSettings.systems.some(function (s) {
-            return s && typeof s === 'object' && typeof s.id === 'string' && s.id;
-        });
+        // No seeded systems: the rule language is the user's to define.
         var seeded = false;
-        if (!hasSystem) {
-            extensionSettings.systems.unshift({ id: 'schedule', name: 'Schedule system', check: 'message', n: 2, target: 'Current_Location' });
-            seeded = true;
-        }
         if (!extensionSettings.rules || typeof extensionSettings.rules !== 'object' || Array.isArray(extensionSettings.rules)) {
             extensionSettings.rules = {};
             seeded = true;
@@ -479,6 +473,7 @@ function EL_rulesRender() {
         }
         html += '</select>';
         html += '<select id="el-rules-syspick" title="System">';
+        if (!systems.length) html += '<option value="">No systems yet — press ＋</option>';
         for (var s = 0; s < systems.length; s++) {
             html += '<option value="' + EL_rulesEsc(String(systems[s].id)) + '"' + (sys && String(systems[s].id) === String(sys.id) ? ' selected' : '') + '>' + EL_rulesEsc(String(systems[s].name || systems[s].id)) + '</option>';
         }

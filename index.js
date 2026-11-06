@@ -334,11 +334,7 @@ function elRulesStore() {
     if (!ext) return null;
     let seeded = false;
     if (!Array.isArray(ext.systems)) { ext.systems = []; seeded = true; }
-    const hasSystem = ext.systems.some((s) => s && typeof s === 'object' && typeof s.id === 'string' && s.id);
-    if (!hasSystem) {
-        ext.systems.unshift({ id: 'schedule', name: 'Schedule system', check: 'message', n: 2, target: 'Current_Location' });
-        seeded = true;
-    }
+    // No seeded systems: rules are authored by the user, not shipped defaults.
     if (!ext.rules || typeof ext.rules !== 'object' || Array.isArray(ext.rules)) { ext.rules = {}; seeded = true; }
     if (!ext.rulePending || typeof ext.rulePending !== 'object' || Array.isArray(ext.rulePending)) { ext.rulePending = {}; seeded = true; }
     if (seeded) {

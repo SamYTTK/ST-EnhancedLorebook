@@ -774,5 +774,113 @@ try {
   console.log('  FAIL  type-tag helper tests threw: ' + e.message);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// RULES STORE TESTS (no seeded system)
+// The rule language is user-authored: opening the panel must not invent a
+// "Schedule system". Only the containers (systems/rules/rulePending) are
+// initialised; an existing system is never overwritten or duplicated, and a
+// user-created system takes its default target from the UI handler.
+// ─────────────────────────────────────────────────────────────────────────────
+const RULES_STORE_TEST = `
+(function () {
+    const out = [];
+    function eq(label, got, want) { out.push([label, got === want]); }
+    function ok(label, cond) { out.push([label, !!cond]); }
+
+    const savedSystems = extensionSettings.systems;
+    const savedRules = extensionSettings.rules;
+    const savedPending = extensionSettings.rulePending;
+    try {
+        // 1. Empty store: no seeded system, containers initialised.
+        extensionSettings.systems = [];
+        delete extensionSettings.rules;
+        delete extensionSettings.rulePending;
+        const store = EL_rulesStoreApp();
+        ok('rulesStoreApp returns the settings object', !!store);
+        eq('empty systems array stays empty (no seed)', extensionSettings.systems.length, 0);
+        eq('rules initialised to {}', JSON.stringify(extensionSettings.rules), '{}');
+        eq('rulePending initialised to {}', JSON.stringify(extensionSettings.rulePending), '{}');
+        EL_rulesStoreApp();
+        eq('second open still seeds nothing', extensionSettings.systems.length, 0);
+
+        // 2. Existing user system is left exactly as it was.
+        const user = { id: 'user-sys', name: 'My system', check: 'manual', n: 2, target: 'Mood' };
+        extensionSettings.systems = [user];
+        const userSnapshot = JSON.stringify(extensionSettings.systems);
+        EL_rulesStoreApp();
+        eq('existing system count unchanged', extensionSettings.systems.length, 1);
+        eq('existing system object untouched', JSON.stringify(extensionSettings.systems), userSnapshot);
+        eq('existing system keeps its id', extensionSettings.systems[0].id, 'user-sys');
+        EL_rulesStoreApp();
+        eq('repeated open does not duplicate', extensionSettings.systems.length, 1);
+
+        // 3. EL_rulesSystems returns only what the store holds.
+        eq('systems lists the stored user system', EL_rulesSystems().map(function (s) { return s.id; }).join(','), 'user-sys');
+        extensionSettings.systems.push({ id: 'second', name: 'Second' });
+        eq('systems lists every stored system', EL_rulesSystems().length, 2);
+        extensionSettings.systems.push({ name: 'no id' }, null, 'not-an-object');
+        eq('systems ignores malformed records', EL_rulesSystems().length, 2);
+        extensionSettings.systems = [];
+        eq('systems is empty when the store is empty', EL_rulesSystems().length, 0);
+
+        // 4. The real UI add handler (#el-rules-sysadd) creates one user system.
+        extensionSettings.systems = [user];
+        const handlers = {};
+        const panel = {
+            innerHTML: '',
+            querySelector: function (sel) {
+                if (sel === '#el-rules-sysadd') {
+                    return { addEventListener: function (type, fn) { if (type === 'click') handlers.add = fn; } };
+                }
+                return null;
+            },
+            querySelectorAll: function () { return []; },
+        };
+        const origGetById = document.getElementById;
+        try {
+            document.getElementById = function (id) { return (id === 'rules-panel') ? panel : null; };
+            EL_rulesWire(null, null);
+            ok('add-system click handler wired', typeof handlers.add === 'function');
+            handlers.add();
+        } finally {
+            document.getElementById = origGetById;
+        }
+        eq('add handler appends exactly one system', extensionSettings.systems.length, 2);
+        const added = extensionSettings.systems[1];
+        eq('new system default target is Current_Location', added && added.target, 'Current_Location');
+        ok('new system id uses the system- prefix', !!added && typeof added.id === 'string' && added.id.indexOf('system-') === 0);
+        eq('new system default check is manual', added && added.check, 'manual');
+        eq('new system is named for its position', added && added.name, 'System 2');
+        eq('pre-existing system untouched by add', JSON.stringify(extensionSettings.systems[0]), JSON.stringify(user));
+
+        // Rule language unchanged: one plain "Label: value" line per write.
+        eq('rule write is a single plain line', ELRules.computeFieldContent({ content: 'Name: A' }, 'Mood', 'Calm'), 'Name: A\\nMood: Calm');
+    } finally {
+        extensionSettings.systems = savedSystems;
+        extensionSettings.rules = savedRules;
+        extensionSettings.rulePending = savedPending;
+    }
+    return out;
+})()
+`;
+
+console.log('\n===== RULES STORE TESTS (no seeded system) =====');
+try {
+  const rulesStoreResults = new vm.Script(RULES_STORE_TEST).runInContext(sandbox);
+  const bad = rulesStoreResults.filter(([, ok]) => !ok);
+  for (const [label, ok] of rulesStoreResults) {
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${label}`);
+  }
+  if (bad.length) {
+    failed += bad.length;
+    console.log(`  -> ${bad.length} rules-store test(s) FAILED`);
+  } else {
+    console.log(`  all ${rulesStoreResults.length} rules-store assertions passed`);
+  }
+} catch (e) {
+  failed++;
+  console.log('  FAIL  rules-store tests threw: ' + e.message);
+}
+
 console.log('\n===== FINAL: ' + (failed === 0 ? 'PASS' : failed + ' FAILURE(S)') + ' =====');
 process.exit(failed === 0 ? 0 : 1);

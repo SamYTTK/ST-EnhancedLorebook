@@ -209,15 +209,6 @@ function EL_rulesBuildCtxApp(entry, uid) {
     };
 }
 
-function EL_rulesTypeForApp(entry) {
-    try {
-        var tid = entry && entry.extensions && entry.extensions.el && entry.extensions.el.type;
-        if (!tid || typeof tid !== 'string') return null;
-        if (typeof EL_getEntryType === 'function') return EL_getEntryType(tid);
-    } catch (e) {}
-    return null;
-}
-
 function EL_rulesQueueApp(key, writes) {
     try {
         var store = EL_rulesStoreApp();
@@ -281,7 +272,7 @@ async function EL_rulesApplyKeyApp(key, opts) {
         for (var i = 0; i < wb.length; i++) {
             var w = wb[i];
             var out = null;
-            try { out = ELR.computeFieldContent({ content: next }, EL_rulesTypeForApp(entry), w.target, w.value); } catch (e) { out = null; }
+            try { out = ELR.computeFieldContent({ content: next }, w.target, w.value); } catch (e) { out = null; }
             if (out === null || typeof out !== 'string') {
                 EL_rulesQueueApp(key, wb);
                 if (!quiet) EL_rulesLogPush(String(uid).slice(0, 8) + ' blocked (edit held) — queued');

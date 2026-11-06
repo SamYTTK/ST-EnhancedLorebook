@@ -3560,6 +3560,14 @@ function openAddItemModal(parentFolderId = null) {
     document.getElementById('quick-entry-exclude').checked = false;
     document.getElementById('quick-entry-prevent').checked = false;
     try { EL_fillTypeSelect(document.getElementById('quick-entry-type'), 'none'); } catch (e) {}
+    try { EL_fillPresetSelect(document.getElementById('quick-entry-preset'), 'none', 'none'); } catch (e) {}
+    try {
+        const qt = document.getElementById('quick-entry-type');
+        if (qt && !qt.dataset.elQuickTypeBound) {
+            qt.dataset.elQuickTypeBound = '1';
+            qt.addEventListener('change', () => EL_quickApplyTypeDefaults(EL_selectVal('quick-entry-type', 'none')));
+        }
+    } catch (e) {}
 
     document.getElementById('quick-folder-names').value = '';
     document.getElementById('quick-folder-order').value = '100';
@@ -3621,7 +3629,6 @@ function openAddItemModal(parentFolderId = null) {
     });
     document.getElementById('adv-settings-general').style.display = 'flex';
     document.getElementById('adv-settings-individual').style.display = 'none';
-    try { EL_fillTypeSelect(document.getElementById('g-type'), EL_selectVal('g-type', 'none')); } catch (e) {}
 
     // Remove peek mode
     document.getElementById('add-item-modal').classList.remove('peek-mode');
@@ -3643,6 +3650,8 @@ function addNewExcelRow() {
         key: '',
         keysecondary: '',
         content: '',
+        typeId: 'none',
+        presetId: 'none',
         settings: {
             order: 100,
             position: 0,
@@ -3675,9 +3684,37 @@ function renderExcelRow(row) {
         <td style="padding: 4px;"><input type="text" class="excel-comment" value="${escapeHtml(row.comment)}" placeholder="Comment/Title" style="width: 100%; box-sizing: border-box; background: rgba(0,0,0,0.3); border: 1px solid var(--panel-border); color: var(--text-color); padding: 6px; border-radius: 4px; font-size: 0.85rem; outline: none;"></td>
         <td style="padding: 4px;"><input type="text" class="excel-keys" value="${escapeHtml(row.key)}" placeholder="e.g. hero, protagonist" style="width: 100%; box-sizing: border-box; background: rgba(0,0,0,0.3); border: 1px solid var(--panel-border); color: var(--text-color); padding: 6px; border-radius: 4px; font-size: 0.85rem; outline: none;"></td>
         <td style="padding: 4px;"><input type="text" class="excel-seckeys" value="${escapeHtml(row.keysecondary)}" placeholder="e.g. secondary keys" style="width: 100%; box-sizing: border-box; background: rgba(0,0,0,0.3); border: 1px solid var(--panel-border); color: var(--text-color); padding: 6px; border-radius: 4px; font-size: 0.85rem; outline: none;"></td>
+        <td style="padding: 4px;"><select class="excel-type" title="Type tag" style="width: 100%; box-sizing: border-box; background: rgba(0,0,0,0.3); border: 1px solid var(--panel-border); color: var(--text-color); padding: 6px; border-radius: 4px; font-size: 0.85rem; outline: none;"></select></td>
+        <td style="padding: 4px;"><select class="excel-preset" title="Preset — fills content when chosen" style="width: 100%; box-sizing: border-box; background: rgba(0,0,0,0.3); border: 1px solid var(--panel-border); color: var(--text-color); padding: 6px; border-radius: 4px; font-size: 0.85rem; outline: none;"></select></td>
         <td style="padding: 4px;"><textarea class="excel-cell-content" placeholder="Content..." style="width: 100%; background: rgba(0,0,0,0.3); border: 1px solid var(--panel-border); color: var(--text-color); padding: 6px; border-radius: 4px; font-size: 0.85rem; outline: none; height: 28px; resize: none; overflow-y: auto; white-space: pre-wrap; line-height: 1.2; font-family: inherit;"></textarea></td>
         <td style="padding: 4px; text-align: center;"><button class="btn-delete-row" title="Delete Row" style="background:transparent; border:none; color:var(--danger-color); cursor:pointer;"><i class="fa-solid fa-trash-can"></i></button></td>
     `;
+
+    // Type + preset are per row; a preset writes its literal text into the
+    // row's content cell (the user can edit it afterwards).
+    const typeSel = tr.querySelector('.excel-type');
+    const presetSel = tr.querySelector('.excel-preset');
+    const contentEl = tr.querySelector('.excel-cell-content');
+    contentEl.value = row.content || '';
+    try { EL_fillTypeSelect(typeSel, row.typeId || 'none'); } catch (e) {}
+    try { EL_fillPresetSelect(presetSel, row.typeId || 'none', row.presetId || 'none'); } catch (e) {}
+    if (typeSel) {
+        typeSel.addEventListener('change', () => {
+            row.typeId = typeSel.value || 'none';
+            row.presetId = 'none';
+            EL_fillPresetSelect(presetSel, row.typeId, 'none');
+            EL_rowApplyTypeDefaults(row, row.typeId);
+            if (selectedIndividualRowId === row.id) onIndividualSelectionChanged();
+        });
+    }
+    if (presetSel) {
+        presetSel.addEventListener('change', () => {
+            row.presetId = presetSel.value || 'none';
+            const text = EL_presetContent(row.typeId, row.presetId);
+            row.content = text;
+            contentEl.value = text;
+        });
+    }
 
     // Bind event listeners
     tr.querySelector('.excel-comment').addEventListener('input', (e) => {
@@ -4156,6 +4193,8 @@ async function createItems() {
             const position = parseInt(selectedOption.value) || 0;
             const role = selectedOption.dataset.role !== '' ? parseInt(selectedOption.dataset.role) : null;
             const quickTypeId = EL_selectVal('quick-entry-type', 'none');
+            const quickPresetId = EL_selectVal('quick-entry-preset', 'none');
+            const quickPresetContent = EL_presetContent(quickTypeId, quickPresetId);
 
             const newUids = [];
             for (let i = 0; i < count; i++) {
@@ -4183,7 +4222,7 @@ async function createItems() {
                     depth: depth,
                     probability: probability,
                 };
-                quickEntry = EL_applyCreateType(quickEntry, quickTypeId);
+                quickEntry = EL_applyCreateType(quickEntry, quickTypeId, quickPresetContent);
                 currentLorebookData.entries[newUid] = quickEntry;
                 newUids.push(String(newUid));
             }
@@ -4231,8 +4270,6 @@ async function createItems() {
         const disableVal = document.getElementById('g-disable').checked;
         const excludeRecursionVal = document.getElementById('g-exclude').checked;
         const preventRecursionVal = document.getElementById('g-prevent').checked;
-        let advTypeId = 'none';
-        try { advTypeId = (document.getElementById('g-apply-type') || {}).checked ? EL_selectVal('g-type', 'none') : 'none'; } catch (e) { advTypeId = 'none'; }
 
         for (let i = 0; i < advancedRows.length; i++) {
             const newUid = getFreeWorldEntryUid(currentLorebookData);
@@ -4283,7 +4320,7 @@ async function createItems() {
                 selectiveLogic: 0,
                 delay: 0,
                 ...entrySettings
-            }, advTypeId);
+            }, row.typeId || 'none');
             newUids.push(String(newUid));
         }
 
@@ -4399,6 +4436,10 @@ async function createItems() {
                 matchCharacterDepthPrompt: ov.matchCharacterDepthPrompt ?? false,
                 matchCreatorNotes: ov.matchCreatorNotes ?? false,
             };
+            // constant and vectorized are mutually exclusive in SillyTavern.
+            if (currentLorebookData.entries[newUid].constant && currentLorebookData.entries[newUid].vectorized) {
+                currentLorebookData.entries[newUid].vectorized = false;
+            }
             newUids.push(String(newUid));
         }
 
@@ -4501,15 +4542,21 @@ function openBatchModal() {
  */
 
 /**
- * Entry types (Track A4): typed entries through the whole write pipeline.
+ * Entry types: organisational tags on entries.
  * Types live in extensionSettings.entryTypes (plain id -> type object, as
- * lib/type-registry.js expects); missing builtins are seeded on first access.
- * Every save still goes through ELG_guardSave — these helpers only shape data.
+ * lib/type-registry.js expects); missing builtins are seeded on first access
+ * and legacy template fields are migrated away once.
+ * A type NEVER writes entry content — it only tags the entry and provides
+ * create-time defaults + presets. Every save still goes through
+ * ELG_guardSave — these helpers only shape data.
  */
+
+let EL_typeStoreMigrated = false;
 
 /**
  * Type store for ELTypeRegistry, seeded with builtins for missing ids only
- * (never overwrites a user-edited type).
+ * (never overwrites a user-edited type), then migrated to the current shape
+ * once per session (legacy sections/slots are dropped; content is untouched).
  * @returns {object}
  */
 function EL_getTypeStore() {
@@ -4519,18 +4566,26 @@ function EL_getTypeStore() {
             extensionSettings.entryTypes = {};
         }
         const store = extensionSettings.entryTypes;
+        const reg = (typeof ELTypeRegistry !== 'undefined') ? ELTypeRegistry : (typeof window !== 'undefined' ? window.ELTypeRegistry : null);
+        let seeded = false;
         try {
-            const reg = (typeof ELTypeRegistry !== 'undefined') ? ELTypeRegistry : (typeof window !== 'undefined' ? window.ELTypeRegistry : null);
+            // Builtins are re-added only when the whole id is absent (the UI
+            // blocks deleting them); a builtin's edited/deleted presets are
+            // never re-seeded because the stored object already has `presets`.
             if (reg && reg.BUILTIN_TYPES && typeof reg.putType === 'function') {
-                let seeded = false;
                 for (const id of Object.keys(reg.BUILTIN_TYPES)) {
                     if (!Object.prototype.hasOwnProperty.call(store, id)) {
                         try { reg.putType(store, reg.BUILTIN_TYPES[id]); seeded = true; } catch (e) {}
                     }
                 }
-                if (seeded) { try { if (typeof saveSettings === 'function') saveSettings(); } catch (e) {} }
+            }
+            if (!EL_typeStoreMigrated && reg && typeof reg.migrateStore === 'function') {
+                const r = reg.migrateStore(store);
+                EL_typeStoreMigrated = true;
+                if (r && r.changed) seeded = true;
             }
         } catch (e) {}
+        if (seeded) { try { if (typeof saveSettings === 'function') saveSettings(); } catch (e) {} }
         return store;
     } catch (e) { return {}; }
 }
@@ -4636,30 +4691,188 @@ function EL_fillTypeSelect(sel, selected) {
 }
 
 /**
- * Apply a type to a fresh entry at creation time (blank content renders the
- * labeled skeleton; user-supplied content is merged by label extraction).
- * Returns the (possibly new) entry; never throws; 'none'/unknown → unchanged.
- * @param {object} entry
+ * Fill a preset <select> from one type's presets. Always offers a blank
+ * option; an unknown/missing preset falls back to it.
+ * @param {Element|null} sel
  * @param {string} typeId
- * @returns {object}
+ * @param {string} [selected]
  */
-function EL_applyCreateType(entry, typeId) {
+function EL_fillPresetSelect(sel, typeId, selected) {
+    if (!sel) return;
     try {
-        if (!typeId || typeId === 'none') return entry;
+        const want = (selected === undefined || selected === null) ? 'none' : String(selected);
         const type = EL_getEntryType(typeId);
-        const CC = (typeof ELCompile !== 'undefined') ? ELCompile : (typeof window !== 'undefined' ? window.ELCompile : null);
-        if (!type || !CC || typeof CC.applyType !== 'function') return entry;
-        const r = CC.applyType(entry, type, {});
-        if (r && r.entry && typeof r.entry === 'object') return r.entry;
+        const presets = (type && Array.isArray(type.presets)) ? type.presets : [];
+        let html = '<option value="none">— blank content —</option>';
+        for (const p of presets) {
+            const pid = String((p && p.id) || '');
+            if (!pid) continue;
+            html += '<option value="' + escapeHtml(pid) + '"' + (pid === want ? ' selected' : '') + '>' + escapeHtml(String((p && p.name) || pid)) + '</option>';
+        }
+        sel.innerHTML = html;
+        const known = presets.some(p => String((p && p.id) || '') === want);
+        try { sel.value = known ? want : 'none'; } catch (e) {}
     } catch (e) {}
-    return entry;
 }
 
 /**
- * Batch set(type) writes for one entry via ELCompile (reorder per type).
+ * Literal content of one preset ('' for none/unknown). Never parses it.
+ * @param {string} typeId
+ * @param {string} presetId
+ * @returns {string}
+ */
+function EL_presetContent(typeId, presetId) {
+    try {
+        const key = (presetId === undefined || presetId === null) ? '' : String(presetId);
+        if (!key || key === 'none') return '';
+        const type = EL_getEntryType(typeId);
+        if (!type) return '';
+        const reg = (typeof ELTypeRegistry !== 'undefined') ? ELTypeRegistry : (typeof window !== 'undefined' ? window.ELTypeRegistry : null);
+        const p = (reg && typeof reg.getPreset === 'function') ? reg.getPreset(type, key) : null;
+        return (p && typeof p.content === 'string') ? p.content : '';
+    } catch (e) { return ''; }
+}
+
+/**
+ * Select the option matching a position/role pair (position 4 carries a role).
+ * @param {Element|null} sel
+ * @param {number} position
+ * @param {number|string|null} role
+ */
+function EL_selectPositionOption(sel, position, role) {
+    if (!sel) return;
+    try {
+        const wantPos = Number(position);
+        const wantRole = (role === undefined || role === null || role === '') ? null : Number(role);
+        const opts = Array.from(sel.options || []);
+        let fallback = null;
+        for (const opt of opts) {
+            if (parseInt(opt.value, 10) !== wantPos) continue;
+            const rawRole = (opt.dataset && opt.dataset.role !== undefined) ? opt.dataset.role : '';
+            const optRole = (rawRole === '') ? null : Number(rawRole);
+            if (optRole === wantRole) {
+                try { sel.value = opt.value; } catch (e) {}
+                opt.selected = true;
+                return;
+            }
+            if (!fallback) fallback = opt;
+        }
+        if (fallback) {
+            try { sel.value = fallback.value; } catch (e) {}
+            fallback.selected = true;
+        }
+    } catch (e) {}
+}
+
+/**
+ * Apply a type's create defaults to the Quick Add dialog and refresh its
+ * preset list. Only the settings the type declares are touched; everything
+ * else keeps the dialog's current value.
+ * @param {string} typeId
+ */
+function EL_quickApplyTypeDefaults(typeId) {
+    try {
+        EL_fillPresetSelect(document.getElementById('quick-entry-preset'), typeId, 'none');
+        const type = EL_getEntryType(typeId);
+        const d = (type && type.defaults && typeof type.defaults === 'object') ? type.defaults : {};
+        const has = (k) => Object.prototype.hasOwnProperty.call(d, k);
+        const num = (id, key) => {
+            if (!has(key)) return;
+            const el = document.getElementById(id);
+            if (el) el.value = String(d[key]);
+        };
+        const flag = (id, key) => {
+            if (!has(key)) return;
+            const el = document.getElementById(id);
+            if (el) el.checked = !!d[key];
+        };
+        num('quick-entry-order', 'order');
+        num('quick-entry-depth', 'depth');
+        num('quick-entry-probability', 'probability');
+        if (has('position')) {
+            EL_selectPositionOption(document.getElementById('quick-entry-position'), d.position, has('role') ? d.role : null);
+        }
+        flag('quick-entry-constant', 'constant');
+        flag('quick-entry-vectorized', 'vectorized');
+        flag('quick-entry-selective', 'selective');
+        flag('quick-entry-disable', 'disable');
+        flag('quick-entry-exclude', 'excludeRecursion');
+        flag('quick-entry-prevent', 'preventRecursion');
+    } catch (e) { /* tolerate */ }
+}
+
+/**
+ * Apply a type's create defaults to one advanced-add row's settings.
+ * @param {object} row
+ * @param {string} typeId
+ */
+function EL_rowApplyTypeDefaults(row, typeId) {
+    try {
+        if (!row || !row.settings || typeof row.settings !== 'object') return;
+        const type = EL_getEntryType(typeId);
+        const d = (type && type.defaults && typeof type.defaults === 'object') ? type.defaults : {};
+        for (const key of Object.keys(d)) {
+            if (key === 'role' && !Object.prototype.hasOwnProperty.call(d, 'position')) continue;
+            row.settings[key] = d[key];
+        }
+    } catch (e) { /* tolerate */ }
+}
+
+/**
+ * Tag a fresh entry at creation time. Content is NEVER touched here: the
+ * caller passes the preset text (or ''), and the type only provides a tag.
+ * Returns the (possibly new) entry; never throws; 'none'/unknown → unchanged.
+ * @param {object} entry
+ * @param {string} typeId
+ * @param {string} [content] Literal preset content to use as the entry body.
+ * @returns {object}
+ */
+function EL_applyCreateType(entry, typeId, content) {
+    try {
+        const out = (entry && typeof entry === 'object') ? entry : {};
+        if (typeof content === 'string') out.content = content;
+        // SillyTavern treats constant and vectorized as mutually exclusive.
+        if (out.constant && out.vectorized) out.vectorized = false;
+        const key = (typeId === undefined || typeId === null) ? '' : String(typeId);
+        if (!key || key === 'none') return out;
+        if (!EL_getEntryType(key)) return out;
+        out.extensions = EL_withEntryType(out.extensions, key);
+        return out;
+    } catch (e) { return entry; }
+}
+
+/**
+ * Copy of an extensions object with `el.type` set to typeId while every
+ * other el key (refs, ...) and every other extensions.* key is preserved.
+ * An empty typeId removes the tag. Never mutates the input.
+ * @param {object} extensions
+ * @param {string} typeId
+ * @returns {object}
+ */
+function EL_withEntryType(extensions, typeId) {
+    const src = (extensions && typeof extensions === 'object' && !Array.isArray(extensions)) ? extensions : {};
+    let out = {};
+    try { out = JSON.parse(JSON.stringify(src)); } catch (e) { out = {}; }
+    const key = (typeId === undefined || typeId === null) ? '' : String(typeId);
+    let el = (out.el && typeof out.el === 'object' && !Array.isArray(out.el)) ? out.el : null;
+    if (!key || key === 'none') {
+        if (el) {
+            delete el.type;
+            if (!Object.keys(el).length) delete out.el;
+        }
+        return out;
+    }
+    if (!el) el = {};
+    el.type = key;
+    out.el = el;
+    return out;
+}
+
+/**
+ * Batch set(type) writes for one entry: only `extensions` changes, and only
+ * the `el.type` tag inside it. Content, keys and refs are never touched.
  * Null when the type id is unknown (entry skipped, never throws).
- * 'none'/empty detaches to plain (same as reset) so "Set to None" clears
- * the type instead of silently skipping.
+ * 'none'/empty clears the tag (same as reset).
  * @param {object} entry
  * @param {string} typeId
  * @returns {object|null}
@@ -4667,62 +4880,24 @@ function EL_applyCreateType(entry, typeId) {
 function EL_batchTypeSetWrites(entry, typeId) {
     try {
         const key = (typeId === undefined || typeId === null) ? '' : String(typeId);
-        if (!key || key === 'none') {
-            try {
-                if (typeof EL_batchTypeResetWrites === 'function') return EL_batchTypeResetWrites(entry);
-            } catch (e) { return null; }
-            return null;
-        }
-        const type = EL_getEntryType(key);
-        const CC = (typeof ELCompile !== 'undefined') ? ELCompile : (typeof window !== 'undefined' ? window.ELCompile : null);
-        if (!type || !CC || typeof CC.applyType !== 'function') return null;
-        const r = CC.applyType(entry || {}, type, {});
-        if (!r || !r.entry || typeof r.entry !== 'object') return null;
-        return { content: r.entry.content, key: r.entry.key, keysecondary: r.entry.keysecondary, extensions: r.entry.extensions };
+        if (!key || key === 'none') return EL_batchTypeResetWrites(entry);
+        if (!EL_getEntryType(key)) return null;
+        return { extensions: EL_withEntryType(entry && entry.extensions, key) };
     } catch (e) { return null; }
 }
 
 /**
- * Batch reset writes for one entry: strip limiter lines to plain text and
- * drop extensions.el while keeping every other extensions.* key.
+ * Batch reset writes for one entry: clear only `extensions.el.type`. Refs and
+ * every other extensions key survive; content is never touched.
  * @param {object} entry
  * @returns {object|null}
  */
 function EL_batchTypeResetWrites(entry) {
     try {
         const e = entry || {};
-        const writes = {};
-        try {
-            const CC = (typeof ELCompile !== 'undefined') ? ELCompile : (typeof window !== 'undefined' ? window.ELCompile : null);
-            if (CC && typeof CC.detachToPlain === 'function') {
-                const d = CC.detachToPlain(e);
-                if (d && typeof d.content === 'string') writes.content = d.content;
-            }
-        } catch (err) {}
-        const ext = (e.extensions && typeof e.extensions === 'object' && !Array.isArray(e.extensions)) ? e.extensions : null;
-        if (ext) {
-            const next = {};
-            for (const k of Object.keys(ext)) {
-                if (k === 'el' || k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
-                try { next[k] = EL_cloneBatchValue(ext[k]); } catch (err) { next[k] = ext[k]; }
-            }
-            writes.extensions = next;
-        }
-        return writes;
+        if (!EL_oldTypeId(e)) return {};
+        return { extensions: EL_withEntryType(e.extensions, '') };
     } catch (e) { return null; }
-}
-
-/**
- * Line count for the content-change summary in the batch preview.
- * @param {*} s
- * @returns {number}
- */
-function EL_lineCount(s) {
-    try {
-        const t = String(s ?? '');
-        if (!t) return 0;
-        return t.replace(/\r\n/g, '\n').split('\n').length;
-    } catch (e) { return 0; }
 }
 
 /**
@@ -4735,13 +4910,11 @@ function EL_batchDiffTypeOp(plan, op, entry, uid, changes, statMap) {
         if (!Array.isArray(plan.typeSkips)) plan.typeSkips = [];
         const oldId = EL_oldTypeId(entry);
         const oldLabel = oldId ? EL_entryTypeLabel(oldId) : 'None';
-        let w = null;
         let newLabel = 'None';
         if (op.mode === 'set') {
             const setKey = (op.typeId === undefined || op.typeId === null) ? '' : String(op.typeId);
             if (!setKey || setKey === 'none') {
                 newLabel = 'None';
-                w = EL_batchTypeResetWrites(entry) || {};
             } else {
                 const t = EL_getEntryType(setKey);
                 if (!t) {
@@ -4749,10 +4922,7 @@ function EL_batchDiffTypeOp(plan, op, entry, uid, changes, statMap) {
                     return;
                 }
                 newLabel = EL_entryTypeLabel(setKey);
-                w = EL_batchTypeSetWrites(entry, setKey) || {};
             }
-        } else {
-            w = EL_batchTypeResetWrites(entry) || {};
         }
         let touched = false;
         const _setKeyForId = (op.mode === 'set' && op.typeId !== undefined && op.typeId !== null) ? String(op.typeId) : '';
@@ -4761,18 +4931,7 @@ function EL_batchDiffTypeOp(plan, op, entry, uid, changes, statMap) {
             changes.push({ field: 'extensions', label: op.label, from: oldLabel, to: newLabel });
             touched = true;
         }
-        if (w && Object.prototype.hasOwnProperty.call(w, 'content') && !EL_batchValuesEqual(entry.content, w.content)) {
-            changes.push({ field: 'content', label: 'Content', from: EL_lineCount(entry.content) + ' lines', to: EL_lineCount(w.content) + ' lines' });
-            touched = true;
-        }
-        if (w) {
-            for (const f of ['key', 'keysecondary']) {
-                if (Object.prototype.hasOwnProperty.call(w, f) && !EL_batchValuesEqual(entry[f], w[f])) {
-                    changes.push({ field: f, label: op.label, from: EL_batchDisplayValue(f, entry[f]), to: EL_batchDisplayValue(f, w[f]) });
-                    touched = true;
-                }
-            }
-        }
+        // A type is only a tag: content, keys and refs never change.
         if (touched) {
             statMap[op.label] = statMap[op.label] || { label: op.label, target: EL_batchTargetDesc(op), affected: 0 };
             statMap[op.label].affected++;
@@ -5386,8 +5545,13 @@ function EL_batchRenderPreview(plan) {
     }
     if (Array.isArray(plan.typeSkips) && plan.typeSkips.length) {
         const names = plan.typeSkips.slice(0, 10).map(s => s.label || ('Entry ' + s.uid));
+        const unknownIds = [];
+        for (const s of plan.typeSkips) {
+            const id = String((s && s.typeId) || '');
+            if (id && unknownIds.indexOf(id) === -1) unknownIds.push(id);
+        }
         html += '<p class="el-batch-preview-note">Skipped ' + plan.typeSkips.length + ' entr' + (plan.typeSkips.length === 1 ? 'y' : 'ies')
-            + ' (unknown type "' + escapeHtml(String((plan.typeSkips[0] && plan.typeSkips[0].typeId) || '')) + '"): '
+            + ' (unknown type' + (unknownIds.length > 1 ? 's' : '') + ' "' + escapeHtml(unknownIds.join('", "')) + '"): '
             + escapeHtml(names.join(', ')) + (plan.typeSkips.length > 10 ? ', …' : '') + '.</p>';
     }
     const MAX_ROWS = 60;
@@ -5701,32 +5865,64 @@ function EL_buildCharacterFilter(text, isExclude, previous) {
     return { isExclude: isExclude === true, names, tags };
 }
 
-/* EL-REVAMP B1: typed editing inside the edit-entry modal.
- * Form/Appearance rendering + typed save hook. Untyped entries never touch
- * this code (ELFormIsTyped() false → classic open/save paths run untouched).
- * Reads go through ELSlots.extractValues, writes through ELCompile.applyType,
- * the type store through ELTypeRegistry, and every save through ELG_guardSave.
+/* Entry type = tag only (types no longer touch content).
+ * The edit modal always shows the raw content textarea. The type select just
+ * stores extensions.el.type on save; it never rewrites, reorders or parses
+ * the entry body. Presets are applied at creation time only.
  */
-var ELFormState = { uid: null, typeId: 'none', values: {}, extra: [] };
 
-function ELFormNorm(s) {
-    return String(s === undefined || s === null ? '' : s).toLowerCase().replace(/[_\s]+/g, ' ').trim();
+/**
+ * Populate the edit modal's type select from the entry's stored tag.
+ * A tag whose type was deleted gets its own "<id> (missing type)" option, so
+ * it round-trips instead of being silently downgraded to None on save.
+ * Opening the modal never writes to the entry.
+ * @param {object} entry
+ */
+function EL_openTypeSelect(entry) {
+    try {
+        const sel = document.getElementById('edit-type');
+        let storedId = '';
+        try { storedId = EL_oldTypeId(entry); } catch (e) { storedId = ''; }
+        EL_fillTypeSelect(sel, storedId || 'none');
+        // A tag whose type was deleted still round-trips: show it explicitly
+        // so opening + saving an unrelated edit never drops it silently.
+        if (storedId && !EL_getEntryType(storedId)) {
+            const label = storedId + ' (missing type)';
+            let opt = null;
+            try {
+                opt = document.createElement('option');
+                opt.value = storedId;
+                opt.textContent = label;
+            } catch (e) { opt = null; }
+            if (opt) sel.appendChild(opt);
+            try { sel.value = storedId; } catch (e) {}
+        }
+    } catch (e) { /* tolerate */ }
 }
 
-function ELFormGetType() {
-    if (!ELFormState.typeId || ELFormState.typeId === 'none') return null;
-    try { return EL_getEntryType(ELFormState.typeId); } catch (e) { return null; }
+/**
+ * Read the edit modal's type select. 'none' when unset; otherwise the raw id,
+ * including an orphaned stored id (only the select's own options can supply
+ * it, and the edit-modal save is this helper's only caller).
+ * @returns {string}
+ */
+function EL_readTypeSelect() {
+    try {
+        const raw = EL_selectVal('edit-type', 'none');
+        if (!raw || raw === 'none') return 'none';
+        return raw;
+    } catch (e) { return 'none'; }
 }
 
-function ELFormIsTyped() {
-    try { return !!(ELFormState.typeId && ELFormState.typeId !== 'none' && ELFormGetType()); }
-    catch (e) { return false; }
-}
+/* Manual entry links (extensions.el.refs). Independent of types: a link is a
+ * plain organisational edge the user creates, and Sections can use it to keep
+ * linked entries in the same order slot. Content is never touched. */
+let EL_editLinks = [];
 
-function ELFormEntryName(uid) {
+function EL_linkEntryName(uid) {
     try {
         const data = (typeof currentLorebookData !== 'undefined') ? currentLorebookData : null;
-        const e = data && data.entries ? data.entries[uid] : null;
+        const e = data && data.entries ? data.entries[String(uid)] : null;
         if (!e) return 'uid ' + uid;
         if (Array.isArray(e.key)) {
             for (const k of e.key) { if (String(k).trim()) return String(k).trim(); }
@@ -5736,809 +5932,110 @@ function ELFormEntryName(uid) {
     } catch (e) { return 'uid ' + uid; }
 }
 
-function ELFormLookupName(name) {
+function EL_editLinksLoad(entry) {
+    EL_editLinks = [];
     try {
-        const want = ELFormNorm(name);
-        if (!want) return '';
-        const data = (typeof currentLorebookData !== 'undefined') ? currentLorebookData : null;
-        const entries = (data && data.entries) || {};
-        for (const uid of Object.keys(entries)) {
-            const e = entries[uid] || {};
-            const cands = [];
-            if (Array.isArray(e.key)) cands.push(...e.key);
-            if (e.comment) cands.push(e.comment);
-            if (typeof e.content === 'string') {
-                const m = /^\s*name\s*:(.*)$/im.exec(e.content);
-                if (m) cands.push(m[1]);
-            }
-            for (const c of cands) { if (ELFormNorm(c) === want) return String(uid); }
+        const el = entry && entry.extensions && entry.extensions.el;
+        const refs = (el && Array.isArray(el.refs)) ? el.refs : [];
+        for (const r of refs) {
+            if (!r || typeof r !== 'object') continue;
+            const t = r.target;
+            const uid = (t && typeof t === 'object') ? String(t.uid || '') : String(t === undefined || t === null ? '' : t);
+            if (!uid) continue;
+            if (EL_editLinks.some(x => x.uid === uid)) continue;
+            EL_editLinks.push({ uid: uid, kind: String(r.kind || 'link') });
         }
-    } catch (e) { /* fall through to no-match */ }
-    return '';
+    } catch (e) { EL_editLinks = []; }
 }
 
-function ELFormRefCandidates(target) {
-    const out = [];
-    try {
-        const data = (typeof currentLorebookData !== 'undefined') ? currentLorebookData : null;
-        const entries = (data && data.entries) || {};
-        for (const uid of Object.keys(entries)) {
-            if (String(uid) === String(ELFormState.uid)) continue;
-            if (target) {
-                let tid = '';
-                try { tid = entries[uid] && entries[uid].extensions && entries[uid].extensions.el && entries[uid].extensions.el.type; } catch (e) { tid = ''; }
-                if (String(tid || '') !== String(target)) continue;
-            }
-            out.push({ uid: String(uid), name: ELFormEntryName(uid) });
-        }
-        out.sort((a, b) => String(a.name).localeCompare(String(b.name)));
-    } catch (e) { /* tolerate */ }
-    return out;
-}
-
-function ELFormExtract(type) {
-    const out = { values: {}, extra: [] };
-    try {
-        const CC = (typeof ELCompile !== 'undefined') ? ELCompile : null;
-        const ELS = (typeof ELSlots !== 'undefined') ? ELSlots : null;
-        if (!CC || !ELS || !type) return out;
-        const rawEl = document.getElementById('edit-content');
-        const raw = rawEl ? (rawEl.value || '') : '';
-        const ex = ELS.extractValues(raw, CC.typeToAst(type));
-        if (ex && typeof ex === 'object') {
-            if (ex.values && typeof ex.values === 'object') out.values = ex.values;
-            if (Array.isArray(ex.extra)) out.extra = ex.extra;
-        }
-    } catch (e) { /* tolerate */ }
-    return out;
-}
-
-function ELFormMergeLabels(base, over) {
-    const out = {};
-    try {
-        if (base && typeof base === 'object') {
-            for (const k of Object.keys(base)) out[k] = base[k];
-        }
-        if (over && typeof over === 'object') {
-            const normMap = {};
-            for (const k of Object.keys(out)) {
-                const nk = ELFormNorm(k);
-                if (!Object.prototype.hasOwnProperty.call(normMap, nk)) normMap[nk] = k;
-            }
-            for (const k of Object.keys(over)) {
-                const nk = ELFormNorm(k);
-                if (Object.prototype.hasOwnProperty.call(normMap, nk)) out[normMap[nk]] = over[k];
-                else { out[k] = over[k]; normMap[nk] = k; }
-            }
-        }
-    } catch (e) { /* tolerate */ }
-    return out;
-}
-
-function ELFormSlotParams(type, label) {
-    try {
-        const sections = (type && Array.isArray(type.sections)) ? type.sections : [];
-        for (const sec of sections) {
-            const slots = (sec && Array.isArray(sec.slots)) ? sec.slots : [];
-            for (const sl of slots) {
-                if (sl && ELFormNorm(sl.label) === ELFormNorm(label)) return sl;
-            }
-        }
-    } catch (e) { /* tolerate */ }
-    return null;
-}
-
-function ELFormPreviewText(v) {
-    const s = String(v === undefined || v === null ? '' : v).replace(/\s+/g, ' ').trim();
-    if (!s) return 'empty';
-    return s.length > 60 ? s.slice(0, 60) + '…' : s;
-}
-
-function ELFormRadarAxes(slot, fallbackCount) {
-    try {
-        const raw = slot && slot.axes !== undefined && slot.axes !== null ? String(slot.axes) : '';
-        const axes = raw.split(',').map(a => a.trim()).filter(a => !!a);
-        if (axes.length) return axes;
-    } catch (e) { /* fall through */ }
-    const names = ['A', 'B', 'C', 'D', 'E', 'F'];
-    const n = Math.max(3, Math.min(8, fallbackCount || 6));
-    return names.slice(0, n);
-}
-
-function ELFormRadarNumbers(value, count) {
-    const parts = String(value === undefined || value === null ? '' : value).split(/[,\n;]+/).map(p => {
-        const n = parseFloat(String(p).trim());
-        return Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : 0;
-    });
-    const out = [];
-    for (let i = 0; i < count; i++) out.push(i < parts.length ? parts[i] : 0);
-    return out;
-}
-
-function ELFormRadarPoints(nums, size) {
-    const cx = size / 2;
-    const cy = size / 2;
-    const r = size * 0.35;
-    return nums.map((v, i) => {
-        const a = (-90 + i * (360 / nums.length)) * Math.PI / 180;
-        const d = (v / 100) * r;
-        return (cx + d * Math.cos(a)).toFixed(1) + ',' + (cy + d * Math.sin(a)).toFixed(1);
-    }).join(' ');
-}
-
-function ELFormRadarSvg(label, nums, axes, accent) {
-    const size = 200;
-    const cx = size / 2;
-    const cy = size / 2;
-    const grid = [1, 0.66, 0.33].map(f => {
-        const rr = size * 0.35 * f;
-        const pts = axes.map((_, i) => {
-            const a = (-90 + i * (360 / axes.length)) * Math.PI / 180;
-            return (cx + rr * Math.cos(a)).toFixed(1) + ',' + (cy + rr * Math.sin(a)).toFixed(1);
-        }).join(' ');
-        return '<polygon class="el-radar-grid" points="' + pts + '"/>';
+function EL_editLinksHtml() {
+    const currentUid = String((document.getElementById('edit-entry-uid') || {}).value || '');
+    const chips = EL_editLinks.map((l, i) => {
+        const name = EL_linkEntryName(l.uid);
+        return '<span class="badge" style="display:inline-flex;align-items:center;gap:6px;padding:3px 8px;">'
+            + escapeHtml(name)
+            + '<input type="text" data-el-link-kind="' + i + '" value="' + escapeHtml(l.kind) + '" title="kind (used by rules/sections)" style="width:88px;background:rgba(0,0,0,0.3);border:1px solid var(--panel-border);border-radius:4px;color:var(--text-color);font-size:0.75rem;padding:2px 5px;">'
+            + '<button type="button" data-el-link-del="' + i + '" title="unlink" style="background:transparent;border:none;color:var(--danger-color);cursor:pointer;">×</button></span>';
     }).join('');
-    const spokes = axes.map((_, i) => {
-        const a = (-90 + i * (360 / axes.length)) * Math.PI / 180;
-        const x = (cx + size * 0.35 * Math.cos(a)).toFixed(1);
-        const y = (cy + size * 0.35 * Math.sin(a)).toFixed(1);
-        return '<line x1="' + cx + '" y1="' + cy + '" x2="' + x + '" y2="' + y + '"/>';
-    }).join('');
-    const labels = axes.map((ax, i) => {
-        const a = (-90 + i * (360 / axes.length)) * Math.PI / 180;
-        const x = (cx + size * 0.46 * Math.cos(a)).toFixed(1);
-        const y = (cy + size * 0.46 * Math.sin(a)).toFixed(1);
-        return '<text x="' + x + '" y="' + y + '">' + escapeHtml(ax) + '</text>';
-    }).join('');
-    return '<svg class="el-radar" viewBox="0 0 ' + size + ' ' + size + '" data-el-radarsvg="' + escapeHtml(label) + '">' +
-        grid + '<g class="el-radar-axes">' + spokes + '</g>' +
-        '<polygon class="el-radar-poly" points="' + ELFormRadarPoints(nums, size) + '"/>' +
-        '<g class="el-radar-lbl">' + labels + '</g></svg>';
+    const entries = (typeof currentLorebookData !== 'undefined' && currentLorebookData && currentLorebookData.entries) ? currentLorebookData.entries : {};
+    const linked = {};
+    EL_editLinks.forEach(l => { linked[l.uid] = true; });
+    let opts = '<option value="">＋ link an entry…</option>';
+    for (const uid of Object.keys(entries)) {
+        if (String(uid) === currentUid) continue;
+        if (linked[String(uid)]) continue;
+        opts += '<option value="' + escapeHtml(String(uid)) + '">' + escapeHtml(EL_linkEntryName(uid)) + '</option>';
+    }
+    return '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;">'
+        + (chips || '<span style="opacity:0.7;font-size:0.85rem;">No links.</span>')
+        + '</div>'
+        + '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">'
+        + '<select id="edit-link-pick" style="flex:1;min-width:160px;">' + opts + '</select>'
+        + '<input type="text" id="edit-link-kind" placeholder="kind (ally)" value="link" style="width:120px;background:rgba(0,0,0,0.3);border:1px solid var(--panel-border);border-radius:6px;color:var(--text-color);padding:4px 8px;font-size:0.85rem;">'
+        + '<button type="button" id="edit-link-add" class="btn btn-secondary btn-sm">＋ link</button>'
+        + '</div>';
 }
 
-function ELFormFieldHtml(type, label, kind, value, slot) {
-    const v = String(value === undefined || value === null ? '' : value);
-    const open = v.trim() ? ' open' : '';
-    const head = '<details class="d-field" data-el-field="' + escapeHtml(label) + '"' + open + '>' +
-        '<summary><span class="d-flabel">' + escapeHtml(label) + '</span>' +
-        '<span class="prev" data-el-prev>' + escapeHtml(ELFormPreviewText(v)) + '</span></summary>' +
-        '<div class="dbody">';
-    const tail = '</div></details>';
-    if (kind === 'img') {
-        const hasLink = !!v.trim();
-        return head +
-            '<div class="el-imgrow"><div class="el-thumb" data-el-thumb>' +
-            (hasLink ? '<img src="' + escapeHtml(v.trim()) + '" alt="" onerror="this.remove()">' : '<span>no image</span>') +
-            '</div><div class="el-drop">Paste an image link or upload a file — stored as a user/images/… path.' +
-            '<input type="text" data-el-slot="' + escapeHtml(label) + '" value="' + escapeHtml(v) + '" placeholder="https://… or /user/images/….png">' +
-            '<button type="button" data-el-imgup title="Upload an image file">⤒ upload</button></div></div>' + tail;
-    }
-    if (kind === 'ref') {
-        const names = v.split(/[,\n;]+/).map(n => n.trim()).filter(n => !!n);
-        const chips = names.map(n => {
-            const uid = ELFormLookupName(n);
-            return '<span class="el-chip" data-uid="' + escapeHtml(uid) + '" data-name="' + escapeHtml(n) + '">' +
-                escapeHtml(n) + (uid ? '' : ' ⚠') + '<button type="button" data-el-unlink title="unlink">×</button></span>';
-        }).join('');
-        const cands = ELFormRefCandidates(slot && slot.target ? String(slot.target).trim() : '');
-        const linked = {};
-        names.forEach(n => { linked[ELFormNorm(n)] = true; });
-        let opts = '<option value="">＋ link entry…</option>';
-        for (const c of cands) {
-            if (linked[ELFormNorm(c.name)]) continue;
-            opts += '<option value="' + escapeHtml(c.uid) + '">' + escapeHtml(c.name) + '</option>';
-        }
-        const limitNote = (slot && slot.limit !== undefined && slot.limit !== null && slot.limit !== '')
-            ? ' <span class="el-kind">max ' + escapeHtml(String(slot.limit)) + (slot.target ? ' · ' + escapeHtml(String(slot.target)) : '') + '</span>'
-            : (slot && slot.target ? ' <span class="el-kind">' + escapeHtml(String(slot.target)) + '</span>' : '');
-        return head + '<div class="el-chips" data-el-ref="' + escapeHtml(label) + '">' + chips + '</div>' +
-            '<div class="el-refrow"><select data-el-refpick title="link entry">' + opts + '</select>' + limitNote + '</div>' + tail;
-    }
-    if (kind === 'gallery') {
-        const links = v ? String(v).split('\n').map(l => l.trim()).filter(l => !!l) : [''];
-        const rows = links.map(l =>
-            '<div class="el-galrow"><input type="text" data-el-gal value="' + escapeHtml(l) + '" placeholder="https://… image link">' +
-            '<button type="button" data-el-galdel title="remove">×</button></div>').join('');
-        const inj = !!(slot && (slot.inject === true || String(slot.inject || '').toLowerCase() === 'on'));
-        return head + '<div data-el-gallery="' + escapeHtml(label) + '">' + rows + '</div>' +
-            '<div class="el-refrow"><button type="button" data-el-galadd>＋ add image</button>' +
-            '<button type="button" data-el-galup title="Upload an image file">⤒ upload</button>' +
-            '<label class="el-inject"><input type="checkbox" data-el-inject' + (inj ? ' checked' : '') + '> send extras to model</label></div>' + tail;
-    }
-    if (kind === 'radar') {
-        const axes = ELFormRadarAxes(slot, 6);
-        const nums = ELFormRadarNumbers(v, axes.length);
-        const accent = (type && type.accent) || '';
-        const inputs = axes.map((ax, i) =>
-            '<label class="el-rrow">' + escapeHtml(ax) + ' <input type="number" min="0" max="100" data-el-radar="' +
-            escapeHtml(label) + '" data-axis="' + i + '" value="' + nums[i] + '"></label>').join('');
-        return head + '<div class="el-radar-wrap" data-el-radarwrap="' + escapeHtml(label) + '">' +
-            ELFormRadarSvg(label, nums, axes, accent) +
-            '<div class="el-rgrid">' + inputs + '</div></div>' + tail;
-    }
-    if (kind === 'conditional') {
-        const when = slot && slot.when !== undefined && slot.when !== null ? String(slot.when) : '';
-        const els = slot && slot.else !== undefined && slot.else !== null ? String(slot.else) : '';
-        const condLine = when
-            ? '⌁ show only when <code>' + escapeHtml(when) + '</code> · else render <code>' + escapeHtml(els || '""') + '</code>'
-            : '⌁ always shown' + (els ? ' · empty renders <code>' + escapeHtml(els) + '</code>' : '');
-        return head + '<input type="text" data-el-slot="' + escapeHtml(label) + '" value="' + escapeHtml(v) + '">' +
-            '<div class="el-cond">' + condLine + '</div>' + tail;
-    }
-    const hint = (slot && slot.def !== undefined && slot.def !== null && String(slot.def) !== '')
-        ? String(slot.def) : '';
-    const multiline = v.indexOf('\n') !== -1 || v.length > 80 || hint.length > 80;
-    if (multiline) {
-        return head + '<textarea rows="2" data-el-slot="' + escapeHtml(label) + '"' +
-            (hint && !v ? ' placeholder="' + escapeHtml(hint) + '"' : '') + '>' + escapeHtml(v) + '</textarea>' + tail;
-    }
-    return head + '<input type="text" data-el-slot="' + escapeHtml(label) + '" value="' + escapeHtml(v) + '"' +
-        (hint && !v ? ' placeholder="' + escapeHtml(hint) + '"' : '') + '>' + tail;
-}
-
-function ELFormRenderSections(type, values) {
-    let html = '';
+function EL_editLinksRender() {
+    const host = document.getElementById('edit-links');
+    if (!host) return;
+    host.innerHTML = EL_editLinksHtml();
     try {
-        const CC = (typeof ELCompile !== 'undefined') ? ELCompile : null;
-        const sections = (type && Array.isArray(type.sections)) ? type.sections : [];
-        for (const sec of sections) {
-            const title = sec && sec.title ? String(sec.title) : '';
-            const slots = (sec && Array.isArray(sec.slots)) ? sec.slots : [];
-            if (!slots.length) continue;
-            if (title) html += '<div class="d-sec"><div class="d-sec-h">' + escapeHtml(title) + '</div>';
-            else html += '<div class="d-sec">';
-            for (const sl of slots) {
-                const label = sl && sl.label ? String(sl.label) : '';
-                if (!label) continue;
-                const kind = sl && sl.kind ? String(sl.kind).toLowerCase() : 'cont';
-                if (kind === 'display') {
-                    const names = label.split(',').map(x => x.trim()).filter(x => !!x);
-                    let rows = '';
-                    try {
-                        const disp = (CC && typeof CC.renderDisplay === 'function')
-                            ? (CC.renderDisplay(CC.typeToAst(type), values) || {}) : {};
-                        for (const n of names) {
-                            rows += '<div class="el-disprow"><span>' + escapeHtml(n) + ':</span><b>' +
-                                escapeHtml(String(disp[n] === undefined || disp[n] === null ? '' : disp[n]) || '—') + '</b></div>';
-                        }
-                    } catch (e) { /* tolerate */ }
-                    html += '<div class="el-display" data-el-field="' + escapeHtml(label) + '">' +
-                        '<span class="el-badge">👁 visible only</span>' + rows + '</div>';
-                    continue;
-                }
-                const key = Object.prototype.hasOwnProperty.call(values, label) ? label : null;
-                const val = key !== null ? values[key] : '';
-                html += ELFormFieldHtml(type, label, kind || 'cont', val, sl);
-            }
-            html += '</div>';
-        }
-    } catch (e) { /* tolerate */ }
-    return html;
-}
-
-function ELFormKeymapHtml(type, values) {
-    try {
-        const main = type ? String(type.keyMain || 'none') : 'none';
-        const sec = type ? String(type.keySec || 'none') : 'none';
-        const canon = (name) => {
-            if (!name || name.toLowerCase() === 'none') return null;
-            if (values && Object.prototype.hasOwnProperty.call(values, name)) return name;
-            const want = ELFormNorm(name);
-            for (const k of Object.keys(values || {})) { if (ELFormNorm(k) === want) return k; }
-            return null;
-        };
-        const valOf = (name) => {
-            const c = canon(name);
-            return c ? String(values[c] === undefined || values[c] === null ? '' : values[c]).trim() : '';
-        };
-        if ((!main || main.toLowerCase() === 'none') && (!sec || sec.toLowerCase() === 'none')) {
-            return '<div class="el-keymap"><div class="el-keymap-h">Key mapping</div>' +
-                '<div class="el-keymap-k">type maps no slot — keys follow the Raw key fields above.</div></div>';
-        }
-        const mv = valOf(main);
-        const sv = valOf(sec);
-        return '<div class="el-keymap"><div class="el-keymap-h">✓ Key mapping <span>— from type: ' +
-            escapeHtml(main) + (sec && sec.toLowerCase() !== 'none' ? ' → keys · ' + escapeHtml(sec) + ' → secondary' : ' → keys') + '</span></div>' +
-            '<div class="el-keymap-k">keys: [' + escapeHtml(mv || '—') + ']' +
-            ((sec && sec.toLowerCase() !== 'none') ? ' · secondary: [' + escapeHtml(sv || '—') + ']' : '') +
-            ' <span class="el-keymap-hint">— confirm or edit, like any field; override in Raw</span></div></div>';
-    } catch (e) { return ''; }
-}
-
-function ELFormRenderAll() {
-    const type = ELFormGetType();
-    const formHost = document.getElementById('edit-form');
-    const appearHost = document.getElementById('edit-appear');
-    if (!type) {
-        if (formHost) formHost.innerHTML = '';
-        if (appearHost) appearHost.innerHTML = '';
-        return;
-    }
-    if (formHost) {
-        let html = ELFormRenderSections(type, ELFormState.values);
-        if (ELFormState.extra && ELFormState.extra.length) {
-            const shown = ELFormState.extra.slice(0, 8).map(l => escapeHtml(String(l).slice(0, 90))).join('<br>');
-            const more = ELFormState.extra.length > 8 ? '<br>… +' + (ELFormState.extra.length - 8) + ' more' : '';
-            html += '<div class="el-quiet">extra content (preserved, matches no slot):<br>' + shown + more + '</div>';
-        }
-        html += '<div id="el-keymap">' + ELFormKeymapHtml(type, ELFormState.values) + '</div>';
-        formHost.innerHTML = html;
-        ELFormBind(formHost);
-        ELFormTouch();
-    }
-    if (appearHost) {
-        const accent = (type && type.accent) || '#6366f1';
-        appearHost.innerHTML =
-            '<div class="el-appear-row"><div><div class="el-appear-l">Type accent</div>' +
-            '<div class="el-appear-h">Shared by every ' + escapeHtml(String(type.name || type.id)) + ' entry. Edge, tag, labels.</div></div>' +
-            '<div class="el-pick"><input type="color" id="edit-type-accent" value="' + escapeHtml(accent) + '">' +
-            '<span class="el-hex" id="edit-type-accent-hex">' + escapeHtml(accent) + '</span></div></div>' +
-            '<div class="el-quiet">Pickers, never hex fields — the hex is a readout. This edits the shared type look.</div>' +
-            '<div class="el-refrow"><button type="button" id="edit-appear-workshop">Open type workshop…</button></div>';
-        const picker = document.getElementById('edit-type-accent');
-        const hex = document.getElementById('edit-type-accent-hex');
-        if (picker) {
-            picker.addEventListener('input', () => { if (hex) hex.textContent = picker.value; });
-            picker.addEventListener('change', () => { ELFormSaveAccent(picker.value); });
-        }
-        const ws = document.getElementById('edit-appear-workshop');
-        if (ws) {
-            ws.addEventListener('click', () => {
-                try {
-                    const t = (typeof ELFormGetType === 'function') ? ELFormGetType() : null;
-                    // Guarded funnel: saves the open entry via the guard when
-                    // dirty (aborts + keeps the modal on block), closes the
-                    // entry modal first, then opens the workshop on top.
-                    if (typeof EL_workshopOpen === 'function') EL_workshopOpen(t && t.id ? String(t.id) : null);
-                    else switchToView('type-workshop');
-                } catch (e) { try { switchToView('type-workshop'); } catch (_e) {} }
+        const add = document.getElementById('edit-link-add');
+        if (add) add.addEventListener('click', () => {
+            const pick = document.getElementById('edit-link-pick');
+            const kindEl = document.getElementById('edit-link-kind');
+            const uid = pick ? String(pick.value || '') : '';
+            if (!uid) return;
+            if (EL_editLinks.some(x => x.uid === uid)) return;
+            EL_editLinks.push({ uid: uid, kind: (kindEl && String(kindEl.value || '').trim()) || 'link' });
+            EL_editLinksRender();
+        });
+        host.querySelectorAll('[data-el-link-del]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const idx = parseInt(btn.getAttribute('data-el-link-del'), 10);
+                if (Number.isFinite(idx)) EL_editLinks.splice(idx, 1);
+                EL_editLinksRender();
             });
-        }
+        });
+        host.querySelectorAll('[data-el-link-kind]').forEach(inp => {
+            inp.addEventListener('input', () => {
+                const idx = parseInt(inp.getAttribute('data-el-link-kind'), 10);
+                if (Number.isFinite(idx) && EL_editLinks[idx]) EL_editLinks[idx].kind = String(inp.value || 'link') || 'link';
+            });
+        });
+    } catch (e) { /* tolerate */ }
+}
+
+function EL_editLinksCollect() {
+    const out = [];
+    for (const l of EL_editLinks) {
+        if (!l || !l.uid) continue;
+        out.push({ kind: String(l.kind || 'link'), target: { uid: String(l.uid) } });
     }
-}
-
-function ELFormSaveAccent(color) {
-    try {
-        const type = ELFormGetType();
-        if (!type) return;
-        const reg = (typeof ELTypeRegistry !== 'undefined') ? ELTypeRegistry : null;
-        if (!reg || typeof reg.putType !== 'function') return;
-        const next = JSON.parse(JSON.stringify(type));
-        next.accent = String(color);
-        const r = reg.putType(EL_getTypeStore(), next);
-        if (r && r.type) { try { saveSettings(); } catch (e) { /* tolerate */ } }
-    } catch (e) { /* tolerate */ }
-}
-
-function ELFormSaveGalleryInject(label, on) {
-    try {
-        const type = ELFormGetType();
-        if (!type) return;
-        const reg = (typeof ELTypeRegistry !== 'undefined') ? ELTypeRegistry : null;
-        if (!reg || typeof reg.putType !== 'function') return;
-        const next = JSON.parse(JSON.stringify(type));
-        let found = false;
-        for (const sec of (next.sections || [])) {
-            for (const sl of ((sec && sec.slots) || [])) {
-                if (ELFormNorm(sl.label) === ELFormNorm(label)) { sl.inject = on ? 'on' : 'off'; found = true; }
-            }
-        }
-        if (!found) return;
-        const r = reg.putType(EL_getTypeStore(), next);
-        if (r && r.type) { try { saveSettings(); } catch (e) { /* tolerate */ } }
-    } catch (e) { /* tolerate */ }
-}
-
-function ELFormBind(host) {
-    try {
-        if (!host || host.dataset.elBound) return;
-        host.dataset.elBound = '1';
-        host.addEventListener('input', (ev) => {
-            try {
-                const t = ev && ev.target;
-                if (!t) return;
-                if (t.hasAttribute && t.hasAttribute('data-el-slot') && t.tagName === 'INPUT' && t.type === 'text') {
-                    const thumb = t.closest ? t.closest('.el-imgrow') : null;
-                    if (thumb) {
-                        const box = thumb.querySelector ? thumb.querySelector('[data-el-thumb]') : null;
-                        if (box) {
-                            const link = t.value.trim();
-                            box.innerHTML = link
-                                ? '<img src="' + escapeHtml(link) + '" alt="" onerror="this.remove()">'
-                                : '<span>no image</span>';
-                        }
-                    }
-                }
-                ELFormTouch();
-            } catch (e) { /* tolerate */ }
-        });
-        host.addEventListener('change', (ev) => {
-            try {
-                const t = ev && ev.target;
-                if (!t) return;
-                if (t.hasAttribute && t.hasAttribute('data-el-inject')) {
-                    const wrap = t.closest ? t.closest('[data-el-field]') : null;
-                    const label = wrap ? wrap.getAttribute('data-el-field') : '';
-                    ELFormSaveGalleryInject(label, !!t.checked);
-                    return;
-                }
-                if (t.hasAttribute && t.hasAttribute('data-el-refpick')) {
-                    if (t.value) ELFormRefAdd(t);
-                    return;
-                }
-            } catch (e) { /* tolerate */ }
-        });
-        host.addEventListener('click', (ev) => {
-            try {
-                const t = ev && ev.target;
-                if (!t || !t.closest) return;
-                const un = t.closest('[data-el-unlink]');
-                if (un) {
-                    const chip = un.closest ? un.closest('.el-chip') : null;
-                    if (chip && chip.parentNode) chip.parentNode.removeChild(chip);
-                    ELFormTouch();
-                    return;
-                }
-                if (t.closest('[data-el-galadd]')) { ELFormGalleryAdd(t); return; }
-                if (t.closest('[data-el-galup]')) { ELFormGalleryUpload(t); return; }
-                if (t.closest('[data-el-imgup]')) { ELFormImgUpload(t); return; }
-                const del = t.closest('[data-el-galdel]');
-                if (del) {
-                    const row = del.closest ? del.closest('.el-galrow') : null;
-                    if (row && row.parentNode) row.parentNode.removeChild(row);
-                    ELFormTouch();
-                }
-            } catch (e) { /* tolerate */ }
-        });
-    } catch (e) { /* tolerate */ }
-}
-
-function ELFormRefAdd(sel) {
-    try {
-        const uid = sel.value;
-        if (!uid) return;
-        const field = sel.closest ? sel.closest('[data-el-field]') : null;
-        const box = field ? field.querySelector('[data-el-ref]') : null;
-        if (!box) return;
-        const label = field.getAttribute('data-el-field');
-        const slot = ELFormSlotParams(ELFormGetType(), label);
-        const lim = slot && slot.limit !== undefined && slot.limit !== null && slot.limit !== '' ? parseInt(slot.limit, 10) : NaN;
-        if (Number.isFinite(lim) && lim >= 0 && box.querySelectorAll('.el-chip').length >= lim) {
-            try { EL_toast('Slot "' + label + '" allows ' + lim + ' ref(s)', 'info'); } catch (e) { /* tolerate */ }
-            sel.value = '';
-            return;
-        }
-        const name = ELFormEntryName(uid);
-        const chip = document.createElement('span');
-        chip.className = 'el-chip';
-        chip.setAttribute('data-uid', uid);
-        chip.setAttribute('data-name', name);
-        chip.innerHTML = escapeHtml(name) + '<button type="button" data-el-unlink title="unlink">×</button>';
-        box.appendChild(chip);
-        const opt = sel.querySelector ? sel.querySelector('option[value="' + uid + '"]') : null;
-        if (opt && opt.parentNode) opt.parentNode.removeChild(opt);
-        sel.value = '';
-        ELFormTouch();
-    } catch (e) { /* tolerate */ }
-}
-
-function ELFormGalleryAdd(btn) {
-    try {
-        const field = btn.closest ? btn.closest('[data-el-field]') : null;
-        const box = field ? field.querySelector('[data-el-gallery]') : null;
-        if (!box || !document.createElement) return;
-        const row = document.createElement('div');
-        row.className = 'el-galrow';
-        row.innerHTML = '<input type="text" data-el-gal placeholder="https://… image link">' +
-            '<button type="button" data-el-galdel title="remove">×</button>';
-        box.appendChild(row);
-        const inp = row.querySelector ? row.querySelector('input') : null;
-        if (inp && inp.focus) inp.focus();
-        ELFormTouch();
-    } catch (e) { /* tolerate */ }
-}
-
-async function ELFormGalleryUpload(btn) {
-    try {
-        const field = btn.closest ? btn.closest('[data-el-field]') : null;
-        const box = field ? field.querySelector('[data-el-gallery]') : null;
-        if (!box) return;
-        const f = await EL_pickImageFile();
-        if (!f) return;
-        const path = await EL_uploadImageToServer(f);
-        if (!path) return;
-        try {
-            const rows = box.querySelectorAll ? box.querySelectorAll('[data-el-gal]') : [];
-            let empty = null;
-            for (let i = 0; i < rows.length; i++) {
-                if (!String(rows[i].value || '').trim()) { empty = rows[i]; break; }
-            }
-            if (empty) {
-                empty.value = path;
-            } else {
-                ELFormGalleryAdd(btn);
-                const fresh = box.querySelectorAll ? box.querySelectorAll('[data-el-gal]') : [];
-                if (fresh.length) fresh[fresh.length - 1].value = path;
-            }
-        } catch (e) {
-            ELFormGalleryAdd(btn);
-        }
-        ELFormTouch();
-        try { EL_toast('Image uploaded.', 'success'); } catch (e) {}
-    } catch (e) { /* tolerate */ }
-}
-
-async function ELFormImgUpload(btn) {
-    try {
-        const row = btn.closest ? btn.closest('.el-imgrow') : null;
-        const input = row ? row.querySelector('[data-el-slot]') : null;
-        if (!input) return;
-        const f = await EL_pickImageFile();
-        if (!f) return;
-        const path = await EL_uploadImageToServer(f);
-        if (!path) return;
-        input.value = path;
-        try {
-            const box = row.querySelector ? row.querySelector('[data-el-thumb]') : null;
-            if (box) box.innerHTML = '<img src="' + escapeHtml(path) + '" alt="" onerror="this.remove()">';
-        } catch (e) {}
-        ELFormTouch();
-        try { EL_toast('Image uploaded.', 'success'); } catch (e) {}
-    } catch (e) { /* tolerate */ }
-}
-
-function ELFormPaintRadar(wrap) {
-    try {
-        const svg = wrap.querySelector ? wrap.querySelector('[data-el-radarsvg]') : null;
-        const poly = svg ? svg.querySelector('.el-radar-poly') : null;
-        if (!poly) return;
-        const inputs = wrap.querySelectorAll ? wrap.querySelectorAll('[data-el-radar]') : [];
-        const nums = [];
-        for (let i = 0; i < inputs.length; i++) {
-            const n = parseFloat(inputs[i].value);
-            nums.push(Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : 0);
-        }
-        poly.setAttribute('points', ELFormRadarPoints(nums, 200));
-    } catch (e) { /* tolerate */ }
-}
-
-function ELFormTouch() {
-    try {
-        const host = document.getElementById('edit-form');
-        if (!host) return;
-        const fields = host.querySelectorAll ? host.querySelectorAll('[data-el-field]') : [];
-        for (let i = 0; i < fields.length; i++) {
-            const f = fields[i];
-            const prev = f.querySelector ? f.querySelector('[data-el-prev]') : null;
-            if (prev) {
-                const ctl = f.querySelector ? f.querySelector('[data-el-slot]') : null;
-                if (ctl && 'value' in ctl) prev.textContent = ELFormPreviewText(ctl.value);
-            }
-        }
-        const wraps = host.querySelectorAll ? host.querySelectorAll('[data-el-radarwrap]') : [];
-        for (let w = 0; w < wraps.length; w++) ELFormPaintRadar(wraps[w]);
-        const km = document.getElementById('el-keymap');
-        if (km) km.innerHTML = ELFormKeymapHtml(ELFormGetType(), ELFormCollect());
-    } catch (e) { /* tolerate */ }
-}
-
-function ELFormCollect() {
-    const values = ELFormMergeLabels({}, ELFormState.values);
-    try {
-        const host = document.getElementById('edit-form');
-        if (!host || !ELFormIsTyped()) return values;
-        const ctrls = host.querySelectorAll ? host.querySelectorAll('[data-el-slot]') : [];
-        for (let i = 0; i < ctrls.length; i++) {
-            const c = ctrls[i];
-            const field = c.closest ? c.closest('[data-el-field]') : null;
-            const label = field ? field.getAttribute('data-el-field') : (c.getAttribute('data-el-slot') || '');
-            if (!label) continue;
-            values[label] = ('value' in c) ? String(c.value) : '';
-        }
-        const refs = host.querySelectorAll ? host.querySelectorAll('[data-el-ref]') : [];
-        for (let r = 0; r < refs.length; r++) {
-            const box = refs[r];
-            const field = box.closest ? box.closest('[data-el-field]') : null;
-            const label = field ? field.getAttribute('data-el-field') : '';
-            if (!label) continue;
-            const chips = box.querySelectorAll ? box.querySelectorAll('.el-chip') : [];
-            const names = [];
-            for (let c = 0; c < chips.length; c++) {
-                const nm = chips[c].getAttribute('data-name') || chips[c].textContent || '';
-                const clean = String(nm).replace(/×\s*$/, '').replace(/⚠\s*$/, '').trim();
-                if (clean) names.push(clean);
-            }
-            values[label] = names.join(', ');
-        }
-        const gals = host.querySelectorAll ? host.querySelectorAll('[data-el-gallery]') : [];
-        for (let g = 0; g < gals.length; g++) {
-            const box = gals[g];
-            const label = box.getAttribute('data-el-gallery') || '';
-            if (!label) continue;
-            const inputs = box.querySelectorAll ? box.querySelectorAll('[data-el-gal]') : [];
-            const links = [];
-            for (let k = 0; k < inputs.length; k++) {
-                const l = String(inputs[k].value || '').trim();
-                if (l) links.push(l);
-            }
-            values[label] = links.join('\n');
-        }
-        const rads = host.querySelectorAll ? host.querySelectorAll('[data-el-radarwrap]') : [];
-        for (let q = 0; q < rads.length; q++) {
-            const wrap = rads[q];
-            const label = wrap.getAttribute('data-el-radarwrap') || '';
-            if (!label) continue;
-            const inputs = wrap.querySelectorAll ? wrap.querySelectorAll('[data-el-radar]') : [];
-            const nums = [];
-            for (let a = 0; a < inputs.length; a++) {
-                const n = parseFloat(inputs[a].value);
-                nums.push(Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : 0);
-            }
-            values[label] = nums.join(', ');
-        }
-    } catch (e) { /* tolerate */ }
-    return values;
-}
-
-function ELFormSwitchTab(name) {
-    try {
-        const tabs = ['form', 'raw', 'appear'];
-        for (const t of tabs) {
-            const pane = document.getElementById('edit-pane-' + t);
-            if (pane) pane.style.display = (t === name) ? '' : 'none';
-        }
-        const btns = document.querySelectorAll ? document.querySelectorAll('#edit-type-tabs .el-tab') : [];
-        for (let i = 0; i < btns.length; i++) {
-            const on = btns[i].getAttribute('data-tab') === name;
-            btns[i].setAttribute('aria-selected', on ? 'true' : 'false');
-            if (btns[i].classList) {
-                if (on) btns[i].classList.add('on');
-                else btns[i].classList.remove('on');
-            }
-        }
-    } catch (e) { /* tolerate */ }
-}
-
-function ELFormShowRaw() {
-    try {
-        const strip = document.getElementById('edit-type-tabs');
-        if (strip) strip.style.display = 'none';
-        const pf = document.getElementById('edit-pane-form');
-        const pa = document.getElementById('edit-pane-appear');
-        const pr = document.getElementById('edit-pane-raw');
-        if (pf) pf.style.display = 'none';
-        if (pa) pa.style.display = 'none';
-        if (pr) pr.style.display = '';
-    } catch (e) { /* tolerate */ }
-}
-
-function ELFormOnTypeChange() {
-    try {
-        const sel = document.getElementById('edit-type');
-        let want = sel ? String(sel.value || 'none') : 'none';
-        if (ELFormState.typeId !== 'none' && ELFormGetType()) {
-            ELFormState.values = ELFormMergeLabels(ELFormState.values, ELFormCollect());
-        }
-        if (want === 'none' || !EL_getEntryType(want)) {
-            if (want !== 'none') { try { sel.value = 'none'; } catch (e) { /* tolerate */ } }
-            ELFormState.typeId = 'none';
-            ELFormShowRaw();
-            return;
-        }
-        ELFormState.typeId = want;
-        const fresh = ELFormExtract(EL_getEntryType(want));
-        ELFormState.values = ELFormMergeLabels(fresh.values, ELFormState.values);
-        ELFormState.extra = fresh.extra;
-        ELFormRenderAll();
-        const strip = document.getElementById('edit-type-tabs');
-        if (strip) strip.style.display = '';
-        ELFormSwitchTab('form');
-    } catch (e) { /* tolerate */ }
+    return out;
 }
 
 /**
- * Re-render the open entry through the CURRENT saved type (single entry).
- * Picks up type edits made since the entry was last applied: match-by-label
- * re-render, tag migration (Name -> limiter), old Tags: consumption.
- * Writes into the modal fields only (content/keys/form) — the user reviews
- * and persists with Save Entry. Never throws; never touches the guard.
+ * Write the manual links into extensions.el.refs while keeping every other
+ * el/extensions key. Removes the keys entirely when nothing is left.
+ * @param {object} entry
  */
-function ELFormReapplyType() {
+function EL_writeEntryLinks(entry) {
     try {
-        if (typeof ELFormIsTyped !== 'function' || !ELFormIsTyped()) {
-            try { EL_toast('No type set — pick a type first.', 'warning'); } catch (e) {}
-            return;
+        const refs = EL_editLinksCollect();
+        const ext = (entry.extensions && typeof entry.extensions === 'object' && !Array.isArray(entry.extensions))
+            ? entry.extensions : {};
+        let el = (ext.el && typeof ext.el === 'object' && !Array.isArray(ext.el)) ? ext.el : {};
+        const hadRefs = Array.isArray(el.refs) && el.refs.length > 0;
+        if (refs.length) el.refs = refs;
+        else delete el.refs;
+        if (refs.length || hadRefs) {
+            if (Object.keys(el).length) ext.el = el;
+            else delete ext.el;
+            entry.extensions = ext;
         }
-        const type = (typeof ELFormGetType === 'function') ? ELFormGetType() : null;
-        const CC = (typeof ELCompile !== 'undefined') ? ELCompile : null;
-        if (!type || !CC || typeof CC.applyType !== 'function') {
-            try { EL_toast('Type engine unavailable.', 'error'); } catch (e) {}
-            return;
-        }
-        const rawEl = document.getElementById('edit-content');
-        const base = {
-            content: rawEl ? (rawEl.value || '') : '',
-            key: [],
-            keysecondary: [],
-            extensions: { el: { type: String(type.id || '') } },
-        };
-        let formVals = {};
-        try {
-            if (typeof ELFormCollect === 'function') {
-                const c = ELFormCollect();
-                if (c && typeof c === 'object') formVals = c;
-            }
-        } catch (e) { formVals = {}; }
-        let r = null;
-        try {
-            const lookup = (typeof ELFormLookupName === 'function') ? ELFormLookupName : undefined;
-            r = CC.applyType(base, type, { values: formVals, lookupName: lookup });
-        } catch (e) { r = null; }
-        if (!r || !r.entry || typeof r.entry.content !== 'string') {
-            try { EL_toast('Re-apply failed — entry left unchanged.', 'error'); } catch (e) {}
-            return;
-        }
-        if (rawEl) rawEl.value = r.entry.content;
-        try {
-            if (Array.isArray(r.entry.key)) document.getElementById('edit-keys').value = r.entry.key.join(', ');
-            if (Array.isArray(r.entry.keysecondary)) document.getElementById('edit-secondary-keys').value = r.entry.keysecondary.join(', ');
-        } catch (e) {}
-        try {
-            const ex = (typeof ELFormExtract === 'function') ? ELFormExtract(type) : null;
-            if (ex) {
-                ELFormState.values = (ex.values && typeof ex.values === 'object') ? ex.values : {};
-                ELFormState.extra = Array.isArray(ex.extra) ? ex.extra : [];
-            }
-            if (typeof ELFormRenderAll === 'function') ELFormRenderAll();
-        } catch (e) {}
-        try { _elEntryDirty = true; } catch (e) {}
-        const notes = Array.isArray(r.changes) ? r.changes.filter(Boolean) : [];
-        const warns = Array.isArray(r.warnings) ? r.warnings.filter(Boolean) : [];
-        const summary = notes.slice(0, 3).join(' · ') || 'Entry re-rendered through the saved type.';
-        try { EL_toast(summary + (warns.length ? ' (' + warns.length + ' warning' + (warns.length === 1 ? '' : 's') + ')' : '') + ' — review, then Save Entry.', warns.length ? 'warning' : 'success'); } catch (e) {}
     } catch (e) { /* tolerate */ }
-}
-
-function ELFormOpenFor(entry) {
-    ELFormState.uid = document.getElementById('edit-entry-uid').value;
-    ELFormState.values = {};
-    ELFormState.extra = [];
-    const sel = document.getElementById('edit-type');
-    let storedId = '';
-    try { storedId = (entry && entry.extensions && entry.extensions.el && entry.extensions.el.type) || ''; } catch (e) { storedId = ''; }
-    storedId = String(storedId || '');
-    try { EL_fillTypeSelect(sel, storedId || 'none'); } catch (e) { /* tolerate */ }
-    if (sel) {
-        sel.onchange = ELFormOnTypeChange;
-        if (storedId && !EL_getEntryType(storedId)) {
-            try { sel.value = 'none'; } catch (e) { /* tolerate */ }
-            storedId = '';
-        }
-    }
-    try {
-        const rb = document.getElementById('edit-type-reapply');
-        if (rb && !rb.dataset.elBound) {
-            rb.dataset.elBound = '1';
-            rb.addEventListener('click', ELFormReapplyType);
-        }
-    } catch (e) {}
-    const btns = document.querySelectorAll ? document.querySelectorAll('#edit-type-tabs .el-tab') : [];
-    for (let i = 0; i < btns.length; i++) {
-        btns[i].onclick = () => { ELFormSwitchTab(btns[i].getAttribute('data-tab')); };
-    }
-    if (storedId && EL_getEntryType(storedId)) {
-        ELFormState.typeId = storedId;
-        const ex = ELFormExtract(EL_getEntryType(storedId));
-        ELFormState.values = ex.values;
-        ELFormState.extra = ex.extra;
-        ELFormRenderAll();
-        const strip = document.getElementById('edit-type-tabs');
-        if (strip) strip.style.display = '';
-        ELFormSwitchTab('form');
-    } else {
-        ELFormState.typeId = 'none';
-        ELFormShowRaw();
-    }
 }
 
 // ==========================================
@@ -6621,9 +6118,9 @@ function openEditEntryModal(uid) {
         document.getElementById('edit-delay-recursion').checked = !!entry.delayUntilRecursion;
         document.getElementById('edit-ignore-budget').checked = !!entry.ignoreBudget;
 
-        /* EL-REVAMP B1: populate the type select + tabs; untyped entries
-           fall back to the classic Raw view. Never throws into the open path. */
-        try { ELFormOpenFor(entry); } catch (e) { EL_warn('typed form open failed — classic Raw view', e); try { ELFormShowRaw(); } catch (e2) {} }
+        /* The type is a tag only: populate the select, never touch content. */
+        try { EL_openTypeSelect(entry); } catch (e) { EL_warn('type select open failed', e); }
+        try { EL_editLinksLoad(entry); EL_editLinksRender(); } catch (e) { EL_warn('link list open failed', e); }
 
         _elEntryDirty = false;
         EL_modalOpen('edit-entry-modal');
@@ -6673,7 +6170,7 @@ async function saveEditedEntry() {
     const positionSelect = document.getElementById('edit-position');
     const selectedOption = positionSelect.selectedOptions[0];
     entry.position = parseInt(selectedOption.value) || 0;
-    entry.role = selectedOption.dataset.role !== '' ? parseInt(selectedOption.dataset.role) : (entry.role ?? null);
+    entry.role = selectedOption.dataset.role !== '' ? parseInt(selectedOption.dataset.role) : null;
     entry.selectiveLogic = parseInt(document.getElementById('edit-logic').value) || 0;
 
     entry.order = parseInt(document.getElementById('edit-order').value);
@@ -6751,47 +6248,23 @@ async function saveEditedEntry() {
     entry.automationId = document.getElementById('edit-automation-id').value;
     entry.ignoreBudget = document.getElementById('edit-ignore-budget').checked;
 
-    /* EL-REVAMP B1: typed save. Form values are compiled through the type
-       (content/keys/el refs), then the EXISTING guard save below persists the
-       book unchanged. Switching back to None detaches to plain and clears
-       extensions.el so the entry stays untyped (reopen keeps showing None). */
+    /* The type is only a tag: store (or clear) extensions.el.type while
+       keeping every other extensions key (refs included). Content is exactly
+       what the user typed in the textarea — nothing is rendered or reordered. */
     try {
-        if (ELFormIsTyped() && String(document.getElementById('edit-entry-uid').value) === String(uid)) {
-            const b1type = ELFormGetType();
-            const b1values = ELFormCollect();
-            const CC = (typeof ELCompile !== 'undefined') ? ELCompile : null;
-            if (b1type && CC && typeof CC.applyType === 'function') {
-                const base = JSON.parse(JSON.stringify(entry));
-                const r = CC.applyType(base, b1type, { values: b1values, lookupName: ELFormLookupName });
-                if (r && r.entry && typeof r.entry.content === 'string') {
-                    entry.content = r.entry.content;
-                    if (r.entry.key) entry.key = r.entry.key;
-                    if (r.entry.keysecondary) entry.keysecondary = r.entry.keysecondary;
-                    if (r.entry.extensions) entry.extensions = r.entry.extensions;
+        if (String(document.getElementById('edit-entry-uid').value) === String(uid)) {
+            const selected = EL_readTypeSelect();
+            if (selected === 'none') {
+                if (entry.extensions && typeof entry.extensions === 'object') {
+                    const w = EL_batchTypeResetWrites(entry);
+                    if (w && w.extensions) entry.extensions = w.extensions;
                 }
+            } else {
+                entry.extensions = EL_withEntryType(entry.extensions, selected);
             }
-        } else if (String(document.getElementById('edit-entry-uid').value) === String(uid)) {
-            try {
-                const oldTid = (typeof EL_oldTypeId === 'function')
-                    ? EL_oldTypeId(entry)
-                    : ((entry && entry.extensions && entry.extensions.el && entry.extensions.el.type) || '');
-                if (oldTid) {
-                    let w = null;
-                    try { w = (typeof EL_batchTypeResetWrites === 'function') ? EL_batchTypeResetWrites(entry) : null; } catch (e2) { w = null; }
-                    if (w) {
-                        if (Object.prototype.hasOwnProperty.call(w, 'content') && typeof w.content === 'string') entry.content = w.content;
-                        if (Object.prototype.hasOwnProperty.call(w, 'extensions')) entry.extensions = w.extensions;
-                        else if (entry.extensions && typeof entry.extensions === 'object') {
-                            try { delete entry.extensions.el; } catch (e2) {}
-                        }
-                    } else if (entry.extensions && typeof entry.extensions === 'object') {
-                        try { delete entry.extensions.el; } catch (e2) {}
-                    }
-                    try { document.getElementById('edit-content').value = entry.content; } catch (e2) {}
-                }
-            } catch (e2) { /* detach is best-effort; classic field values still save */ }
+            EL_writeEntryLinks(entry);
         }
-    } catch (e) { EL_warn('typed save compile failed — kept classic field values', e); }
+    } catch (e) { EL_warn('type tag save failed', e); }
 
     if (EL_isGenerating()) EL_warn(`saveEditedEntry: generation running (agent=${agentEngine?.state}) — save may race with agent`, { uid: entry.uid, book: currentLorebookName });
     // NOTE (deliberately NOT optimized): ELG_guardSave performs its own fresh
@@ -10225,11 +9698,12 @@ function EL_setupRootDrop() {
 }
 
 // ==========================================
-// Type Workshop (Track B2)
-// Full type CRUD: list, builder, live raw preview, inspector.
-// All persistence goes through ELTypeRegistry.putType/deleteType on
-// EL_getTypeStore() + saveSettings(). Entry writes still go through
-// ELG_guardSave; this module never touches the B1 form or the guard.
+// Types & Presets (Type Workshop)
+// A type is a tag, plus optional create defaults and literal presets.
+// Persistence goes through ELTypeRegistry.putType/deleteType on
+// EL_getTypeStore() + saveSettings(). Deleting a type clears the tag on its
+// entries through ELG_guardSave — entry content is never read, rewritten or
+// stripped here, and no type ever touches content anywhere else either.
 // ==========================================
 let EL_workshopSelectedId = null;
 let EL_workshopDraft = null;
@@ -10237,17 +9711,25 @@ let EL_workshopUsage = null;
 let EL_workshopUsageToken = 0;
 let EL_workshopBound = false;
 
+// Position/role combos, matching the create dialogs and the edit modal.
+const EL_TW_POSITIONS = [
+    { v: '0', role: '', label: '↑Char' },
+    { v: '1', role: '', label: '↓Char' },
+    { v: '5', role: '', label: '↑EM' },
+    { v: '6', role: '', label: '↓EM' },
+    { v: '2', role: '', label: '↑AN' },
+    { v: '3', role: '', label: '↓AN' },
+    { v: '4', role: '0', label: '@D ⚙️' },
+    { v: '4', role: '1', label: '@D 👤' },
+    { v: '4', role: '2', label: '@D 🤖' },
+    { v: '7', role: '', label: '➡️ Outlet' },
+];
+
 function EL_workshopReg() {
     try {
         const r = (typeof ELTypeRegistry !== 'undefined') ? ELTypeRegistry : (typeof window !== 'undefined' ? window.ELTypeRegistry : null);
         return r || null;
     } catch (e) { return null; }
-}
-
-function EL_workshopKinds() {
-    const reg = EL_workshopReg();
-    if (reg && Array.isArray(reg.KNOWN_KINDS) && reg.KNOWN_KINDS.length) return reg.KNOWN_KINDS.slice();
-    return ['cont', 'img', 'ref', 'gallery', 'radar', 'display', 'conditional', 'setref', 'getref', 'hub'];
 }
 
 function EL_workshopIsBuiltin(id) {
@@ -10274,13 +9756,26 @@ function EL_workshopUniqueId(base) {
     return stem + '-' + n;
 }
 
+function EL_workshopUniquePresetId(type, base) {
+    const reg = EL_workshopReg();
+    const slugger = (reg && typeof reg.slug === 'function') ? reg.slug : function (s) { return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''); };
+    let stem = '';
+    try { stem = slugger(base) || 'preset'; } catch (e) { stem = 'preset'; }
+    const used = {};
+    try {
+        for (const p of ((type && type.presets) || [])) used[String(p.id)] = true;
+    } catch (e) {}
+    if (!used[stem]) return stem;
+    let n = 2;
+    while (used[stem + '-' + n]) n++;
+    return stem + '-' + n;
+}
+
 /**
- * Single funnel for opening the Type Workshop. When the entry editor is open,
- * its edits are saved first through the existing guard path (saveEditedEntry →
- * ELG_guardSave); a blocked save aborts the workshop open with a toast and the
- * modal stays open so no edit is lost. The entry modal is always fully closed
- * BEFORE the workshop view shows, so the workshop panel never stacks under the
- * entry overlay. Async — callers must not depend on the return value.
+ * Single funnel for opening the Types & Presets panel. When the entry editor
+ * is open, its edits are saved first through the existing guard path; a
+ * blocked save aborts the open with a toast and the modal stays open so no
+ * edit is lost.
  */
 async function EL_workshopOpen(id) {
     try {
@@ -10293,14 +9788,12 @@ async function EL_workshopOpen(id) {
                 let ok = false;
                 try { ok = await saveEditedEntry(); } catch (e) { ok = false; }
                 if (!ok) {
-                    try { EL_toast('Workshop not opened — the entry save was blocked. Your edits are still open.', 'warning'); } catch (e) {}
+                    try { EL_toast('Panel not opened — the entry save was blocked. Your edits are still open.', 'warning'); } catch (e) {}
                     return;
                 }
             } else {
                 try { EL_modalClose('edit-entry-modal'); } catch (e) {}
             }
-            // saveEditedEntry closes the modal on success; close again is a
-            // harmless no-op that guarantees the modal stack is empty.
             try { EL_modalClose('edit-entry-modal'); } catch (e) {}
             _elEntryDirty = false;
         }
@@ -10311,9 +9804,6 @@ async function EL_workshopOpen(id) {
     }
 }
 
-/**
- * Close the Type Workshop via the existing entries-view path.
- */
 function EL_workshopClose() {
     try { showLorebookView(); } catch (e) {}
 }
@@ -10354,8 +9844,6 @@ function EL_workshopRender() {
     } catch (e) {}
     EL_workshopRenderList();
     EL_workshopRenderBuilder();
-    EL_workshopRenderInspector();
-    EL_workshopRenderPreview();
     EL_workshopRenderUsage();
     if (!EL_workshopUsage || EL_workshopUsage.typeId !== EL_workshopSelectedId) EL_workshopRefreshUsage();
 }
@@ -10373,9 +9861,6 @@ function EL_workshopBind() {
     on('el-tw-clone', 'click', EL_workshopClone);
     on('el-tw-delete', 'click', EL_workshopAskDelete);
     on('el-tw-save', 'click', EL_workshopSave);
-    on('el-tw-ins-save', 'click', EL_workshopSave);
-    on('el-tw-ins-delete', 'click', EL_workshopAskDelete);
-    on('el-tw-validate', 'click', () => EL_workshopValidate(true));
     on('el-tw-close', 'click', EL_workshopClose);
     on('el-tw-close-footer', 'click', EL_workshopClose);
 }
@@ -10398,9 +9883,11 @@ function EL_workshopRenderList() {
         const active = (id === String(EL_workshopSelectedId)) ? ' active' : '';
         const builtin = EL_workshopIsBuiltin(id) ? '<span class="el-tw-builtin">built-in</span>' : '';
         const accent = /^#[0-9a-fA-F]{6}$/.test(String(t.accent || '')) ? String(t.accent) : '#6366f1';
+        const nPresets = Array.isArray(t.presets) ? t.presets.length : 0;
         return '<div class="el-tw-typeitem' + active + '" data-el-tw-type="' + escapeHtml(id) + '" title="' + escapeHtml(id) + '">'
             + '<span class="el-tw-dot" style="background:' + escapeHtml(accent) + ';"></span>'
             + '<span class="el-tw-tname">' + escapeHtml(String(t.icon || '') + ' ' + String(t.name || id)).trim() + '</span>'
+            + (nPresets ? '<span class="el-tw-count">' + nPresets + ' preset' + (nPresets === 1 ? '' : 's') + '</span>' : '')
             + builtin + '</div>';
     }).join('');
     host.querySelectorAll('[data-el-tw-type]').forEach(el => {
@@ -10408,28 +9895,77 @@ function EL_workshopRenderList() {
     });
 }
 
-function EL_workshopContLabels() {
-    const out = [];
+function EL_workshopDefaults() {
     try {
-        for (const sec of (EL_workshopDraft.sections || [])) {
-            for (const sl of ((sec && sec.slots) || [])) {
-                if (sl && sl.kind === 'cont' && sl.label) out.push(String(sl.label));
-            }
-        }
-    } catch (e) {}
-    return out;
+        if (!EL_workshopDraft.defaults || typeof EL_workshopDraft.defaults !== 'object') EL_workshopDraft.defaults = {};
+        return EL_workshopDraft.defaults;
+    } catch (e) { return {}; }
+}
+
+function EL_workshopDefaultsHtml(d) {
+    const dv = (k) => (d.defaults && Object.prototype.hasOwnProperty.call(d.defaults, k)) ? d.defaults[k] : '';
+    const num = (k, label, extra) => '<label class="el-tw-defrow"><span>' + escapeHtml(label) + '</span>'
+        + '<input type="number" data-el-tw-def="' + escapeHtml(k) + '" value="' + escapeHtml(String(dv(k))) + '" placeholder="—"' + (extra || '') + '></label>';
+    const tri = (k, label) => {
+        const cur = Object.prototype.hasOwnProperty.call(d.defaults || {}, k) ? String(!!d.defaults[k]) : '';
+        return '<label class="el-tw-defrow"><span>' + escapeHtml(label) + '</span>'
+            + '<select data-el-tw-def="' + escapeHtml(k) + '"><option value="">—</option>'
+            + '<option value="true"' + (cur === 'true' ? ' selected' : '') + '>on</option>'
+            + '<option value="false"' + (cur === 'false' ? ' selected' : '') + '>off</option></select></label>';
+    };
+    const posCur = (d.defaults && Object.prototype.hasOwnProperty.call(d.defaults, 'position'))
+        ? (String(d.defaults.position) + ':' + (d.defaults.role === undefined || d.defaults.role === null ? '' : String(d.defaults.role)))
+        : '';
+    const posOpts = EL_TW_POSITIONS.map(p => {
+        const key = p.v + ':' + p.role;
+        return '<option value="' + escapeHtml(key) + '"' + (key === posCur ? ' selected' : '') + '>' + escapeHtml(p.label) + '</option>';
+    }).join('');
+    return '<div class="el-tw-defgrid">'
+        + num('order', 'Order')
+        + '<label class="el-tw-defrow"><span>Strategy</span><select data-el-tw-def="position"><option value="">—</option>' + posOpts + '</select></label>'
+        + num('depth', 'Depth', ' min="0"')
+        + num('probability', 'Probability %', ' min="0" max="100"')
+        + tri('constant', 'Constant')
+        + tri('vectorized', 'Vectorized')
+        + tri('selective', 'Selective')
+        + tri('disable', 'Disabled')
+        + tri('excludeRecursion', 'Exclude recursion')
+        + tri('preventRecursion', 'Prevent recursion')
+        + '</div>';
+}
+
+function EL_workshopPresetsHtml(d) {
+    const list = Array.isArray(d.presets) ? d.presets : [];
+    const rows = list.map((p, i) => {
+        const name = String((p && p.name) || '');
+        const content = String((p && p.content) || '');
+        return '<div class="el-tw-preset" data-el-tw-pidx="' + i + '">'
+            + '<div class="el-tw-phead">'
+            + '<input type="text" data-el-tw-pname value="' + escapeHtml(name) + '" placeholder="Preset name">'
+            + '<span class="el-tw-pid">' + escapeHtml(String((p && p.id) || '')) + '</span>'
+            + '<button type="button" data-el-tw-pdel title="Delete preset">×</button>'
+            + '</div>'
+            + '<textarea data-el-tw-pcontent rows="7" placeholder="Literal placeholder text — inserted as-is, never parsed.">' + escapeHtml(content) + '</textarea>'
+            + '</div>';
+    }).join('');
+    return '<div class="el-tw-presets">' + (rows || '<div class="el-tw-muted">No presets yet — add one and write the placeholder text you want on new entries.</div>')
+        + '<button id="el-tw-add-preset" class="btn btn-secondary btn-sm" type="button">＋ Add preset</button></div>';
 }
 
 function EL_workshopRenderBuilder() {
     const identHost = document.getElementById('el-tw-identity');
-    const secHost = document.getElementById('el-tw-sections');
-    if (!identHost || !secHost) return;
+    const defHost = document.getElementById('el-tw-defaults');
+    const preHost = document.getElementById('el-tw-presets');
+    if (!identHost) return;
     const d = EL_workshopDraft;
     if (!d) {
         identHost.innerHTML = '<div class="empty-state" style="padding:20px 0;"><p>Select a type</p></div>';
-        secHost.innerHTML = '';
+        if (defHost) defHost.innerHTML = '';
+        if (preHost) preHost.innerHTML = '';
         return;
     }
+    if (!d.defaults || typeof d.defaults !== 'object') d.defaults = {};
+    if (!Array.isArray(d.presets)) d.presets = [];
     const accent = /^#[0-9a-fA-F]{6}$/.test(String(d.accent || '')) ? String(d.accent) : '#6366f1';
     try {
         const panel = document.getElementById('type-workshop-panel');
@@ -10440,272 +9976,118 @@ function EL_workshopRenderBuilder() {
         + '<div class="el-tw-irow"><label>Type name</label><input type="text" id="el-tw-name" value="' + escapeHtml(String(d.name || '')) + '" placeholder="Character"></div>'
         + '<div class="el-tw-irow el-tw-inline">'
         + '<div><label>Icon</label><input type="text" id="el-tw-icon" value="' + escapeHtml(String(d.icon || '')) + '" placeholder="👤" style="width:64px;"></div>'
-        + '<div><label>Accent</label><div class="el-tw-pick"><input type="color" id="el-tw-accent" value="' + escapeHtml(/^#[0-9a-fA-F]{6}$/.test(accent) ? accent : '#6366f1') + '"><span class="el-tw-hex" id="el-tw-accent-hex">' + escapeHtml(accent) + '</span></div></div>'
-        + '<div style="flex:1; min-width:140px;"><label>Tag limiter</label><input type="text" id="el-tw-tag" value="' + escapeHtml(String(d.tag || '')) + '" placeholder="char_name" style="width:100%; font-family:monospace;"></div>'
+        + '<div><label>Accent</label><div class="el-tw-pick"><input type="color" id="el-tw-accent" value="' + escapeHtml(accent) + '"><span class="el-tw-hex" id="el-tw-accent-hex">' + escapeHtml(accent) + '</span></div></div>'
         + '</div>'
-        + '<div class="el-tw-idline">id <code>' + escapeHtml(String(d.id || '')) + '</code> — ids never change; rename freely.</div>'
+        + '<div class="el-tw-idline">id <code>' + escapeHtml(String(d.id || '')) + '</code> — the tag stored on entries is this type; ids never change.</div>'
         + '</div>';
-    const kinds = EL_workshopKinds();
-    secHost.innerHTML = (d.sections || []).map((sec, si) => {
-        const slots = Array.isArray(sec.slots) ? sec.slots : [];
-        const rows = slots.map((sl, sj) => {
-            const kind = String((sl && sl.kind) || 'cont');
-            const opts = kinds.map(k => '<option value="' + escapeHtml(k) + '"' + (k === kind ? ' selected' : '') + '>' + escapeHtml(k) + '</option>').join('');
-            return '<div class="el-tw-slot" data-el-tw-sec="' + si + '" data-el-tw-slot="' + sj + '">'
-                + '<div class="el-tw-slotrow"><select data-el-tw-kind>' + opts + '</select>'
-                + '<input type="text" data-el-tw-label value="' + escapeHtml(String((sl && sl.label) || '')) + '" placeholder="Label">'
-                + '<span class="el-tw-rowbtns"><button data-el-tw-up title="Move up">↑</button><button data-el-tw-down title="Move down">↓</button><button data-el-tw-del title="Delete slot">×</button></span></div>'
-                + '<div class="el-tw-cfg">' + EL_workshopSlotCfgHtml(kind, sl || {}) + '</div>'
-                + '</div>';
-        }).join('');
-        const kindOpts = kinds.map(k => '<option value="' + escapeHtml(k) + '">+ ' + escapeHtml(k) + '</option>').join('');
-        return '<div class="el-tw-sec" data-el-tw-section="' + si + '">'
-            + '<div class="el-tw-sechead"><input type="text" data-el-tw-sectitle value="' + escapeHtml(String(sec.title || '')) + '" placeholder="Section title">'
-            + '<span class="el-tw-rowbtns"><button data-el-tw-secup title="Move section up">↑</button><button data-el-tw-secdown title="Move section down">↓</button><button data-el-tw-secdel title="Delete section">×</button></span></div>'
-            + rows
-            + '<div class="el-tw-addrow"><select data-el-tw-addkind>' + kindOpts + '</select><button data-el-tw-addslot>Add slot</button></div>'
-            + '</div>';
-    }).join('') + '<button id="el-tw-addsec" class="btn btn-secondary btn-sm">＋ Add section</button>';
-    try {
-        const nameEl = document.getElementById('el-tw-name');
-        if (nameEl) nameEl.addEventListener('input', () => { EL_workshopDraft.name = nameEl.value; EL_workshopRenderList(); EL_workshopRenderPreview(); });
-        const iconEl = document.getElementById('el-tw-icon');
-        if (iconEl) iconEl.addEventListener('input', () => { EL_workshopDraft.icon = iconEl.value; EL_workshopRenderList(); });
-        const tagEl = document.getElementById('el-tw-tag');
-        if (tagEl) tagEl.addEventListener('input', () => { EL_workshopDraft.tag = tagEl.value; EL_workshopRenderUsage(); EL_workshopRenderPreview(); });
-        const accEl = document.getElementById('el-tw-accent');
-        if (accEl) accEl.addEventListener('input', () => {
-            var safeAcc = /^#[0-9a-fA-F]{6}$/.test(accEl.value) ? accEl.value : '#6366f1';
+    if (defHost) {
+        defHost.innerHTML = '<div class="el-tw-boxhead"><h4>Create defaults</h4>'
+            + '<span class="el-tw-muted">Applied when a NEW entry of this type is created. A blank field leaves the add dialog to decide.</span></div>'
+            + EL_workshopDefaultsHtml(d);
+    }
+    if (preHost) {
+        preHost.innerHTML = '<div class="el-tw-boxhead"><h4>Presets</h4>'
+            + '<span class="el-tw-muted">Literal content for new entries. Type the placeholder you want; nothing is parsed or substituted.</span></div>'
+            + EL_workshopPresetsHtml(d);
+    }
+    EL_workshopBindDraft();
+}
+
+function EL_workshopBindDraft() {
+    const nameEl = document.getElementById('el-tw-name');
+    if (nameEl) {
+        nameEl.addEventListener('input', () => {
+            if (!EL_workshopDraft) return;
+            EL_workshopDraft.name = nameEl.value;
+            EL_workshopRenderList();
+        });
+    }
+    const iconEl = document.getElementById('el-tw-icon');
+    if (iconEl) {
+        iconEl.addEventListener('input', () => {
+            if (!EL_workshopDraft) return;
+            EL_workshopDraft.icon = iconEl.value;
+            EL_workshopRenderList();
+        });
+    }
+    const accEl = document.getElementById('el-tw-accent');
+    if (accEl) {
+        accEl.addEventListener('input', () => {
+            if (!EL_workshopDraft) return;
+            const safeAcc = /^#[0-9a-fA-F]{6}$/.test(accEl.value) ? accEl.value : '#6366f1';
             EL_workshopDraft.accent = safeAcc;
             const hex = document.getElementById('el-tw-accent-hex');
             if (hex) hex.textContent = safeAcc;
             try { document.getElementById('type-workshop-panel').style.setProperty('--el-tw-accent', safeAcc); } catch (e) {}
             EL_workshopRenderList();
         });
-    } catch (e) {}
-    try {
-        secHost.querySelectorAll('.el-tw-sec').forEach(secEl => {
-            const si = parseInt(secEl.getAttribute('data-el-tw-section'), 10);
-            const titleEl = secEl.querySelector('[data-el-tw-sectitle]');
-            if (titleEl) titleEl.addEventListener('input', () => {
-                try { EL_workshopDraft.sections[si].title = titleEl.value; } catch (e) {}
-                EL_workshopRenderPreview();
-            });
-            const upB = secEl.querySelector('[data-el-tw-secup]');
-            if (upB) upB.addEventListener('click', () => EL_workshopMoveSection(si, -1));
-            const dnB = secEl.querySelector('[data-el-tw-secdown]');
-            if (dnB) dnB.addEventListener('click', () => EL_workshopMoveSection(si, 1));
-            const delB = secEl.querySelector('[data-el-tw-secdel]');
-            if (delB) delB.addEventListener('click', () => {
-                try { EL_workshopDraft.sections.splice(si, 1); } catch (e) {}
-                EL_workshopRenderBuilder(); EL_workshopRenderInspector(); EL_workshopRenderPreview();
-            });
-            const addKind = secEl.querySelector('[data-el-tw-addkind]');
-            const addB = secEl.querySelector('[data-el-tw-addslot]');
-            if (addB) addB.addEventListener('click', () => EL_workshopAddSlot(si, addKind ? addKind.value : 'cont'));
-            secEl.querySelectorAll('.el-tw-slot').forEach(row => {
-                const sj = parseInt(row.getAttribute('data-el-tw-slot'), 10);
-                const kindSel = row.querySelector('[data-el-tw-kind]');
-                if (kindSel) kindSel.addEventListener('change', () => {
-                    try { EL_workshopDraft.sections[si].slots[sj].kind = kindSel.value; } catch (e) {}
-                    EL_workshopRenderBuilder(); EL_workshopRenderInspector(); EL_workshopRenderPreview();
-                });
-                const labEl = row.querySelector('[data-el-tw-label]');
-                if (labEl) {
-                    labEl.addEventListener('input', () => {
-                        try { EL_workshopDraft.sections[si].slots[sj].label = labEl.value; } catch (e) {}
-                        EL_workshopRenderPreview();
-                    });
-                    labEl.addEventListener('change', () => { EL_workshopRenderInspector(); });
-                }
-                const su = row.querySelector('[data-el-tw-up]');
-                if (su) su.addEventListener('click', () => EL_workshopMoveSlot(si, sj, -1));
-                const sd = row.querySelector('[data-el-tw-down]');
-                if (sd) sd.addEventListener('click', () => EL_workshopMoveSlot(si, sj, 1));
-                const sdel = row.querySelector('[data-el-tw-del]');
-                if (sdel) sdel.addEventListener('click', () => {
-                    try { EL_workshopDraft.sections[si].slots.splice(sj, 1); } catch (e) {}
-                    EL_workshopRenderBuilder(); EL_workshopRenderInspector(); EL_workshopRenderPreview();
-                });
-                EL_workshopBindSlotParams(row, si, sj);
-            });
-        });
-        const addSec = document.getElementById('el-tw-addsec');
-        if (addSec) addSec.addEventListener('click', () => {
-            try { EL_workshopDraft.sections.push({ title: 'New Section', slots: [] }); } catch (e) {}
-            EL_workshopRenderBuilder(); EL_workshopRenderPreview();
-        });
-    } catch (e) {}
-}
-
-function EL_workshopSlotCfgHtml(kind, sl) {
-    const v = (x) => escapeHtml(String(x ?? ''));
-    const txt = (f, val, ph, style) => '<label>' + escapeHtml(f) + ' <input type="text" data-el-tw-param="' + escapeHtml(f) + '" value="' + v(val) + '" placeholder="' + escapeHtml(ph || '') + '"' + (style ? ' style="' + style + '"' : '') + '></label>';
-    switch (String(kind)) {
-        case 'cont': {
-            const keys = String(sl.keys || '');
-            return '<label>default <input type="text" data-el-tw-param="def" value="' + v(sl.def) + '" placeholder="empty"></label>'
-                + '<label>keys <select data-el-tw-param="keys"><option value="">—</option>'
-                + '<option value="main"' + (keys === 'main' ? ' selected' : '') + '>main</option>'
-                + '<option value="secondary"' + (keys === 'secondary' ? ' selected' : '') + '>secondary</option></select></label>'
-                + '<label><input type="checkbox" data-el-tw-param="hide"' + (sl.hide ? ' checked' : '') + '> visible-only</label>';
-        }
-        case 'ref':
-            return txt('target', sl.target, 'any') + '<label>limit <input type="number" data-el-tw-param="limit" min="0" value="' + v(sl.limit ?? 3) + '" style="width:64px;"></label>';
-        case 'gallery': {
-            const on = String(sl.inject || 'off') === 'on';
-            return '<label>send to model <button type="button" class="el-tw-sw" role="switch" aria-checked="' + (on ? 'true' : 'false') + '" data-el-tw-param="inject"></button></label>'
-                + '<span class="el-tw-hint">default off</span>';
-        }
-        case 'radar':
-            return txt('axes', sl.axes, 'Strength,Agility,…', 'min-width:220px;');
-        case 'conditional':
-            return txt('when', sl.when, 'map-placed') + txt('else', sl.else, 'Unknown');
-        case 'display':
-            return '<span class="el-tw-hint">visible only — the label above is the comma-separated show list; never injected.</span>';
-        case 'img':
-        case 'setref':
-        case 'getref':
-        case 'hub':
-            return txt('target', sl.target, '') + txt('id', sl.id, '') + txt('query', sl.query, '');
-        default:
-            return '';
     }
-}
-
-function EL_workshopBindSlotParams(row, si, sj) {
-    try {
-        row.querySelectorAll('[data-el-tw-param]').forEach(el => {
-            const f = el.getAttribute('data-el-tw-param');
-            if (!f) return;
-            if (el.classList && el.classList.contains('el-tw-sw')) {
-                el.addEventListener('click', () => {
-                    const nowOn = el.getAttribute('aria-checked') === 'true';
-                    el.setAttribute('aria-checked', nowOn ? 'false' : 'true');
-                    try {
-                        if (f === 'inject') EL_workshopDraft.sections[si].slots[sj].inject = nowOn ? 'off' : 'on';
-                    } catch (e) {}
-                    EL_workshopRenderPreview();
-                });
+    document.querySelectorAll('[data-el-tw-def]').forEach(el => {
+        const key = el.getAttribute('data-el-tw-def');
+        if (!key) return;
+        const evName = (el.tagName === 'SELECT') ? 'change' : 'input';
+        el.addEventListener(evName, () => {
+            if (!EL_workshopDraft) return;
+            const defaults = EL_workshopDefaults();
+            if (key === 'position') {
+                if (!el.value) {
+                    delete defaults.position;
+                    delete defaults.role;
+                    return;
+                }
+                const parts = el.value.split(':');
+                const pos = parseInt(parts[0], 10);
+                if (isFinite(pos)) defaults.position = pos;
+                const role = parseInt(parts[1], 10);
+                if (isFinite(role)) defaults.role = role;
+                else delete defaults.role;
                 return;
             }
-            if (el.type === 'checkbox') {
-                el.addEventListener('change', () => {
-                    try {
-                        if (el.checked) EL_workshopDraft.sections[si].slots[sj][f] = true;
-                        else delete EL_workshopDraft.sections[si].slots[sj][f];
-                    } catch (e) {}
-                    EL_workshopRenderPreview();
-                });
+            const raw = String(el.value === undefined || el.value === null ? '' : el.value).trim();
+            if (!raw) { delete defaults[key]; return; }
+            if (key === 'order' || key === 'depth' || key === 'probability') {
+                const n = parseInt(raw, 10);
+                if (isFinite(n)) defaults[key] = n;
+                else delete defaults[key];
                 return;
             }
-            if (el.tagName === 'SELECT') {
-                el.addEventListener('change', () => {
-                    try {
-                        if (el.value) EL_workshopDraft.sections[si].slots[sj][f] = el.value;
-                        else delete EL_workshopDraft.sections[si].slots[sj][f];
-                    } catch (e) {}
-                    EL_workshopRenderPreview();
-                });
-                return;
-            }
-            el.addEventListener('input', () => {
-                try {
-                    const slot = EL_workshopDraft.sections[si].slots[sj];
-                    if (f === 'limit') {
-                        const n = parseInt(el.value, 10);
-                        if (isFinite(n) && n >= 0) slot.limit = n;
-                        else delete slot.limit;
-                    } else if (el.value) slot[f] = el.value;
-                    else delete slot[f];
-                } catch (e) {}
-                EL_workshopRenderPreview();
-            });
+            if (raw === 'true') defaults[key] = true;
+            else if (raw === 'false') defaults[key] = false;
+            else delete defaults[key];
         });
-    } catch (e) {}
-}
-
-function EL_workshopMoveSection(si, dir) {
-    try {
-        const arr = EL_workshopDraft.sections;
-        const nj = si + dir;
-        if (!arr || nj < 0 || nj >= arr.length) return;
-        const tmp = arr[si]; arr[si] = arr[nj]; arr[nj] = tmp;
-        EL_workshopRenderBuilder(); EL_workshopRenderPreview();
-    } catch (e) {}
-}
-
-function EL_workshopMoveSlot(si, sj, dir) {
-    try {
-        const arr = EL_workshopDraft.sections[si].slots;
-        const nj = sj + dir;
-        if (!arr || nj < 0 || nj >= arr.length) return;
-        const tmp = arr[sj]; arr[sj] = arr[nj]; arr[nj] = tmp;
-        EL_workshopRenderBuilder(); EL_workshopRenderInspector(); EL_workshopRenderPreview();
-    } catch (e) {}
-}
-
-function EL_workshopAddSlot(si, kind) {
-    try {
-        const k = String(kind || 'cont');
-        const ns = { kind: k, label: 'New ' + k };
-        if (k === 'ref') { ns.target = 'any'; ns.limit = 3; }
-        if (k === 'gallery') { ns.inject = 'off'; }
-        if (k === 'radar') { ns.axes = 'A,B,C,D,E,F'; }
-        if (k === 'conditional') { ns.when = ''; ns.else = 'Unknown'; }
-        if (k === 'cont') { ns.def = ''; }
-        EL_workshopDraft.sections[si].slots.push(ns);
-        EL_workshopRenderBuilder(); EL_workshopRenderInspector(); EL_workshopRenderPreview();
-    } catch (e) {}
-}
-
-function EL_workshopRenderInspector() {
-    const host = document.getElementById('el-tw-inspector');
-    if (!host) return;
-    const d = EL_workshopDraft;
-    if (!d) { host.innerHTML = ''; return; }
-    const conts = EL_workshopContLabels();
-    const opt = (cur) => '<option value="none">none</option>' + conts.map(c => '<option value="' + escapeHtml(c) + '"' + (c === cur ? ' selected' : '') + '>' + escapeHtml(c) + '</option>').join('');
-    const km = (d.keyMain && conts.includes(String(d.keyMain))) ? String(d.keyMain) : 'none';
-    const ks = (d.keySec && conts.includes(String(d.keySec))) ? String(d.keySec) : 'none';
-    host.innerHTML =
-        '<div class="el-tw-insprow"><span class="el-tw-k">Main keys from</span><select id="el-tw-keymain">' + opt(km) + '</select></div>'
-        + '<div class="el-tw-insprow"><span class="el-tw-k">Secondary from</span><select id="el-tw-keysec">' + opt(ks) + '</select></div>'
-        + '<div class="el-tw-insprow"><span class="el-tw-k">Reorder on apply</span><button type="button" class="el-tw-sw" role="switch" id="el-tw-reorder" aria-checked="' + (d.reorder ? 'true' : 'false') + '"></button></div>'
-        + '<div class="el-tw-insprow"><span class="el-tw-k">Custom CSS</span><input type="text" id="el-tw-csspath" value="' + escapeHtml(String(d.cssPath || '')) + '" placeholder="themes/mine/type.css" style="flex:1; min-width:0;"></div>';
-    try {
-        const kmEl = document.getElementById('el-tw-keymain');
-        if (kmEl) kmEl.addEventListener('change', () => { EL_workshopDraft.keyMain = kmEl.value; EL_workshopRenderPreview(); });
-        const ksEl = document.getElementById('el-tw-keysec');
-        if (ksEl) ksEl.addEventListener('change', () => { EL_workshopDraft.keySec = ksEl.value; EL_workshopRenderPreview(); });
-        const reEl = document.getElementById('el-tw-reorder');
-        if (reEl) reEl.addEventListener('click', () => {
-            EL_workshopDraft.reorder = !EL_workshopDraft.reorder;
-            reEl.setAttribute('aria-checked', EL_workshopDraft.reorder ? 'true' : 'false');
+    });
+    document.querySelectorAll('[data-el-tw-pidx]').forEach(row => {
+        const idx = parseInt(row.getAttribute('data-el-tw-pidx'), 10);
+        if (!row || !EL_workshopDraft || !Array.isArray(EL_workshopDraft.presets)) return;
+        const nameIn = row.querySelector('[data-el-tw-pname]');
+        if (nameIn) nameIn.addEventListener('input', () => {
+            try { EL_workshopDraft.presets[idx].name = nameIn.value; } catch (e) {}
         });
-        const cssEl = document.getElementById('el-tw-csspath');
-        if (cssEl) cssEl.addEventListener('input', () => { EL_workshopDraft.cssPath = cssEl.value; });
-    } catch (e) {}
-}
-
-function EL_workshopRenderPreview() {
-    const pre = document.getElementById('el-tw-preview');
-    if (!pre) return;
-    try {
-        const CC = (typeof ELCompile !== 'undefined') ? ELCompile : (typeof window !== 'undefined' ? window.ELCompile : null);
-        const SP = (typeof ELSlots !== 'undefined') ? ELSlots : (typeof window !== 'undefined' ? window.ELSlots : null);
-        if (!CC || !SP || !EL_workshopDraft) { pre.textContent = ''; return; }
-        const ast = CC.typeToAst(EL_workshopDraft);
-        pre.textContent = SP.emitTemplate(ast);
-    } catch (e) { pre.textContent = ''; }
-}
-
-function EL_workshopStoredTag() {
-    try {
-        if (!EL_workshopSelectedId) return '';
-        const t = (typeof EL_getEntryType === 'function') ? EL_getEntryType(EL_workshopSelectedId) : null;
-        return String((t && t.tag) || '');
-    } catch (e) { return ''; }
+        const contentIn = row.querySelector('[data-el-tw-pcontent]');
+        if (contentIn) contentIn.addEventListener('input', () => {
+            try { EL_workshopDraft.presets[idx].content = contentIn.value; } catch (e) {}
+        });
+        const del = row.querySelector('[data-el-tw-pdel]');
+        if (del) del.addEventListener('click', () => {
+            try { EL_workshopDraft.presets.splice(idx, 1); } catch (e) {}
+            EL_workshopRenderBuilder();
+        });
+    });
+    const add = document.getElementById('el-tw-add-preset');
+    if (add) add.addEventListener('click', () => {
+        if (!EL_workshopDraft) return;
+        if (!Array.isArray(EL_workshopDraft.presets)) EL_workshopDraft.presets = [];
+        const n = EL_workshopDraft.presets.length + 1;
+        const name = 'Preset ' + n;
+        EL_workshopDraft.presets.push({ id: EL_workshopUniquePresetId(EL_workshopDraft, name), name: name, content: '' });
+        EL_workshopRenderBuilder();
+        try {
+            const rows = document.querySelectorAll('[data-el-tw-pidx]');
+            const last = rows[rows.length - 1];
+            const input = last && last.querySelector('[data-el-tw-pname]');
+            if (input && input.focus) { input.focus(); input.select && input.select(); }
+        } catch (e) {}
+    });
 }
 
 function EL_workshopRenderUsage() {
@@ -10714,30 +10096,21 @@ function EL_workshopRenderUsage() {
     const d = EL_workshopDraft;
     if (!d) { host.innerHTML = ''; return; }
     const u = (EL_workshopUsage && EL_workshopUsage.typeId === EL_workshopSelectedId) ? EL_workshopUsage : null;
-    const renamed = String(d.tag || '') !== EL_workshopStoredTag();
     let body;
     if (!u) {
         body = '<div class="el-tw-muted">Counting entries…</div>';
     } else if (!u.total) {
-        body = '<div class="el-tw-muted">No entries use this type.</div>';
+        body = '<div class="el-tw-muted">No entries are tagged with this type.</div>';
     } else {
-        body = '<div><strong>' + u.total + '</strong> entr' + (u.total === 1 ? 'y' : 'ies') + ' use this type:</div>'
+        body = '<div><strong>' + u.total + '</strong> entr' + (u.total === 1 ? 'y' : 'ies') + ' tagged:</div>'
             + '<div class="el-tw-books">' + u.books.map(b => '<div>' + escapeHtml(b.book) + ' <span class="el-tw-muted">(' + b.count + ')</span></div>').join('') + '</div>';
     }
-    const warn = renamed
-        ? '<div class="el-tw-tagwarn">Tag renamed — existing entries will be re-matched by label on save. Entries whose labels no longer match are preserved as extra content.</div>'
-        : '';
-    host.innerHTML = '<h4>Usage</h4>' + warn + body
+    host.innerHTML = '<h4>Usage</h4>' + body
         + '<div style="display:flex; gap:6px; margin-top:6px; flex-wrap:wrap;">'
         + '<button id="el-tw-refresh-usage" class="btn btn-secondary btn-sm">Recount</button>'
-        + (u && u.total ? '<button id="el-tw-reapply-all" class="btn btn-secondary btn-sm" title="Re-render every entry of this type through the SAVED type (picks up type edits).">Re-apply style to ' + u.total + '</button>' : '')
         + '</div>';
-    try {
-        const rb = document.getElementById('el-tw-refresh-usage');
-        if (rb) rb.addEventListener('click', () => EL_workshopRefreshUsage());
-        const ra = document.getElementById('el-tw-reapply-all');
-        if (ra) ra.addEventListener('click', () => EL_workshopAskReapply());
-    } catch (e) {}
+    const rb = document.getElementById('el-tw-refresh-usage');
+    if (rb) rb.addEventListener('click', () => EL_workshopRefreshUsage());
 }
 
 function EL_workshopCountEntries(entries, typeId) {
@@ -10797,6 +10170,14 @@ function EL_workshopSave() {
     try {
         const reg = EL_workshopReg();
         if (!reg || !EL_workshopDraft) { try { EL_toast('Nothing to save.', 'error'); } catch (e) {} return; }
+        if (typeof reg.validateType === 'function') {
+            const v = reg.validateType(EL_workshopDraft);
+            if (v && !v.ok) {
+                const msg = (v.errors || []).slice(0, 2).join(' · ') || 'invalid type';
+                try { EL_toast('Not saved: ' + msg, 'error'); } catch (e) {}
+                return;
+            }
+        }
         const r = reg.putType(EL_getTypeStore(), EL_workshopDraft);
         if (!r || !r.type) {
             try { EL_toast('Save refused: ' + ((r && r.warnings && r.warnings[0]) || 'invalid type'), 'error'); } catch (e) {}
@@ -10810,34 +10191,15 @@ function EL_workshopSave() {
             try { EL_toast('Type saved.', 'success'); } catch (e) {}
         }
         EL_workshopRenderList();
-        EL_workshopRenderUsage();
+        EL_workshopRenderBuilder();
         EL_workshopRefreshUsage();
     } catch (e) { try { EL_toast('Save failed: ' + (e && e.message ? e.message : e), 'error'); } catch (_e) {} }
-}
-
-function EL_workshopValidate(showOk) {
-    const box = document.getElementById('el-tw-errors');
-    try {
-        const reg = EL_workshopReg();
-        if (!reg || typeof reg.validateType !== 'function') return true;
-        const r = reg.validateType(EL_workshopDraft);
-        if (box) {
-            if (r.ok) {
-                box.style.display = showOk ? '' : 'none';
-                if (showOk) box.innerHTML = '<div class="el-tw-ok">Valid — tag set, sections present, labels unique.</div>';
-            } else {
-                box.style.display = '';
-                box.innerHTML = (r.errors || []).map(e => '<div>' + escapeHtml(String(e)) + '</div>').join('');
-            }
-        }
-        return !!r.ok;
-    } catch (e) { return false; }
 }
 
 function EL_workshopNew() {
     try {
         const reg = EL_workshopReg();
-        const base = (reg && typeof reg.blankType === 'function') ? reg.blankType('Untitled Type') : { id: 'type', name: 'Untitled Type', icon: '', accent: '#6366f1', tag: '', reorder: true, keyMain: 'none', keySec: 'none', cssPath: '', sections: [{ title: 'General', slots: [] }] };
+        const base = (reg && typeof reg.blankType === 'function') ? reg.blankType('Untitled Type') : { id: 'type', name: 'Untitled Type', icon: '', accent: '', defaults: {}, presets: [] };
         base.id = EL_workshopUniqueId(base.name);
         base.name = 'Untitled Type';
         const r = reg ? reg.putType(EL_getTypeStore(), base) : { type: base };
@@ -10876,7 +10238,7 @@ function EL_workshopAskDelete() {
         const u = (EL_workshopUsage && EL_workshopUsage.typeId === id) ? EL_workshopUsage : { total: 0, books: [] };
         const bookLines = u.books.length
             ? u.books.map(b => '<div>' + escapeHtml(b.book) + ' <span style="opacity:0.7;">(' + b.count + ')</span></div>').join('')
-            : '<div style="opacity:0.7;">No entries use this type.</div>';
+            : '<div style="opacity:0.7;">No entries are tagged with this type.</div>';
         const ov = document.createElement('div');
         ov.className = 'modal active';
         ov.id = 'el-tw-delete-overlay';
@@ -10885,13 +10247,13 @@ function EL_workshopAskDelete() {
             + '<button class="close-modal"><i class="fa-solid fa-xmark"></i></button></div>'
             + '<div class="modal-body">'
             + '<p>Delete type <strong>' + escapeHtml(name) + '</strong> (<code>' + escapeHtml(id) + '</code>)?</p>'
-            + '<p style="margin:8px 0; font-size:0.85rem;">' + u.total + ' entr' + (u.total === 1 ? 'y' : 'ies') + ' use this type:</p>'
+            + '<p style="margin:8px 0; font-size:0.85rem;">' + u.total + ' entr' + (u.total === 1 ? 'y' : 'ies') + ' are tagged with it:</p>'
             + '<div style="max-height:140px; overflow-y:auto; font-size:0.85rem; margin-bottom:10px;">' + bookLines + '</div>'
-            + '<p style="font-size:0.85rem; opacity:0.85;">Affected entries are converted to plain text first (limiter lines stripped, type link removed) — nothing is deleted.</p>'
+            + '<p style="font-size:0.85rem; opacity:0.85;">Only the tag is removed from those entries. Entry content, keys and links are left exactly as they are — nothing is deleted or rewritten.</p>'
             + '</div>'
             + '<div class="modal-footer" style="display:flex; gap:8px; justify-content:flex-end;">'
             + '<button class="btn btn-secondary" data-el-tw-cancel>Cancel</button>'
-            + '<button class="btn btn-danger" data-el-tw-confirm>Convert &amp; Delete</button>'
+            + '<button class="btn btn-danger" data-el-tw-confirm>Clear tag &amp; delete</button>'
             + '</div></div>';
         document.body.appendChild(ov);
         const close = () => { try { EL_modalClose(ov); } catch (e) {} try { if (ov.parentNode) ov.parentNode.removeChild(ov); } catch (e) {} };
@@ -10935,22 +10297,14 @@ async function EL_workshopDeleteConvert(typeId) {
         try {
             for (const uid of Object.keys(data.entries)) {
                 const e = data.entries[uid];
-                let tid = '';
-                try { tid = e && e.extensions && e.extensions.el && e.extensions.el.type; } catch (err) { tid = ''; }
-                if (String(tid || '') !== id) continue;
-                const w = (typeof EL_batchTypeResetWrites === 'function') ? EL_batchTypeResetWrites(e) : null;
-                if (w) {
-                    if (Object.prototype.hasOwnProperty.call(w, 'content')) e.content = w.content;
-                    if (Object.prototype.hasOwnProperty.call(w, 'extensions')) e.extensions = w.extensions;
-                } else {
-                    try { if (e.extensions) delete e.extensions.el; } catch (err) {}
-                }
+                if (String(EL_oldTypeId(e)) !== id) continue;
+                e.extensions = EL_withEntryType(e.extensions, '');
                 changed++;
             }
         } catch (e) {}
         let ok = false;
         try {
-            ok = await ELG_guardSave(b.book, data, { explicitDelete: false, source: 'user', note: 'Type "' + typeName + '" deleted — ' + changed + ' entries converted to plain text' });
+            ok = await ELG_guardSave(b.book, data, { explicitDelete: false, source: 'user', note: 'Type "' + typeName + '" deleted — tag cleared on ' + changed + ' entries (content untouched)' });
         } catch (e) { ok = false; }
         if (!ok) {
             try { EL_toast('Save to "' + b.book + '" failed — type deletion blocked, nothing deleted.', 'error'); } catch (e) {}
@@ -10987,136 +10341,8 @@ async function EL_workshopDeleteConvert(typeId) {
         EL_workshopDraft = null;
         EL_workshopUsage = null;
     }
-    try { EL_toast('Type "' + typeName + '" deleted' + (usage.total ? ' — ' + usage.total + ' entries converted to plain text.' : '.'), 'success'); } catch (e) {}
+    try { EL_toast('Type "' + typeName + '" deleted' + (usage.total ? ' — tags cleared on ' + usage.total + ' entries.' : '.'), 'success'); } catch (e) {}
     EL_workshopRender();
-    return true;
-}
-
-/**
- * Bulk re-apply (workshop): re-render every entry of the selected type
- * through the SAVED type. Picks up type edits on entries applied earlier
- * (new slots, tag migration, limiter form). Mirrors the delete-convert
- * flow: all books preload first (any failure aborts everything), then one
- * guard save per book. Nothing is deleted; unmatched lines are preserved
- * as extra content per the compiler contract.
- */
-function EL_workshopAskReapply() {
-    try {
-        const id = String(EL_workshopSelectedId || '');
-        if (!id) return;
-        const stored = (typeof EL_getEntryType === 'function') ? EL_getEntryType(id) : null;
-        if (!stored) { try { EL_toast('Type not found — nothing to re-apply.', 'error'); } catch (e) {} return; }
-        try {
-            const a = JSON.stringify(EL_workshopDraft);
-            const b = JSON.stringify(stored);
-            if (a !== b) { try { EL_toast('Save the type first — re-apply uses the SAVED type.', 'warning'); } catch (e) {} return; }
-        } catch (e) {}
-        const u = (EL_workshopUsage && EL_workshopUsage.typeId === id) ? EL_workshopUsage : { total: 0, books: [] };
-        if (!u.total) { try { EL_toast('No entries use this type.', 'warning'); } catch (e) {} return; }
-        const name = String(stored.name || id);
-        const bookLines = (u.books || []).length
-            ? u.books.map(b => '<div>' + escapeHtml(b.book) + ' <span style="opacity:0.7;">(' + b.count + ')</span></div>').join('')
-            : '';
-        const ov = document.createElement('div');
-        ov.className = 'modal active';
-        ov.id = 'el-tw-reapply-overlay';
-        ov.innerHTML = '<div class="modal-content glass-panel" style="width:460px;">'
-            + '<div class="modal-header"><h3><i class="fa-solid fa-paint-roller" style="margin-right:8px;"></i>Re-apply type style</h3>'
-            + '<button class="close-modal"><i class="fa-solid fa-xmark"></i></button></div>'
-            + '<div class="modal-body">'
-            + '<p>Re-render <strong>' + u.total + '</strong> entr' + (u.total === 1 ? 'y' : 'ies') + ' through the saved type <strong>' + escapeHtml(name) + '</strong>?</p>'
-            + '<div style="max-height:140px; overflow-y:auto; font-size:0.85rem; margin-bottom:10px;">' + bookLines + '</div>'
-            + '<p style="font-size:0.85rem; opacity:0.85;">Entries are matched by label; new slots fill empty, unmatched lines are preserved. Nothing is deleted. Entries whose content is already current are left untouched.</p>'
-            + '</div>'
-            + '<div class="modal-footer" style="display:flex; gap:8px; justify-content:flex-end;">'
-            + '<button class="btn btn-secondary" data-el-tw-cancel>Cancel</button>'
-            + '<button class="btn btn-primary" data-el-tw-confirm>Re-apply</button>'
-            + '</div></div>';
-        document.body.appendChild(ov);
-        const close = () => { try { EL_modalClose(ov); } catch (e) {} try { if (ov.parentNode) ov.parentNode.removeChild(ov); } catch (e) {} };
-        const cancelBtn = ov.querySelector('[data-el-tw-cancel]');
-        if (cancelBtn) cancelBtn.addEventListener('click', close);
-        const xBtn = ov.querySelector('.close-modal');
-        if (xBtn) xBtn.addEventListener('click', close);
-        const okBtn = ov.querySelector('[data-el-tw-confirm]');
-        if (okBtn) okBtn.addEventListener('click', async () => {
-            okBtn.disabled = true;
-            let r = false;
-            try { r = await EL_workshopReapplyAll(id); } catch (e) { r = false; }
-            close();
-            if (r) { try { EL_workshopRefreshUsage(); } catch (e) {} }
-        });
-        try { EL_modalOpen(ov); } catch (e) {}
-    } catch (e) {}
-}
-
-async function EL_workshopReapplyAll(typeId) {
-    const id = String(typeId);
-    let usage = null;
-    try { usage = await EL_workshopCountUsage(id); } catch (e) { usage = { total: 0, books: [] }; }
-    const affected = (usage.books || []).filter(b => b.count > 0);
-    if (!affected.length) { try { EL_toast('No entries use this type.', 'warning'); } catch (e) {} return true; }
-    let typeName = id;
-    try {
-        const t = (typeof EL_getEntryType === 'function') ? EL_getEntryType(id) : null;
-        if (t && t.name) typeName = String(t.name);
-    } catch (e) {}
-    // All-or-nothing preload: a book we cannot read blocks the whole run,
-    // exactly like the delete-convert flow.
-    const pending = [];
-    for (const b of affected) {
-        let data = null;
-        try { data = await ELG_loadFresh(b.book); } catch (e) { data = null; }
-        if (!data || !data.entries) {
-            try { EL_toast('Could not load "' + b.book + '" — re-apply blocked, nothing changed.', 'error'); } catch (e) {}
-            return false;
-        }
-        pending.push({ book: b.book, data: data });
-    }
-    let changed = 0, kept = 0;
-    for (const b of pending) {
-        const data = b.data;
-        try {
-            for (const uid of Object.keys(data.entries)) {
-                const e = data.entries[uid];
-                let tid = '';
-                try { tid = e && e.extensions && e.extensions.el && e.extensions.el.type; } catch (err) { tid = ''; }
-                if (String(tid || '') !== id) continue;
-                let w = null;
-                try { w = (typeof EL_batchTypeSetWrites === 'function') ? EL_batchTypeSetWrites(e, id) : null; } catch (err) { w = null; }
-                if (!w) { kept++; continue; }
-                const before = String((e && e.content) || '');
-                if (Object.prototype.hasOwnProperty.call(w, 'content') && typeof w.content === 'string') e.content = w.content;
-                if (Object.prototype.hasOwnProperty.call(w, 'key')) e.key = w.key;
-                if (Object.prototype.hasOwnProperty.call(w, 'keysecondary')) e.keysecondary = w.keysecondary;
-                if (Object.prototype.hasOwnProperty.call(w, 'extensions')) e.extensions = w.extensions;
-                if (String((e && e.content) || '') !== before) changed++;
-                else kept++;
-            }
-        } catch (e) {}
-        let ok = false;
-        try {
-            ok = await ELG_guardSave(b.book, data, { explicitDelete: false, source: 'user', note: 'Type "' + typeName + '" re-applied — ' + changed + ' changed, ' + kept + ' already current' });
-        } catch (e) { ok = false; }
-        if (!ok) {
-            try { EL_toast('Save to "' + b.book + '" failed — re-apply blocked, nothing deleted.', 'error'); } catch (e) {}
-            try {
-                if (typeof currentLorebookName !== 'undefined' && b.book === currentLorebookName) {
-                    const fresh = await ELG_loadFresh(b.book);
-                    if (fresh) EL_setLorebookData(fresh, { own: true });
-                    if (typeof renderEntries === 'function') renderEntries();
-                }
-            } catch (e) {}
-            return false;
-        }
-        try {
-            if (typeof currentLorebookName !== 'undefined' && b.book === currentLorebookName && typeof EL_setLorebookData === 'function') {
-                EL_setLorebookData(data, { own: true });
-                if (typeof renderEntries === 'function') renderEntries();
-            }
-        } catch (e) {}
-    }
-    try { EL_toast('Re-applied "' + typeName + '" — ' + changed + ' updated, ' + kept + ' already current.', 'success'); } catch (e) {}
     return true;
 }
 
@@ -11789,20 +11015,6 @@ function EL_b6FolderLabel(uid) {
     } catch (e) { return ''; }
 }
 
-function EL_b6ExtraCount(entry, entryTid) {
-    try {
-        if (!entryTid || typeof EL_getEntryType !== 'function') return 0;
-        const type = EL_getEntryType(entryTid);
-        if (!type) return 0;
-        const CC = (typeof ELCompile !== 'undefined') ? ELCompile : null;
-        const ELS = (typeof ELSlots !== 'undefined') ? ELSlots : null;
-        if (!CC || !ELS || typeof CC.typeToAst !== 'function' || typeof ELS.extractValues !== 'function') return 0;
-        const ex = ELS.extractValues(String((entry && entry.content) || ''), CC.typeToAst(type));
-        if (ex && Array.isArray(ex.extra)) return ex.extra.length;
-    } catch (e) {}
-    return 0;
-}
-
 function EL_b6CardName(entry) {
     try {
         if (entry && Array.isArray(entry.key)) {
@@ -11834,7 +11046,6 @@ function EL_b6CardContext(entry, uid) {
     try {
         if (constant) status += '<span class="badge el-b6-badge-gold">constant</span>';
         if (firing) status += '<span class="badge el-b6-badge-fire">● in prompt</span>';
-        if (tid && EL_b6ExtraCount(entry, tid) > 0) status += '<span class="badge el-b6-badge-warn" title="Some content lines match no slot of this type. Displayed as-is; nothing is blocked.">⚠ type mismatch</span>';
     } catch (e) {}
     return {
         accent,
@@ -11920,7 +11131,7 @@ function EL_b6OnFilterClick(e) {
 function EL_b6SettingsPages() {
     return [
         { id: 'general', group: 'Lorebook', title: 'General', icon: '⚙', keywords: 'saves guard default type delete confirm sync refresh folders log verbose' },
-        { id: 'types', group: 'Lorebook', title: 'Entry Types', icon: '◈', keywords: 'type template builder slots workshop reorder labels accent' },
+        { id: 'types', group: 'Lorebook', title: 'Entry Types', icon: '◈', keywords: 'type tag presets placeholder create defaults workshop accent icon' },
         { id: 'sections', group: 'Lorebook', title: 'Sections', icon: '☰', keywords: 'section order range position placement batch recipe' },
         { id: 'map', group: 'Lorebook', title: 'Map', icon: '🗺', keywords: 'map canvas schematic background location pin current' },
         { id: 'rules', group: 'Lorebook', title: 'Rules', icon: '⏱', keywords: 'rules schedule system trigger clock manual update' },
@@ -11972,8 +11183,9 @@ function EL_b6SettingsPaintTypes() {
         }
         host.innerHTML = types.map(t => {
             const id = String(t.id || '');
-            const slots = Array.isArray(t.slots) ? t.slots.length : (Array.isArray(t.sections) ? t.sections.reduce((n, s) => n + (Array.isArray(s.slots) ? s.slots.length : 0), 0) : 0);
-            return `<div class="el-b6-frow"><div><span class="el-b6-fl-t">${escapeHtml(t.name || id)}</span><span class="el-b6-fl-h">${slots} slots · reorder ${t.reorder === false ? 'off' : 'on'}</span></div><div class="el-b6-fc"><button class="btn btn-secondary btn-sm" data-elset-type="${escapeHtml(id)}">Open builder</button></div></div>`;
+            const nPresets = Array.isArray(t.presets) ? t.presets.length : 0;
+            const nDefaults = (t.defaults && typeof t.defaults === 'object') ? Object.keys(t.defaults).length : 0;
+            return `<div class="el-b6-frow"><div><span class="el-b6-fl-t">${escapeHtml(t.name || id)}</span><span class="el-b6-fl-h">${nPresets} preset${nPresets === 1 ? '' : 's'} · ${nDefaults} create default${nDefaults === 1 ? '' : 's'}</span></div><div class="el-b6-fc"><button class="btn btn-secondary btn-sm" data-elset-type="${escapeHtml(id)}">Open</button></div></div>`;
         }).join('');
     } catch (e) {}
 }

@@ -6,11 +6,10 @@
  * extensionSettings.maps[book] = { pins, background, extraBooks, zoom } and
  * is persisted through the existing saveSettings path. The ONLY lorebook-file
  * write this module ever performs is a Current_Location placement edit on a
- * character entry: typed entries whose type declares a Current_Location slot
- * go through CC.applyType with reorder:false (a minimal render that never
- * reorders), falling back to the plain single-line upsert when the typed path
- * leaves the line untouched; untyped entries take the single-line upsert
- * directly. Every write goes through ELG_guardSave (source:'user').
+ * character entry, and it is always the plain single-line upsert: replace (or
+ * append) one `Current_Location: value` line, keep every other byte. Types,
+ * templates and the entry compiler play no part. Every write goes through
+ * ELG_guardSave (source:'user').
  * A write blocked by the guard is queued app-side
  * (maps[book].pendingLocation, plus the desired container in
  * maps[book].pendingInside) and retried on the next EL_mapRender — render-time
@@ -109,10 +108,6 @@ function EL_mapReadBook(book) {
 
 function EL_mapSave() {
     try { saveSettings(); } catch (e) {}
-}
-
-function EL_mapNormLabel(s) {
-    return String(s || '').toLowerCase().replace(/[_\s]+/g, ' ').trim();
 }
 
 /**
@@ -317,24 +312,6 @@ async function EL_mapSetInside(uid, parentUid) {
     } catch (e) { return false; }
 }
 
-function EL_mapTypeHasLocationSlot(entry) {
-    try {
-        const tid = entry && entry.extensions && entry.extensions.el && entry.extensions.el.type;
-        if (!tid || typeof tid !== 'string') return null;
-        const getType = (typeof EL_getEntryType === 'function') ? EL_getEntryType : null;
-        if (!getType) return null;
-        const type = getType(tid);
-        if (!type || !Array.isArray(type.sections)) return null;
-        for (const sec of type.sections) {
-            const slots = (sec && sec.slots) || [];
-            for (const sl of slots) {
-                if (sl && EL_mapNormLabel(sl.label) === 'current location') return type;
-            }
-        }
-        return null;
-    } catch (e) { return null; }
-}
-
 /**
  * Pure single-line edit: replace the existing Current_Location line value, or
  * append one before the closing limiter (or end of content). Every other byte
@@ -358,8 +335,9 @@ function EL_mapUpsertLocationLine(content, value) {
         }
     }
     const line = 'Current_Location: ' + v;
-    // Both limiter forms (canonical <tag>, legacy **<tag>**), mirroring the
-    // canonical RE_CLOSE in lib/type-compiler.js.
+    // Entries written by the old template system may still carry limiter
+    // lines; append before a closing one so the line stays inside the block.
+    // Both historical forms are recognised: <tag> and **<tag>**.
     const RE_LIM = /^\s*(?:\*\*<\s*\/\s*|<\s*\/\s*)([^<>\s][^<>]*?)\s*(?:>\*\*|>)\s*$/;
     let at = lineCount;
     for (let i = lineCount - 1; i >= 0; i--) {
@@ -383,31 +361,13 @@ function EL_mapUpsertLocationLine(content, value) {
 }
 
 /**
- * Compute the new content for a Current_Location placement. Typed entries
- * whose type declares a Current_Location slot go through the entry compiler
- * (canonical path) with reorder:false so map placement never reorders;
- * everything else takes the plain single-line edit.
+ * Compute the new content for a Current_Location placement: the plain
+ * single-line edit. No type or template layer is involved — every other byte
+ * of the entry is preserved exactly.
  * @returns {string|null} New content, or null when it cannot be computed.
  */
 function EL_mapComputeLocationContent(entry, value) {
     try {
-        const type = EL_mapTypeHasLocationSlot(entry);
-        const CC = (typeof ELCompile !== 'undefined') ? ELCompile : (typeof window !== 'undefined' ? window.ELCompile : null);
-        if (type && CC && typeof CC.applyType === 'function') {
-            try {
-                // Minimal edit: force reorder off for the map placement (the
-                // type's own reorder flag is ignored here on purpose), and pass
-                // reorder:false through as well so the intent travels with the
-                // call if the compiler ever honors the option directly.
-                const tOff = Object.assign({}, type, { reorder: false });
-                const r = CC.applyType(entry, tOff, { values: { 'Current_Location': value }, reorder: false });
-                if (r && r.entry && typeof r.entry.content === 'string' && r.entry.content !== entry.content) return r.entry.content;
-            } catch (e) {}
-            // NOTE: reorder:false keeps existing lines byte-identical but does
-            // not rewrite an already-present slot line to the new value, so
-            // fall back to the plain single-line edit to land the placement
-            // without reordering anything.
-        }
         return EL_mapUpsertLocationLine(entry && entry.content, value);
     } catch (e) { return null; }
 }

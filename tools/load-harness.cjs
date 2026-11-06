@@ -18,7 +18,7 @@ const APP = path.join(__dirname, '..', 'app');
 // The shared core (lib/apply-core.js) is loaded first: it is the file the
 // HOST window loads too, so a load-time failure there breaks both windows.
 const ORDER = [
-  '../lib/apply-core.js', '../lib/type-registry.js', '../lib/slot-parse.js', '../lib/dep-index.js', '../lib/type-compiler.js', '../lib/sections.js', '../lib/rules.js',
+  '../lib/apply-core.js', '../lib/type-registry.js', '../lib/dep-index.js', '../lib/sections.js', '../lib/rules.js',
   'toast.js', 'modal.js', 'logger.js', 'agent-config-schema.js', 'context-builder.js',
   'hub-client.js', 'hub-tools.js', 'agent-chat.js', 'agent-manager.js', 'agent-backup.js',
   'worldinfo-guard.js', 'folder-url.js', 'map.js', 'rules-ui.js', 'app.js', 'agent-ui.js', 'el.js',
@@ -159,7 +159,7 @@ for (const f of ORDER) {
 
 console.log('\n===== EXPECTED EXPORTS PRESENT AFTER LOAD =====');
 const EXPECT = [
-  'ELApplyCore', 'ELTypeRegistry', 'ELSlots', 'ELDepIndex', 'ELCompile', 'ELSections',
+  'ELApplyCore', 'ELTypeRegistry', 'ELDepIndex', 'ELSections',
   'EL_toast', 'EL_modalOpen', 'EL_modalClose',
   'ELLogger', 'EL_log', 'ELAgentConfigSchema',
   'EL_resolveAgentContext', 'EL_buildAgentContextAsync',
@@ -478,8 +478,8 @@ const RULES_TEST = `
     eq('upsert replaces label line', R.upsertFieldLine('Name: Anna\\nCurrent_Location: Old', 'Current_Location', 'New'), 'Name: Anna\\nCurrent_Location: New');
     eq('upsert matches _/case variants', R.upsertFieldLine('current location: Old', 'Current_Location', 'N'), 'Current_Location: N');
     eq('upsert appends before limiter', R.upsertFieldLine('**<tag>**\\nName: A\\n**</tag>**', 'Status', 'Ledger'), '**<tag>**\\nName: A\\nStatus: Ledger\\n**</tag>**');
-    eq('compute lands via compiler fallback', R.computeFieldContent({ content: 'Name: A' }, null, 'Status', 'Ledger'), 'Name: A\\nStatus: Ledger');
-    eq('compute null on bad entry', R.computeFieldContent(null, null, 'Status', 'X'), null);
+    eq('compute writes one plain line', R.computeFieldContent({ content: 'Name: A' }, 'Status', 'Ledger'), 'Name: A\\nStatus: Ledger');
+    eq('compute null on bad entry', R.computeFieldContent(null, 'Status', 'X'), null);
     return out;
 })()
 `;
@@ -503,73 +503,275 @@ try {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// COMPILER LIMITER/SECTION/TAG TESTS (el-revamp type-content fixes)
-// Canonical limiter emission is <tag> (no asterisks); the legacy **<tag>**
-// form is still accepted on read. Section titles never reach entry content
-// (template/preview only). Old ST tag metadata (`Tags:` lines consumed into
-// extractValues().tags, plus a literal entry.tags array) migrates into the
-// typed limiter tag: first old tag fills an empty Name, otherwise dropped,
-// with a `moved tags [...] into typed tag` note. Keys stay verbatim.
+// TYPE REGISTRY TESTS (types are tags: no templates, no parsing)
+// A type only carries id/name/icon/accent + create defaults + literal presets.
+// Legacy template fields are dropped on read and on migration; entry content
+// is never read by the registry at all.
 // ─────────────────────────────────────────────────────────────────────────────
-const COMPILER_TEST = `
+const TYPE_TEST = `
 (function () {
     const out = [];
     function eq(label, got, want) { out.push([label, got === want]); }
     function ok(label, cond) { out.push([label, !!cond]); }
-    const T = JSON.parse(JSON.stringify(ELTypeRegistry.BUILTIN_TYPES.character));
-    const built = ELCompile.compileEntry({ content: 'Name: Anna Smith' }, T, {});
-    ok('limiter derived from Name, new form', built.content.indexOf('<anna_smith>') !== -1 && built.content.indexOf('</anna_smith>') !== -1);
-    ok('no asterisks in rendered limiter', built.content.indexOf('**') === -1);
-    ok('no section headers in content', !/^==.*==$/m.test(built.content));
-    const fallback = ELCompile.compileEntry({ content: '' }, T, {});
-    ok('empty Name falls back to static tag', fallback.content.indexOf('<char_name>') !== -1);
-    const tpl = ELSlots.parseTemplate('**<char_name>**\\n== Basic Information ==\\n"Name: " ||cont:Name||\\n**</char_name>**');
-    eq('legacy template tag parsed', tpl.tag, 'char_name');
-    const tplNew = ELSlots.parseTemplate('<char_name>\\n== Basic Information ==\\n"Name: " ||cont:Name||\\n</char_name>');
-    eq('new template tag parsed', tplNew.tag, 'char_name');
-    const emitted = ELSlots.emitTemplate(tpl);
-    ok('template keeps section header', emitted.indexOf('== Basic Information ==') !== -1);
-    ok('template emits new limiter', emitted.indexOf('<char_name>') !== -1 && emitted.indexOf('**') === -1);
-    ok('renameTag both forms', ELSlots.renameTag('<a>\\nx\\n</a>', 'b') === '<b>\\nx\\n</b>' && ELSlots.renameTag('**<a>**\\nx\\n**</a>**', 'b') === '**<b>**\\nx\\n**</b>**');
-    const ast = ELCompile.typeToAst(T);
-    eq('typeToAst drops section titles', ast.sections.every(function (s) { return !s.title; }), true);
-    const ex = ELSlots.extractValues('== Basic Information ==\\nName: Bob\\nTags: alpha, beta\\nStray line', ast);
-    ok('header line not extra', ex.extra.indexOf('== Basic Information ==') === -1);
-    eq('tags consumed', JSON.stringify(ex.tags), JSON.stringify(['alpha', 'beta']));
-    ok('tags line not extra', !ex.extra.some(function (l) { return /^tags:/i.test(l); }));
-    ok('unmatched line still extra', ex.extra.indexOf('Stray line') !== -1);
-    const r = ELCompile.applyType({ content: 'Tags: Zara, warrior\\nAppearance: tall', tags: ['Zara', 'warrior'] }, T, {});
-    ok('Name filled from first old tag', /Name: Zara/.test(r.entry.content));
-    eq('entry.tags cleared', JSON.stringify(r.entry.tags), JSON.stringify([]));
-    ok('changes note moved tags', r.changes.some(function (m) { return /moved tags \\[Zara, warrior\\] into typed tag/.test(m); }));
-    ok('no Tags: line in content', !/Tags:/i.test(r.entry.content));
-    ok('no section headers after apply', !/^==.*==$/m.test(r.entry.content));
-    const k = ELCompile.compileEntry({ content: 'Name: Anna Smith' }, Object.assign({}, T, { keyMain: 'Name' }), {});
-    eq('keys verbatim', JSON.stringify(k.patch.key), JSON.stringify(['Anna Smith']));
-    eq('detach new', ELCompile.detachToPlain({ content: '<a>\\nX\\n</a>' }).content, 'X');
-    eq('detach legacy', ELCompile.detachToPlain({ content: '**<a>**\\nX\\n**</a>**' }).content, 'X');
-    eq('map upsert new limiter', EL_mapUpsertLocationLine('<char_name>\\nName: Anna\\n</char_name>', 'Thornwall'), '<char_name>\\nName: Anna\\nCurrent_Location: Thornwall\\n</char_name>');
-    eq('rules upsert new limiter', ELRules.upsertFieldLine('<tag>\\nName: A\\n</tag>', 'Status', 'Ledger'), '<tag>\\nName: A\\nStatus: Ledger\\n</tag>');
+    const R = ELTypeRegistry;
+
+    const ch = R.BUILTIN_TYPES.character;
+    ok('builtin character has a preset', Array.isArray(ch.presets) && ch.presets.length === 1);
+    ok('builtin has no template sections', ch.sections === undefined && ch.tag === undefined);
+    ok('builtin preset is literal text', ch.presets[0].content.indexOf('Name:') === 0);
+
+    const legacy = {
+        id: 'hero', name: 'Hero', icon: '🦸', accent: '#123456',
+        tag: 'char_name', reorder: false, keyMain: 'Name', keySec: 'none', cssPath: 'x.css',
+        sections: [{ title: 'Identity', slots: [{ kind: 'cont', label: 'Name' }] }],
+    };
+    const cleaned = R.sanitizeType(legacy);
+    eq('legacy identity kept', cleaned.type.id + '|' + cleaned.type.name + '|' + cleaned.type.icon + '|' + cleaned.type.accent, 'hero|Hero|🦸|#123456');
+    ok('legacy template fields dropped', cleaned.type.sections === undefined && cleaned.type.tag === undefined && cleaned.type.reorder === undefined && cleaned.type.keyMain === undefined && cleaned.type.cssPath === undefined);
+    ok('defaults backfilled', cleaned.type.defaults && typeof cleaned.type.defaults === 'object' && !Array.isArray(cleaned.type.defaults));
+    ok('presets backfilled', Array.isArray(cleaned.type.presets) && cleaned.type.presets.length === 0);
+
+    const withDefaults = R.sanitizeType({
+        id: 'x', name: 'X',
+        defaults: { order: 120, position: 4, role: 1, depth: -3, probability: 250, constant: 'on', selective: false, bogus: 1 },
+    }).type;
+    eq('default order kept', withDefaults.defaults.order, 120);
+    eq('default position/role kept', withDefaults.defaults.position + ':' + withDefaults.defaults.role, '4:1');
+    eq('negative depth clamped to 0', withDefaults.defaults.depth, 0);
+    eq('probability clamped to 100', withDefaults.defaults.probability, 100);
+    eq('boolean default coerced', withDefaults.defaults.constant, true);
+    eq('explicit false kept', withDefaults.defaults.selective, false);
+    eq('unknown default dropped', Object.prototype.hasOwnProperty.call(withDefaults.defaults, 'bogus'), false);
+
+    const presets = R.sanitizeType({
+        id: 'p', name: 'P',
+        presets: [
+            { id: 'a', name: 'A', content: 'one' },
+            { id: 'a', name: 'B', content: 'two' },
+            { name: '', content: 'drop me' },
+            { id: 'c', name: 'C' },
+        ],
+    });
+    eq('duplicate preset id renamed', presets.type.presets[1].id, 'a-2');
+    eq('nameless preset dropped', presets.type.presets.length, 3);
+    eq('preset content backfilled', presets.type.presets[2].content, '');
+
+    eq('getPreset finds by id', R.getPreset(ch, 'character-sheet').content.indexOf('Name:') === 0, true);
+    eq('getPreset missing is null', R.getPreset(ch, 'nope'), null);
+
+    ok('validate accepts a builtin', R.validateType(ch).ok === true);
+    ok('validate rejects empty name', R.validateType({ id: 'x', name: '  ' }).ok === false);
+    ok('validate rejects duplicate preset names', R.validateType({ id: 'x', name: 'X', presets: [{ id: 'a', name: 'Same' }, { id: 'b', name: 'same' }] }).ok === false);
+    ok('validate accepts literal preset content', R.validateType({ id: 'x', name: 'X', presets: [{ id: 'a', name: 'A', content: 'Anything:\\nHere' }] }).ok === true);
+
+    const both = R.sanitizeType({ id: 'x', name: 'X', defaults: { constant: true, vectorized: true } }).type.defaults;
+    eq('constant wins over vectorized default', both.constant + ':' + Object.prototype.hasOwnProperty.call(both, 'vectorized'), 'true:false');
+    eq('reserved id refused on sanitize', R.sanitizeType({ id: '__proto__', name: 'Evil' }).type.id, 'evil');
+    const collision = { a: { id: 'same', name: 'A' }, b: { id: 'same', name: 'B' } };
+    const collisionRes = R.migrateStore(collision);
+    eq('collision keeps the first type', collision.same && collision.same.name, 'A');
+    ok('collision leaves the loser untouched', collision.b && collision.b.name === 'B');
+    ok('collision is reported', collisionRes.warnings.some(function (w) { return w.indexOf('already belongs') !== -1; }));
+
+    const store = { legacy: legacy, custom: { id: 'custom', name: 'Custom', presets: [] } };
+    const m = R.migrateStore(store);
+    ok('migration reports changes', m.changed >= 1);
+    ok('migrated type has no sections', store.hero && store.hero.sections === undefined && store.hero.tag === undefined && store.legacy === undefined);
+    ok('user presets not resurrected', Array.isArray(store.custom.presets) && store.custom.presets.length === 0);
+
+    const builtinStore = { character: { id: 'character', name: 'Character', sections: [] } };
+    R.migrateStore(builtinStore);
+    ok('builtin starter preset seeded once', Array.isArray(builtinStore.character.presets) && builtinStore.character.presets.length === 1);
+    builtinStore.character.presets = [];
+    R.migrateStore(builtinStore);
+    eq('deleted builtin presets stay deleted', builtinStore.character.presets.length, 0);
+
+    const list = R.listTypes({ a: legacy });
+    eq('listTypes cleans on read', list.length === 1 && list[0].sections === undefined && list[0].name === 'Hero', true);
+
+    eq('map upsert plain line', EL_mapUpsertLocationLine('Name: Anna', 'Thornwall'), 'Name: Anna\\nCurrent_Location: Thornwall');
+    eq('rules upsert plain line', ELRules.upsertFieldLine('Name: A', 'Status', 'Ledger'), 'Name: A\\nStatus: Ledger');
     return out;
 })()
 `;
 
-console.log('\n===== COMPILER LIMITER/SECTION/TAG TESTS (type-content fixes) =====');
+console.log('\n===== TYPE REGISTRY TESTS (types are tags) =====');
 try {
-  const compilerResults = new vm.Script(COMPILER_TEST).runInContext(sandbox);
-  const bad = compilerResults.filter(([, ok]) => !ok);
-  for (const [label, ok] of compilerResults) {
+  const typeResults = new vm.Script(TYPE_TEST).runInContext(sandbox);
+  const bad = typeResults.filter(([, ok]) => !ok);
+  for (const [label, ok] of typeResults) {
     console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${label}`);
   }
   if (bad.length) {
     failed += bad.length;
-    console.log(`  -> ${bad.length} compiler test(s) FAILED`);
+    console.log(`  -> ${bad.length} type test(s) FAILED`);
   } else {
-    console.log(`  all ${compilerResults.length} compiler assertions passed`);
+    console.log(`  all ${typeResults.length} type assertions passed`);
   }
 } catch (e) {
   failed++;
-  console.log('  FAIL  compiler tests threw: ' + e.message);
+  console.log('  FAIL  type tests threw: ' + e.message);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TYPE TAG HELPERS TESTS (pure app-window helpers)
+// The refactor's contract: a type is a tag. These helpers may add/clear
+// extensions.el.type and may fill a NEW entry's body from a literal preset, but
+// they must never read, rewrite, reorder or filter existing entry content, and
+// must never clobber refs or foreign extensions.* keys.
+// ─────────────────────────────────────────────────────────────────────────────
+const TAG_HELPERS_TEST = `
+(function () {
+    const out = [];
+    function eq(label, got, want) { out.push([label, got === want]); }
+    function ok(label, cond) { out.push([label, !!cond]); }
+    function has(obj, key) { return Object.prototype.hasOwnProperty.call(obj || {}, key); }
+
+    // Seed the store exactly as the app does on first use.
+    const store = EL_getTypeStore();
+    ok('type store seeded with builtin character', !!store && !!store.character);
+
+    // ── EL_withEntryType ────────────────────────────────────────────────────
+    const before = { el: { refs: [{ uid: 7, kind: 'mentions' }], extra: 1 }, foreign: { a: 1 }, other: 'keep' };
+    const snapshot = JSON.stringify(before);
+    const tagged = EL_withEntryType(before, 'character');
+    eq('withEntryType sets el.type', tagged.el.type, 'character');
+    ok('withEntryType keeps el.refs array', Array.isArray(tagged.el.refs) && tagged.el.refs.length === 1 && tagged.el.refs[0].uid === 7);
+    eq('withEntryType keeps el sibling keys', tagged.el.extra, 1);
+    eq('withEntryType keeps foreign extensions keys', tagged.foreign.a, 1);
+    eq('withEntryType keeps other extensions keys', tagged.other, 'keep');
+    eq('withEntryType never mutates input', JSON.stringify(before), snapshot);
+
+    const cleared = EL_withEntryType(tagged, '');
+    eq('withEntryType empty clears the tag', has(cleared.el, 'type'), false);
+    ok('withEntryType empty keeps refs', Array.isArray(cleared.el.refs) && cleared.el.refs[0].uid === 7);
+    eq('withEntryType empty keeps foreign keys', cleared.foreign.a, 1);
+
+    const bare = EL_withEntryType({ el: { type: 'character' } }, '');
+    eq('withEntryType removes el when nothing is left', has(bare, 'el'), false);
+    eq('withEntryType empty stays empty for no input', JSON.stringify(EL_withEntryType(undefined, '')), '{}');
+
+    // ── EL_applyCreateType ──────────────────────────────────────────────────
+    const literal = 'Name: Anna\\r\\nCodename: Wraith\\r\\n\\r\\nNotes:\\n- keeps blank lines\\n- ends with newline\\n';
+    const created = EL_applyCreateType({ key: ['anna'], content: '' }, 'character', literal);
+    eq('applyCreateType sets the tag', created.extensions && created.extensions.el && created.extensions.el.type, 'character');
+    eq('applyCreateType assigns literal content byte-for-byte', created.content === literal, true);
+    eq('applyCreateType does not reorder or drop content lines', created.content.split('\\n').length, literal.split('\\n').length);
+
+    const noneEntry = EL_applyCreateType({ key: ['x'], content: 'body' }, 'none', 'preset text');
+    eq("applyCreateType 'none' writes content", noneEntry.content, 'preset text');
+    eq("applyCreateType 'none' creates no extensions.el", noneEntry.extensions, undefined);
+
+    const unknownEntry = EL_applyCreateType({ key: ['x'], content: 'body' }, 'does-not-exist', 'given');
+    eq('applyCreateType unknown id creates no tag', unknownEntry.extensions, undefined);
+    eq('applyCreateType unknown id still honours literal content', unknownEntry.content, 'given');
+
+    const untouched = EL_applyCreateType({ key: ['x'], content: literal }, 'character');
+    eq('applyCreateType without content never rewrites existing content', untouched.content === literal, true);
+
+    // ── EL_presetContent ────────────────────────────────────────────────────
+    const builtinSheet = ELTypeRegistry.BUILTIN_TYPES.character.presets[0].content;
+    eq('presetContent returns the builtin character preset text', EL_presetContent('character', 'character-sheet'), builtinSheet);
+    ok('presetContent text is literal (starts with Name:, no placeholders)', builtinSheet.indexOf('Name:') === 0 || EL_presetContent('character', 'character-sheet').indexOf('Name:') === 0);
+    eq("presetContent 'none' is empty", EL_presetContent('character', 'none'), '');
+    eq('presetContent unknown preset is empty', EL_presetContent('character', 'no-such-preset'), '');
+    eq('presetContent unknown type is empty', EL_presetContent('no-such-type', 'character-sheet'), '');
+
+    // ── EL_batchTypeResetWrites ─────────────────────────────────────────────
+    const batchEntry = { key: ['a'], content: literal, extensions: { el: { type: 'character', refs: [{ uid: 3 }] }, foreign: true } };
+    const batchBefore = JSON.stringify(batchEntry);
+    const writes = EL_batchTypeResetWrites(batchEntry);
+    ok('batchReset returns extensions only', Object.keys(writes).length === 1 && has(writes, 'extensions'));
+    ok('batchReset emits no content key', has(writes, 'content') === false);
+    ok('batchReset emits no key key', has(writes, 'key') === false);
+    eq('batchReset clears only the tag', has(writes.extensions.el, 'type'), false);
+    ok('batchReset keeps el.refs', Array.isArray(writes.extensions.el.refs) && writes.extensions.el.refs[0].uid === 3);
+    eq('batchReset keeps foreign extensions keys', writes.extensions.foreign, true);
+    eq('batchReset never mutates the entry', JSON.stringify(batchEntry), batchBefore);
+
+    const untyped = EL_batchTypeResetWrites({ key: ['x'], content: 'body', extensions: { el: { refs: [] } } });
+    eq('batchReset on untyped entry writes nothing', JSON.stringify(untyped), '{}');
+
+    // ── constant/vectorized exclusivity at create time ──────────────────────
+    const bothFlags = EL_applyCreateType({ content: '', constant: true, vectorized: true }, 'character', 'x');
+    eq('applyCreateType forces vectorized off when constant is on', bothFlags.vectorized, false);
+    eq('applyCreateType leaves constant on', bothFlags.constant, true);
+    const vecOnly = EL_applyCreateType({ content: '', constant: false, vectorized: true }, 'character', 'x');
+    eq('applyCreateType keeps a lone vectorized flag', vecOnly.vectorized, true);
+    const bothNone = EL_applyCreateType({ content: '', constant: true, vectorized: true }, 'none', 'x');
+    eq("applyCreateType exclusivity also applies to 'none'", bothNone.vectorized, false);
+
+    // ── EL_readTypeSelect / EL_openTypeSelect (orphaned tags round-trip) ────
+    // The select is DOM; give these two helpers a tiny fake element instead of
+    // the harness's null getElementById.
+    const origGetById = document.getElementById;
+    const origCreate = document.createElement;
+    try {
+        document.getElementById = (id) => (id === 'edit-type' ? { value: 'deleted-type' } : null);
+        eq('readTypeSelect returns a raw orphaned id', EL_readTypeSelect(), 'deleted-type');
+        document.getElementById = (id) => (id === 'edit-type' ? { value: 'none' } : null);
+        eq("readTypeSelect maps 'none' to none", EL_readTypeSelect(), 'none');
+        document.getElementById = (id) => (id === 'edit-type' ? { value: '' } : null);
+        eq('readTypeSelect maps an empty value to none', EL_readTypeSelect(), 'none');
+        document.getElementById = () => null;
+        eq('readTypeSelect defaults to none without an element', EL_readTypeSelect(), 'none');
+
+        const madeOptions = [];
+        document.createElement = (tag) => {
+            const opt = { tagName: String(tag || '').toUpperCase(), value: '', textContent: '', selected: false };
+            madeOptions.push(opt);
+            return opt;
+        };
+        const fakeSel = { innerHTML: '', value: '', children: [], appendChild(c) { this.children.push(c); return c; } };
+        document.getElementById = (id) => (id === 'edit-type' ? fakeSel : null);
+
+        const orphanEntry = { key: ['anna'], content: 'Name: Anna', extensions: { el: { type: 'deleted-type', refs: [{ uid: 4 }] } } };
+        const orphanBefore = JSON.stringify(orphanEntry);
+        EL_openTypeSelect(orphanEntry);
+        eq('openTypeSelect appends one orphan option', fakeSel.children.length, 1);
+        eq('openTypeSelect orphan option carries the raw id', fakeSel.children[0].value, 'deleted-type');
+        eq('openTypeSelect orphan option is labelled missing', fakeSel.children[0].textContent, 'deleted-type (missing type)');
+        eq('openTypeSelect selects the orphan value', fakeSel.value, 'deleted-type');
+        eq('openTypeSelect never writes the entry', JSON.stringify(orphanEntry), orphanBefore);
+
+        madeOptions.length = 0;
+        const knownSel = { innerHTML: '', value: '', children: [], appendChild(c) { this.children.push(c); return c; } };
+        document.getElementById = (id) => (id === 'edit-type' ? knownSel : null);
+        EL_openTypeSelect({ extensions: { el: { type: 'character' } } });
+        eq('openTypeSelect adds no option for a known type', knownSel.children.length, 0);
+
+        // Orphan id read back from the select must be what the save path writes,
+        // i.e. a tag-only update: content is never part of this helper.
+        document.getElementById = (id) => (id === 'edit-type' ? { value: 'deleted-type' } : null);
+        const savedTag = EL_withEntryType({ el: { refs: [{ uid: 4 }] } }, EL_readTypeSelect());
+        eq('orphan read-back preserves the tag on save', savedTag.el.type, 'deleted-type');
+        ok('orphan read-back preserves refs', Array.isArray(savedTag.el.refs) && savedTag.el.refs[0].uid === 4);
+        eq('orphan read-back produces no content field', has(savedTag, 'content'), false);
+    } finally {
+        document.getElementById = origGetById;
+        document.createElement = origCreate;
+    }
+
+    return out;
+})()
+`;
+
+console.log('\n===== TYPE TAG HELPERS TESTS =====');
+try {
+  const tagResults = new vm.Script(TAG_HELPERS_TEST).runInContext(sandbox);
+  const bad = tagResults.filter(([, ok]) => !ok);
+  for (const [label, ok] of tagResults) {
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${label}`);
+  }
+  if (bad.length) {
+    failed += bad.length;
+    console.log(`  -> ${bad.length} type-tag helper test(s) FAILED`);
+  } else {
+    console.log(`  all ${tagResults.length} type-tag helper assertions passed`);
+  }
+} catch (e) {
+  failed++;
+  console.log('  FAIL  type-tag helper tests threw: ' + e.message);
 }
 
 console.log('\n===== FINAL: ' + (failed === 0 ? 'PASS' : failed + ' FAILURE(S)') + ' =====');

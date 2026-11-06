@@ -325,8 +325,6 @@ function elLoadLibScript(name, globalName) {
 
 function elLoadRulesLibs() {
     return elLoadLibScript('type-registry.js', 'ELTypeRegistry')
-        .then(() => elLoadLibScript('slot-parse.js', 'ELSlots'))
-        .then(() => elLoadLibScript('type-compiler.js', 'ELCompile'))
         .then(() => elLoadLibScript('rules.js', 'ELRules'));
 }
 
@@ -347,27 +345,6 @@ function elRulesStore() {
         try { ctx.saveSettingsDebounced(); } catch (e) { /* seeding persists best-effort */ }
     }
     return ext;
-}
-
-function elRulesTypeForHost(entry) {
-    try {
-        const tid = entry && entry.extensions && entry.extensions.el && entry.extensions.el.type;
-        if (!tid || typeof tid !== 'string') return null;
-        const reg = window.ELTypeRegistry;
-        if (!reg || typeof reg.getType !== 'function') return null;
-        const ctx = elHostContext();
-        const store = ctx?.extensionSettings?.SillyTavernEnhancedLorebook?.entryTypes;
-        if (store && typeof store === 'object') {
-            try {
-                const t = reg.getType(store, tid);
-                if (t) return t;
-            } catch (e) { /* fall through to builtins */ }
-        }
-        if (reg.BUILTIN_TYPES && reg.BUILTIN_TYPES[tid]) {
-            try { return JSON.parse(JSON.stringify(reg.BUILTIN_TYPES[tid])); } catch (e) { return reg.BUILTIN_TYPES[tid]; }
-        }
-    } catch (e) { /* untyped */ }
-    return null;
 }
 
 // Clock values are read at evaluation time — no timers. dow: 0 = Sunday.
@@ -449,11 +426,9 @@ async function elRulesApplyWrites(book, uid, fresh, writes) {
         if (!list.length) return 'skipped';
         let next = entry.content;
         for (const w of list) {
-            let type = null;
-            try { type = elRulesTypeForHost(entry); } catch (e) { type = null; }
             const probe = { ...entry, content: next };
             let out = null;
-            try { out = ELR.computeFieldContent(probe, type, w.target, w.value); } catch (e) { out = null; }
+            try { out = ELR.computeFieldContent(probe, w.target, w.value); } catch (e) { out = null; }
             if (out === null || typeof out !== 'string') return 'blocked';
             if (out !== next) next = out;
         }
@@ -631,28 +606,6 @@ function _elC2StashActivated(data) {
     _elC2Stash = list.filter((e) => e && typeof e === 'object');
 }
 
-function _elC2NormLabel(s) {
-    return String(s === undefined || s === null ? '' : s).toLowerCase().replace(/[_\s]+/g, ' ').trim();
-}
-
-function _elC2SlotKinds(type) {
-    const out = {};
-    try {
-        const sections = (type && Array.isArray(type.sections)) ? type.sections : [];
-        for (const sec of sections) {
-            const slots = (sec && Array.isArray(sec.slots)) ? sec.slots : [];
-            for (const sl of slots) {
-                if (!sl || !sl.label) continue;
-                out[_elC2NormLabel(sl.label)] = {
-                    kind: String(sl.kind || 'cont').toLowerCase(),
-                    inject: (sl.inject === true || String(sl.inject || '').toLowerCase() === 'on') ? 'on' : 'off',
-                };
-            }
-        }
-    } catch (e) { /* untyped: empty map */ }
-    return out;
-}
-
 function _elC2LooksLikeImage(v) {
     const s = String(v === undefined || v === null ? '' : v).trim();
     if (!s || /\s/.test(s)) return false;
@@ -662,52 +615,41 @@ function _elC2LooksLikeImage(v) {
     return /^https?:\/\/\S+\.(png|jpe?g|webp|gif)(\?.*)?$/i.test(s);
 }
 
-async function _elC2ValuesOf(entry) {
+// Type-free image discovery: any line of the entry, whole or after the last
+// `Label: ` separator, that is exactly an image location. No type, slot or
+// injection bookkeeping — content is read, never altered.
+function _elC2EntryImageUrls(entry) {
+    const out = [];
     try {
-        await elLoadRulesLibs();
-    } catch (e) {
-        return { values: {}, kinds: {} };
-    }
-    let type = null;
-    try { type = elRulesTypeForHost(entry); } catch (e) { type = null; }
-    const kinds = _elC2SlotKinds(type);
-    let values = {};
-    try {
-        const CC = window.ELCompile || null;
-        const ELS = window.ELSlots || null;
-        if (CC && ELS && type && typeof CC.typeToAst === 'function' && typeof ELS.extractValues === 'function') {
-            const ex = ELS.extractValues((entry && entry.content) || '', CC.typeToAst(type));
-            if (ex && ex.values && typeof ex.values === 'object') values = ex.values;
+        const text = (entry && typeof entry.content === 'string') ? entry.content : '';
+        const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+        for (const line of lines) {
+            if (out.length >= EL_C2_MAX_IMAGES) break;
+            const raw = String(line || '').trim();
+            if (!raw) continue;
+            const candidates = [raw];
+            const colon = raw.indexOf(':');
+            if (colon !== -1) candidates.push(raw.slice(colon + 1).trim());
+            for (const cand of candidates) {
+                if (out.length >= EL_C2_MAX_IMAGES) break;
+                if (!_elC2LooksLikeImage(cand)) continue;
+                if (out.indexOf(cand) === -1) out.push(cand);
+                break;
+            }
         }
-    } catch (e) { values = {}; }
-    return { values, kinds };
+    } catch (e) { /* collection is best-effort */ }
+    return out;
 }
 
-async function _elC2CollectImageUrls(entries) {
+function _elC2CollectImageUrls(entries) {
     const out = [];
     try {
         for (const entry of (entries || [])) {
             if (out.length >= EL_C2_MAX_IMAGES) break;
             if (!entry || typeof entry !== 'object') continue;
-            let bag = null;
-            try { bag = await _elC2ValuesOf(entry); } catch (e) { bag = null; }
-            if (!bag || !bag.values || typeof bag.values !== 'object') continue;
-            for (const label of Object.keys(bag.values)) {
+            for (const url of _elC2EntryImageUrls(entry)) {
                 if (out.length >= EL_C2_MAX_IMAGES) break;
-                const info = bag.kinds[_elC2NormLabel(label)] || null;
-                const kind = info ? info.kind : '';
-                const raw = bag.values[label];
-                const parts = (kind === 'gallery' && typeof raw === 'string' && raw.indexOf('\n') !== -1)
-                    ? raw.split('\n')
-                    : [raw];
-                for (const p of parts) {
-                    if (out.length >= EL_C2_MAX_IMAGES) break;
-                    const s = String(p === undefined || p === null ? '' : p).trim();
-                    if (!s || !_elC2LooksLikeImage(s)) continue;
-                    if (kind === 'gallery' && (!info || info.inject !== 'on')) continue;
-                    if (kind !== '' && kind !== 'img' && kind !== 'gallery') continue;
-                    if (out.indexOf(s) === -1) out.push(s);
-                }
+                if (out.indexOf(url) === -1) out.push(url);
             }
         }
     } catch (e) { /* collection is best-effort */ }

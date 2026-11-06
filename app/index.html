@@ -120,7 +120,7 @@
                         </div>
                         <div class="list-container">
                             <div id="nav-type-workshop" class="list-item agent-sidebar-item" style="cursor:pointer;">
-                                <i class="fa-solid fa-shapes"></i><span>Type Workshop</span>
+                                <i class="fa-solid fa-shapes"></i><span>Types &amp; Presets</span>
                             </div>
                         </div>
 
@@ -202,14 +202,14 @@
             </div>
             </div>
 
-            <!-- Type Workshop Panel (Track B2) -->
+            <!-- Types & Presets Panel -->
             <div id="type-workshop-panel" class="type-workshop-panel hidden" style="padding:24px; overflow-y:auto; height:100%;">
                 <div class="el-tw-bar">
-                    <h2 style="margin:0; display:flex; align-items:center; gap:10px;"><i class="fa-solid fa-shapes"></i> Type Workshop</h2>
-                    <span class="el-tw-sub">Builder emits the raw template live. Name is cosmetic — the id never changes.</span>
+                    <h2 style="margin:0; display:flex; align-items:center; gap:10px;"><i class="fa-solid fa-shapes"></i> Types &amp; Presets</h2>
+                    <span class="el-tw-sub">A type is a tag. It can also pre-fill settings and drop literal placeholder text into new entries — it never changes existing content.</span>
                     <span style="flex:1;"></span>
                     <button id="el-tw-save" class="btn btn-primary btn-sm" title="Save the selected type"><i class="fa-solid fa-floppy-disk"></i> Save type</button>
-                    <button id="el-tw-close" class="btn btn-secondary btn-sm" title="Close workshop and return to entries"><i class="fa-solid fa-xmark"></i> Close</button>
+                    <button id="el-tw-close" class="btn btn-secondary btn-sm" title="Close and return to entries"><i class="fa-solid fa-xmark"></i> Close</button>
                 </div>
                 <div class="el-tw-cols">
                     <div class="el-tw-listcol">
@@ -224,29 +224,19 @@
                     </div>
                     <div class="el-tw-buildcol">
                         <div id="el-tw-identity"></div>
-                        <div id="el-tw-sections"></div>
+                        <div class="el-tw-box">
+                            <div id="el-tw-defaults"></div>
+                        </div>
+                        <div class="el-tw-box">
+                            <div id="el-tw-presets"></div>
+                        </div>
                     </div>
                     <div class="el-tw-sidecol">
-                        <div class="el-tw-box">
-                            <h4>Emitted template</h4>
-                            <pre id="el-tw-preview" class="el-tw-raw"></pre>
-                        </div>
                         <div id="el-tw-usage" class="el-tw-box"></div>
-                        <div class="el-tw-box">
-                            <h4>Inspector</h4>
-                            <div id="el-tw-inspector"></div>
-                            <div id="el-tw-errors" class="el-tw-errors" style="display:none;"></div>
-                            <div class="el-tw-insprow">
-                                <button id="el-tw-validate" class="btn btn-secondary btn-sm"><i class="fa-solid fa-check"></i> Validate</button>
-                                <span style="flex:1;"></span>
-                                <button id="el-tw-ins-save" class="btn btn-primary btn-sm"><i class="fa-solid fa-floppy-disk"></i> Save</button>
-                                <button id="el-tw-ins-delete" class="btn btn-secondary btn-sm el-tw-danger"><i class="fa-solid fa-trash"></i> Delete</button>
-                            </div>
-                        </div>
                     </div>
                 </div>
                 <div class="el-tw-footer" style="display:flex; justify-content:flex-end; gap:8px; padding-top:16px;">
-                    <button id="el-tw-close-footer" class="btn btn-secondary btn-sm" title="Close workshop and return to entries"><i class="fa-solid fa-xmark"></i> Close</button>
+                    <button id="el-tw-close-footer" class="btn btn-secondary btn-sm" title="Close and return to entries"><i class="fa-solid fa-xmark"></i> Close</button>
                 </div>
             </div>
 
@@ -787,7 +777,7 @@
                         <h2 class="el-b6-page-title">Entry Types</h2>
                         <p class="el-b6-page-desc">The workshop builds the template; the raw <code>|| kind:label ||</code> syntax stays visible underneath.</p>
                         <div class="el-b6-sec"><h3 class="el-b6-sec-t">Types</h3><div id="el-set-types"></div></div>
-                        <div class="el-b6-frow"><div><span class="el-b6-fl-t">Type Workshop</span><span class="el-b6-fl-h">Builder, live preview, inspector. Renaming a limiter warns how many entries it will touch.</span></div><div class="el-b6-fc"><button id="el-set-open-workshop" class="btn btn-secondary btn-sm"><i class="fa-solid fa-shapes"></i> Open builder</button></div></div>
+                        <div class="el-b6-frow"><div><span class="el-b6-fl-t">Types &amp; Presets</span><span class="el-b6-fl-h">Tag list, create defaults and literal content presets. Types never change existing entry content.</span></div><div class="el-b6-fc"><button id="el-set-open-workshop" class="btn btn-secondary btn-sm"><i class="fa-solid fa-shapes"></i> Open</button></div></div>
                     </section>
                     <section class="el-b6-settings-page" data-page="sections" hidden>
                         <h2 class="el-b6-page-title">Sections</h2>
@@ -1055,11 +1045,9 @@
                 <input type="hidden" id="edit-entry-uid">
 
                 <div class="form-group">
-                    <label for="edit-type">Entry type</label>
-                    <div style="display:flex; gap:8px; align-items:center;">
-                        <select id="edit-type" style="flex:1; min-width:0;"></select>
-                        <button type="button" id="edit-type-reapply" class="btn btn-secondary btn-sm" title="Re-render this entry through the current saved type (picks up type edits). Review, then Save Entry.">Re-apply style</button>
-                    </div>
+                    <label for="edit-type">Type tag</label>
+                    <select id="edit-type"></select>
+                    <small style="opacity:0.7; display:block;">Organisational tag only. It never changes this entry's content.</small>
                 </div>
 
                 <div class="form-group">
@@ -1085,23 +1073,18 @@
                     </div>
                 </div>
                 
-                <div id="edit-type-tabs" class="el-tabs" role="tablist" style="display:none;">
-                    <button type="button" class="el-tab" data-tab="form" role="tab" aria-selected="false">Form</button>
-                    <button type="button" class="el-tab" data-tab="raw" role="tab" aria-selected="false">Raw</button>
-                    <button type="button" class="el-tab" data-tab="appear" role="tab" aria-selected="false">Appearance</button>
-                </div>
-                <div id="edit-pane-form" style="display:none; margin-bottom: 20px;">
-                    <div id="edit-form"></div>
-                </div>
                 <div id="edit-pane-raw" style="margin-bottom: 20px;">
                     <div class="form-group" style="margin-bottom: 0;">
                         <label>Content</label>
                         <textarea id="edit-content" style="min-height: 55vh; background: rgba(0,0,0,0.3); border: 1px solid var(--panel-border); color: var(--text-color); padding: 8px 12px; border-radius: 6px; font-family: inherit; font-size: 0.95rem; outline: none; resize: vertical; width: 100%;"></textarea>
                     </div>
                 </div>
-                <div id="edit-pane-appear" style="display:none; margin-bottom: 20px;">
-                    <div id="edit-appear"></div>
-                </div>
+
+                <details style="margin-bottom: 12px; background: rgba(0,0,0,0.1); padding: 8px; border-radius: 6px;">
+                    <summary style="cursor:pointer; font-weight:bold; margin-bottom: 8px;">Linked entries</summary>
+                    <div id="edit-links"></div>
+                    <small style="opacity:0.7; display:block;">Organisational links between entries (used by Sections). Content is never touched.</small>
+                </details>
                 
                 <details open style="margin-bottom: 12px; background: rgba(0,0,0,0.1); padding: 8px; border-radius: 6px;">
                     <summary style="cursor:pointer; font-weight:bold; margin-bottom: 8px;">Core Settings</summary>
@@ -1742,10 +1725,17 @@
                                     <input type="number" id="quick-entry-probability" value="100" min="0" max="100">
                                 </div>
                                 <div class="form-group">
-                                    <label>Entry Type</label>
+                                    <label>Entry Type (tag)</label>
                                     <select id="quick-entry-type">
                                         <option value="none">None (plain entry)</option>
                                     </select>
+                                </div>
+                                <div class="form-group">
+                                    <label>Preset (fills content)</label>
+                                    <select id="quick-entry-preset">
+                                        <option value="none">— blank content —</option>
+                                    </select>
+                                    <small style="opacity:0.7; display:block;">Literal placeholder text from the selected type. Edit it afterwards as normal.</small>
                                 </div>
                             </div>
                             <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; margin-top: 12px;">
@@ -1781,14 +1771,16 @@
                             <i class="fa-solid fa-chevron-down adv-section-chevron" style="transition: transform 0.2s;"></i>
                         </div>
                         <div class="adv-section-body" style="padding: 12px; overflow-x: auto; max-height: 250px; overflow-y: auto;">
-                            <table class="excel-table" style="width: 100%; border-collapse: collapse; min-width: 800px; font-size: 0.9rem;">
+                            <table class="excel-table" style="width: 100%; border-collapse: collapse; min-width: 1120px; font-size: 0.9rem;">
                                 <thead>
                                     <tr style="border-bottom: 2px solid var(--panel-border); text-align: left;">
                                         <th style="padding: 6px; width: 35px; color: var(--text-muted); font-size: 0.8rem;">#</th>
-                                        <th style="padding: 6px; color: var(--text-muted); font-size: 0.8rem; width: 20%;">Entry Name / Comment</th>
-                                        <th style="padding: 6px; color: var(--text-muted); font-size: 0.8rem; width: 20%;">Primary Keys (comma sep)</th>
-                                        <th style="padding: 6px; color: var(--text-muted); font-size: 0.8rem; width: 20%;">Secondary Keys (comma sep)</th>
-                                        <th style="padding: 6px; color: var(--text-muted); font-size: 0.8rem; width: 40%;">Content (Single line text/paste)</th>
+                                        <th style="padding: 6px; color: var(--text-muted); font-size: 0.8rem; width: 16%;">Entry Name / Comment</th>
+                                        <th style="padding: 6px; color: var(--text-muted); font-size: 0.8rem; width: 15%;">Primary Keys (comma sep)</th>
+                                        <th style="padding: 6px; color: var(--text-muted); font-size: 0.8rem; width: 15%;">Secondary Keys (comma sep)</th>
+                                        <th style="padding: 6px; color: var(--text-muted); font-size: 0.8rem; width: 11%;">Type (tag)</th>
+                                        <th style="padding: 6px; color: var(--text-muted); font-size: 0.8rem; width: 12%;">Preset</th>
+                                        <th style="padding: 6px; color: var(--text-muted); font-size: 0.8rem; width: 28%;">Content (Single line text/paste)</th>
                                         <th style="padding: 6px; width: 40px;"></th>
                                     </tr>
                                 </thead>
@@ -1849,12 +1841,8 @@
                                         <label for="g-apply-probability" style="min-width: 100px; font-size: 0.85rem;">Probability:</label>
                                         <input type="number" id="g-probability" value="100" min="0" max="100" style="flex:1; padding: 4px 8px; font-size: 0.85rem;">
                                     </div>
-                                    <div class="form-group row" style="margin-bottom: 0; gap: 8px;">
-                                        <input type="checkbox" id="g-apply-type" style="width: 16px; height: 16px;">
-                                        <label for="g-apply-type" style="min-width: 100px; font-size: 0.85rem;">Type:</label>
-                                        <select id="g-type" style="flex:1; padding: 4px 8px; font-size: 0.85rem;">
-                                            <option value="none">None (plain entry)</option>
-                                        </select>
+                                    <div class="form-group row" style="margin-bottom: 0; gap: 8px; grid-column: span 2;">
+                                        <small style="opacity:0.7;">Type and preset are set per row in the grid above.</small>
                                     </div>
                                 </div>
                                 <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; margin-top: 6px; padding-top: 8px; border-top: 1px dashed var(--panel-border);">
@@ -2014,10 +2002,8 @@
          loaded FIRST: the host window loads the very same file, so both
          windows apply proposals with identical rules. -->
     <script src="../lib/apply-core.js?v=1"></script>
-    <script src="../lib/type-registry.js?v=1"></script>
-    <script src="../lib/slot-parse.js?v=1"></script>
+    <script src="../lib/type-registry.js?v=2"></script>
     <script src="../lib/dep-index.js?v=1"></script>
-    <script src="../lib/type-compiler.js?v=1"></script>
     <script src="../lib/sections.js?v=1"></script>
     <script src="../lib/rules.js?v=1"></script>
     <script src="toast.js?v=1"></script>

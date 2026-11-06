@@ -80,6 +80,34 @@ stay the same. Nothing happens until you press Apply. If you change your
 mind afterwards, the Undo button in the toolbar puts everything back the
 way it was. It covers the last batch edit; switching lorebooks clears it.
 
+## Entry types and presets
+
+A type is a tag. Give an entry a type and you can filter and group by it, and
+the card shows the type's name and colour. A type never changes an entry's
+content: no hidden lines, no rewriting, no reordering, no template syntax.
+Whatever you type in **Content** is exactly what the entry contains.
+
+Two conveniences hang off a type, both optional:
+
+- **Presets** — named placeholder text you write yourself. Pick a type on
+  **Add Item**, then pick one of its presets, and every new card starts with
+  that text already in it. Presets are literal: what you save is what gets
+  inserted, with no variables or substitution. Edit them any time in
+  **Types & Presets**.
+- **Create defaults** — entry settings (order, position, depth, probability,
+  constant, and so on) applied to a new entry of that type. Leave a field
+  blank and the add dialog decides instead.
+
+Manage both in **Types & Presets** (sidebar → Types). The Character and
+Location types ship with a starter preset each; edit or delete them freely.
+
+Deleting a type only removes the tag from its entries — content, keys and
+links are left untouched.
+
+**Sections** (the list icon in the toolbar) is the place for "everything of
+this type goes in this order range": lock a section to a type and it assigns
+order/position values to those entries. Like types, it never touches content.
+
 ## Tidying up with folders
 
 You can group entries into named folders, and folders can hold sub-folders,

@@ -1,0 +1,38 @@
+{
+  "id": "ST-EnhancedLorebook",
+  "kind": "hub",
+  "purpose": "Lorebook management hub whose guarded apply path writes reviewed agent proposals into real lorebooks with backups and staleness checks.",
+  "global": "window.EL",
+  "apiVersion": 0,
+  "probe": "async () => { const el = window.EL; return !!el && typeof el.applyProposal === 'function' && !!el.ready && typeof el.ready.then === 'function' && !!(await el.ready); }",
+  "absentNotice": "ST-EnhancedLorebook is not available; lorebook access is disabled.",
+  "methods": [
+    {
+      "name": "applyProposal",
+      "signature": "await window.EL.applyProposal(proposal, { agentName }) => Promise<boolean>",
+      "inputs": "proposal: { id, action: 'create'|'edit'|'delete', lorebookName, status, uid, entryData, changes, _baseFingerprint }; opts: { st?, agentName? }",
+      "outputs": "true after a verified write; proposal removed from feed, badge refreshed, el:proposals-changed emitted",
+      "errorCodes": []
+    },
+    {
+      "name": "buildLineDiffHtml",
+      "signature": "window.EL.ui.buildLineDiffHtml(oldStr, newStr) => string",
+      "inputs": "two strings",
+      "outputs": "line-diff HTML, or '' when the shared apply core is not loaded",
+      "errorCodes": []
+    },
+    {
+      "name": "guardSave",
+      "signature": "await window.EL.guard.guardSave(bookName, data, options) => Promise<boolean>",
+      "inputs": "lorebook name, full lorebook data and guard options",
+      "outputs": "true when the verified save landed, false when blocked/skipped",
+      "errorCodes": []
+    }
+  ],
+  "events": [
+    { "name": "el:proposals-changed", "payload": "{ chatId, count, reason } where reason is 'created' | 'accepted' | 'denied' | 'deleted' | 'loaded'" }
+  ],
+  "example": "await window.EL.ready; await window.EL.applyProposal(proposal, { agentName: 'My extension' });",
+  "docs": "README.md#for-other-extensions-api",
+  "tests": ["node", "tools/load-harness.cjs"]
+}

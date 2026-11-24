@@ -6,13 +6,6 @@
     <title>Enhanced Lorebook UI</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link rel="stylesheet" href="style.css?v=5">
-    <script>
-        // The app embeds this window in a drawer. The host frame provides the SillyTavern context the
-        // extension expects from `window.opener` when it is opened as a popup.
-        if (!window.SillyTavern && window.parent && window.parent !== window) {
-            try { window.SillyTavern = window.parent.SillyTavern; } catch (error) { /* cross-origin: leave unset */ }
-        }
-    </script>
 </head>
 <body>
     <div id="app" class="glass-container">

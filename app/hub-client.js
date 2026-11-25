@@ -194,7 +194,8 @@ function EL_installBridgeListener() {
                     } catch (err) { console.error('Enhanced Lorebook: rules refresh failed', err); }
                     return;
                 }
-                if ((msg.type === 'el-agent-dynamic-scan-result' || msg.type === 'el-agent-chat-books') && msg.requestId != null) {
+                if ((msg.type === 'el-agent-dynamic-scan-result' || msg.type === 'el-agent-chat-books'
+                     || msg.type === 'el-plugin-list-result' || msg.type === 'el-plugin-run-result') && msg.requestId != null) {
                     const pending = _elBridgePending.get(msg.requestId);
                     if (pending) {
                         _elBridgePending.delete(msg.requestId);

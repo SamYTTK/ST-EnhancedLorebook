@@ -328,6 +328,13 @@ function elLoadRulesLibs() {
         .then(() => elLoadLibScript('rules.js', 'ELRules'));
 }
 
+// The plugin registry is shared with the app window. Loading it here lets any
+// extension register an Enhanced Lorebook plugin from the main window (via the
+// SDK wrapper); the app window lists/runs those plugins over the bridge.
+function elLoadPluginRegistry() {
+    return elLoadLibScript('plugin-registry.js', 'ELPluginRegistry');
+}
+
 function elRulesStore() {
     const ctx = elHostContext();
     const ext = ctx?.extensionSettings?.SillyTavernEnhancedLorebook;
@@ -925,6 +932,46 @@ async function _elOnBridgeMessage(e) {
                     try { toastr.error('Agent "' + name + '" failed: ' + (msg.error || 'unknown error')); } catch (_) {}
                 }
                 try { elRefreshQuickTaskBadge(); } catch (_) {}
+                break;
+            }
+            case 'el-plugin-list-request': {
+                // The app window asks which plugins other extensions registered
+                // in the host. Only metadata crosses the bridge (no functions).
+                let plugins = [];
+                try {
+                    const registry = window.ELPluginRegistry;
+                    if (registry && typeof registry.list === 'function') plugins = registry.list();
+                } catch (e) { plugins = []; }
+                if (e.source) {
+                    e.source.postMessage({
+                        source: 'enhanced-lorebook', type: 'el-plugin-list-result',
+                        nonce: _bridgeNonce, requestId: msg.requestId || null, plugins,
+                    }, window.location.origin);
+                }
+                break;
+            }
+            case 'el-plugin-run-request': {
+                // Run a host-registered plugin on behalf of the app window and
+                // return plain items. Modern (Tauri) popups keep e.source bound.
+                try {
+                    const registry = window.ELPluginRegistry;
+                    if (!registry || typeof registry.run !== 'function') throw new Error('plugin registry not loaded');
+                    const result = await registry.run(msg.id, msg.ctx || {});
+                    if (e.source) {
+                        e.source.postMessage({
+                            source: 'enhanced-lorebook', type: 'el-plugin-run-result',
+                            nonce: _bridgeNonce, requestId: msg.requestId || null, ok: true, result,
+                        }, window.location.origin);
+                    }
+                } catch (err) {
+                    if (e.source) {
+                        e.source.postMessage({
+                            source: 'enhanced-lorebook', type: 'el-plugin-run-result',
+                            nonce: _bridgeNonce, requestId: msg.requestId || null, ok: false,
+                            error: (err && err.message) ? err.message : String(err),
+                        }, window.location.origin);
+                    }
+                }
                 break;
             }
         }
@@ -2284,7 +2331,19 @@ _elHostNamespace.rules = Object.assign(_elHostNamespace.rules || {}, {
     flushKey: (key) => elRulesFlushKey(key),
     held: elRulesHeld,
 });
-_elHostNamespace.ready = elLoadApplyCore().catch(() => null);
+// Plugin registry is published here so extensions in the main window can
+// register a plugin with `await window.EL.plugins.register(...)` (SDK wrapper).
+const _elPluginRegistryReady = elLoadPluginRegistry().then((registry) => {
+    if (registry) _elHostNamespace.plugins = registry;
+    return registry;
+}).catch(() => null);
+// Keep the historical resolved value (the apply core) while still waiting for
+// the plugin registry, so `await EL.ready` consumers that inspect the core do
+// not break.
+_elHostNamespace.ready = elLoadApplyCore().catch(() => null).then(async (core) => {
+    await _elPluginRegistryReady;
+    return core;
+});
 
 // Flat alias for extensions that do not want to walk the namespace.
 window.EL_hostApplyProposal = elHostApplyProposal;

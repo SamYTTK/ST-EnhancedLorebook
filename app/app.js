@@ -6140,6 +6140,7 @@ function openEditEntryModal(uid) {
         try { EL_editLinksLoad(entry); EL_editLinksRender(); } catch (e) { EL_warn('link list open failed', e); }
 
         _elEntryDirty = false;
+        try { EL_pluginsRender(); } catch (e) { EL_warn('plugin list render failed', e); }
         EL_modalOpen('edit-entry-modal');
     } catch (e) {
         alert('Error opening modal: ' + e.stack);
@@ -6147,6 +6148,14 @@ function openEditEntryModal(uid) {
     }
 }
 window.openEditEntryModal = openEditEntryModal;
+
+/** Debug-only timing readout for the save path. Never changes data. */
+function EL_perfSince(label, start) {
+    try {
+        if (!start) return;
+        console.debug('[EL perf] ' + label + ': ' + Math.round(performance.now() - start) + 'ms');
+    } catch (e) {}
+}
 
 async function saveEditedEntry() {
     const uid = document.getElementById('edit-entry-uid').value;
@@ -6291,7 +6300,18 @@ async function saveEditedEntry() {
     // below are all OUTSIDE the guard: no duplicate full-tree renders, no
     // folder deep-clone, no synchronous settings persist on the hot path, and
     // the dep-index rebuild is deferred (see EL_scheduleDepIndex).
+    const _saveBtn = document.getElementById('btn-save-edit-entry');
+    if (_saveBtn) { _saveBtn.disabled = true; _saveBtn.textContent = 'Saving…'; }
+    // Let the button state paint before the (necessarily sequential) guard
+    // round trips, so the UI stays responsive instead of appearing frozen.
+    await new Promise((resolve) => {
+        if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => { setTimeout(resolve, 0); });
+        else setTimeout(resolve, 0);
+    });
+    const _tGuard = (typeof performance !== 'undefined' && performance.now) ? performance.now() : 0;
     const _guardOk = await ELG_guardSave(currentLorebookName, currentLorebookData, { explicitDelete: false, source: 'user', note: 'Save edited entry' });
+    EL_perfSince('guardSave (saveEditedEntry)', _tGuard);
+    if (_saveBtn) { _saveBtn.disabled = false; _saveBtn.textContent = 'Save Entry'; }
     EL_logGuardResult(_guardOk, 'saveEditedEntry', currentLorebookName, { uid: entry.uid });
     // Track A2 note: no explicit dep-index invalidation here — the success
     // path persists via saveSettings(), and the index rebuild arrives with
@@ -6321,7 +6341,14 @@ async function saveEditedEntry() {
         sync.signatures.entries = sig;
     } catch (e) {}
     EL_modalClose('edit-entry-modal');
-    renderEntries();
+    // Re-render after paint: the guarded write is already durable, so a full
+    // card rebuild must not delay the close/stale-state update.
+    const _tRender = (typeof performance !== 'undefined' && performance.now) ? performance.now() : 0;
+    const paintThen = (fn) => {
+        if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => { setTimeout(fn, 0); });
+        else setTimeout(fn, 0);
+    };
+    paintThen(() => { try { renderEntries(); EL_perfSince('renderEntries (saveEditedEntry)', _tRender); } catch (e) { EL_warn('deferred render failed', e); } });
     // Folder-layout persist rides AFTER paint, not inside the save hot path.
     try {
         const persist = () => { try { saveSettings(); } catch (e) {} };
@@ -7706,6 +7733,13 @@ function setupEventListeners() {
             }
         });
     });
+
+    // The entry editor is docked as a side panel. Clicking the dimmed area to
+    // its left closes it, like any other modal backdrop.
+    const editPanel = document.getElementById('edit-entry-modal');
+    if (editPanel) {
+        editPanel.addEventListener('click', (e) => { if (e.target === editPanel) EL_modalClose(editPanel); });
+    }
 
     // Unified Modal Tab switching
     document.querySelectorAll('#add-item-modal .tab-btn').forEach(btn => {

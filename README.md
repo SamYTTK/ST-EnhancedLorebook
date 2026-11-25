@@ -60,9 +60,12 @@ different filename.
 
 ## Editing entries
 
-Open any entry to get every option SillyTavern supports: keys, content,
-comments, order, how deep into history it reaches, where it gets inserted,
-how likely it is to trigger, and the rest.
+Clicking an entry opens an editor **panel docked on the right** of the
+Enhanced Lorebook window (it replaces the old full-window popup). Everything is
+still there: keys, content, comments, order, how deep into history it reaches,
+where it gets inserted, how likely it is to trigger, and the rest. On a narrow
+screen the panel fills the width so it stays usable on a phone. Click the dimmed
+area, the × or press Escape to close it.
 
 For quick tweaks you don't even need to open anything — order, depth,
 position, and probability can be changed right on the entry card. Entries can
@@ -202,7 +205,40 @@ it). Backups from accepted suggestions clean themselves up after a day.
 If you write extensions yourself, this one leaves a small, stable surface in
 the main SillyTavern window. Everything below lives on `window.EL` (the
 namespace is also reachable as `window.EL_hostApplyProposal` for the apply
-call alone).
+call alone). `apiVersion` is `1`.
+
+### Registering an entry plugin
+
+Any extension can add a command to the expandable **Plugins** section at the
+bottom of the entry editor panel. A plugin is a transformation: it reads the
+entry being edited and returns plain entries to create. The hub owns the
+folder/settings UI and performs one guarded write — plugins never write to a
+lorebook themselves.
+
+```js
+await window.EL.plugins.register({ id: 'myext.stats', name: 'Stats', run: () => ({ items: [] }) });
+```
+
+A full descriptor supplies `run(ctx)`:
+
+```js
+await window.EL.plugins.register({
+  id: 'myext.split',
+  name: 'Split memories',
+  icon: 'fa-scissors',
+  run: async (ctx) => ({
+    items: [{ comment: 'Memory 1', key: [], content: '<Memory_1>…</Memory_1>', order: 1 }],
+  }),
+});
+```
+
+`ctx` is `{ sourceUid, sourceContent, bookName, startAt }`. Return
+`{ items: [] }` when there is nothing to do. When the user runs a plugin, the
+hub asks for a start number, then for a destination folder and the normal entry
+settings, creates the entries in one guarded save, and disables the source
+entry. `window.EL.plugins.list()` returns metadata only (never the `run`
+function), so it is safe across the popup bridge. The bundled
+`memory-organizer` plugin is the reference implementation.
 
 ### Applying a suggestion
 

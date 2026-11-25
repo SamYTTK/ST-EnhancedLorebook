@@ -19,9 +19,11 @@ const APP = path.join(__dirname, '..', 'app');
 // HOST window loads too, so a load-time failure there breaks both windows.
 const ORDER = [
   '../lib/apply-core.js', '../lib/type-registry.js', '../lib/dep-index.js', '../lib/sections.js', '../lib/rules.js',
+  '../lib/plugin-registry.js',
   'toast.js', 'modal.js', 'logger.js', 'agent-config-schema.js', 'context-builder.js',
   'hub-client.js', 'hub-tools.js', 'agent-chat.js', 'agent-manager.js', 'agent-backup.js',
   'worldinfo-guard.js', 'folder-url.js', 'map.js', 'rules-ui.js', 'app.js', 'agent-ui.js', 'el.js',
+  'memory-organizer-plugin.js', 'plugins-ui.js',
 ];
 
 function makeElement(tag) {
@@ -172,6 +174,7 @@ const EXPECT = [
   'ELRules', 'EL_rulesRender', 'EL_rulesCheckNow', 'EL_rulesOnHostRefresh',
   'ELFolderUrl', 'EL_getUrlForUid', 'EL_ensureFolderByPath',
   'openEditEntryModal', 'EL_setLorebookData',
+  'ELPluginRegistry', 'ELMemoryOrganizer', 'EL_pluginsRender',
   // NOTE: EL_terminalBadge is assigned lazily inside initTerminalPanel(), so it is
   // correctly absent until the agent UI initialises — do not add it here.
 ];
@@ -970,5 +973,235 @@ try {
   console.log('  FAIL  search-scope tests threw: ' + e.message);
 }
 
-console.log('\n===== FINAL: ' + (failed === 0 ? 'PASS' : failed + ' FAILURE(S)') + ' =====');
-process.exit(failed === 0 ? 0 : 1);
+// ─────────────────────────────────────────────────────────────────────────────
+// PLUGIN REGISTRY + MEMORY ORGANIZER TESTS
+// The plugin contract is data-only: run(ctx) returns plain items, the hub
+// creates the entries and performs one guarded save. These tests cover the
+// formatter ported from ST-MemoryOrganizer and the generic registry.
+// ─────────────────────────────────────────────────────────────────────────────
+const PLUGIN_TEST = `
+(function () {
+    const out = [];
+    function eq(label, got, want) { out.push([label, got === want]); }
+    function ok(label, cond) { out.push([label, !!cond]); }
+
+    eq('registry apiVersion is 1', ELPluginRegistry.apiVersion, 1);
+    const id = ELPluginRegistry.register({
+        id: 'test.plugin', name: 'Test', run: (ctx) => ({ items: [{ comment: 'c', content: 'x', order: 2 }] }),
+    });
+    eq('register returns its id', id, 'test.plugin');
+    ok('list exposes metadata', ELPluginRegistry.list().some(p => p.id === 'test.plugin' && p.name === 'Test'));
+    ok('built-in memory organizer is registered', ELPluginRegistry.list().some(p => p.id === 'memory-organizer'));
+    ok('get finds the registered plugin', !!ELPluginRegistry.get('test.plugin'));
+    ok('unknown plugin is absent', !ELPluginRegistry.get('no-such-plugin'));
+
+    const sample = '<Memory_1>\\n# Lighthouse (High)\\n[01/02/2025]\\nWitnesses: Anna\\n\`\`\`\\n</Memory_1>\\n'
+        + '<Memory_2>\\n# Tavern (5 Year)\\nCharacters present: Bob\\n</Memory_2>';
+    const result = ELMemoryOrganizer.processMemories(sample, 10);
+    eq('two memories parsed', result.count, 2);
+    ok('first block renumbered from startAt', result.items[0].content.indexOf('<Memory_10>') !== -1);
+    ok('second block renumbered sequentially', result.items[1].content.indexOf('<Memory_11>') !== -1);
+    ok('relevancy normalized', result.items[1].content.indexOf('(Medium)') !== -1);
+    ok('witness marker normalized', result.items[0].content.indexOf('List of characters who witnessed this memory or have knowledge of it:') !== -1);
+    ok('date normalized', result.items[0].content.indexOf('On 01/02/2025') !== -1);
+    eq('second item order', result.items[1].order, 11);
+    eq('no tags yields no items', ELMemoryOrganizer.processMemories('nothing here', 1).count, 0);
+    return out;
+})()
+`;
+
+console.log('\n===== PLUGIN REGISTRY + MEMORY ORGANIZER TESTS =====');
+try {
+  const pluginResults = new vm.Script(PLUGIN_TEST).runInContext(sandbox);
+  const bad = pluginResults.filter(([, ok]) => !ok);
+  for (const [label, ok] of pluginResults) {
+    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${label}`);
+  }
+  if (bad.length) {
+    failed += bad.length;
+    console.log(`  -> ${bad.length} plugin test(s) FAILED`);
+  } else {
+    console.log(`  all ${pluginResults.length} plugin assertions passed`);
+  }
+} catch (e) {
+  failed++;
+  console.log('  FAIL  plugin tests threw: ' + e.message);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PLUGIN createEntries TESTS (async guarded-save contract)
+// EL_pluginsCreateEntries (app/plugins-ui.js) is the one place a plugin's
+// parsed items become lorebook entries. It must perform exactly ONE
+// ELG_guardSave and, if the guard refuses, roll back EVERY local mutation
+// byte-for-byte: no new entries, no folder assignment, and the source entry's
+// disable flag back to its original value. The success path must place both
+// new entries in the chosen folder, disable the source, and skip the
+// fresh-reload/rollback branch. The test is async, so it is launched before the
+// FINAL accounting and the FINAL line itself moves into the promise chain.
+// ─────────────────────────────────────────────────────────────────────────────
+const PLUGIN_CREATE_TEST = `
+(async function () {
+    const out = [];
+    function eq(label, got, want) { out.push([label, got === want]); }
+    function ok(label, cond) { out.push([label, !!cond]); }
+
+    // Bare identifiers: top-level let bindings and top-level function
+    // declarations in the loaded scripts. All are reassignable in this context.
+    const saved = {
+        currentLorebookData: currentLorebookData,
+        currentLorebookName: currentLorebookName,
+        extensionSettings: extensionSettings,
+        getFreeWorldEntryUid: getFreeWorldEntryUid,
+        EL_batchDefaults: EL_batchDefaults,
+        ELG_guardSave: ELG_guardSave,
+        ELG_loadFresh: ELG_loadFresh,
+        EL_setLorebookData: EL_setLorebookData,
+        EL_toast: EL_toast,
+        saveSettings: saveSettings,
+    };
+    try {
+        var guardResult = false;
+        var guardCalls = [];
+        var freshCalls = [];
+        var setCalls = [];
+        var toasts = [];
+        var batchCalls = 0;
+        var saveCalls = 0;
+        var fresh = { entries: { freshOne: { key: ['fresh'] } } };
+        var nextUid = 100;
+
+        getFreeWorldEntryUid = function () { return nextUid++; };
+        // Real EL_ENTRY_DEFAULTS is Object.freeze'd. Stub it frozen so a
+        // mutating create path fails here instead of only in the app.
+        const frozenDefaults = Object.freeze({ baseKey: true });
+        EL_batchDefaults = function () { batchCalls++; return frozenDefaults; };
+        ELG_guardSave = async function (book, data, opts) {
+            guardCalls.push({ book: book, data: data, opts: opts });
+            return guardResult;
+        };
+        ELG_loadFresh = async function (book) { freshCalls.push(book); return fresh; };
+        EL_setLorebookData = function (d, o) { setCalls.push({ data: d, opts: o }); };
+        EL_toast = function (msg, type) { toasts.push({ msg: msg, type: type }); };
+        saveSettings = function () { saveCalls++; };
+
+        function seed(sourceDisable) {
+            currentLorebookData = { entries: {
+                src: { key: ['source'], content: 'body', disable: sourceDisable, displayIndex: 3 },
+            } };
+            currentLorebookName = 'TestBook';
+            extensionSettings = { folders: { TestBook: [ { id: 'folderA', name: 'Folder A', entries: ['keep'] } ] } };
+        }
+        function resetCounters() {
+            guardCalls.length = 0; freshCalls.length = 0; setCalls.length = 0;
+            toasts.length = 0; batchCalls = 0; saveCalls = 0; nextUid = 100;
+        }
+        var items = [
+            { comment: 'Memory 1', key: ['m1'], content: 'one' },
+            { comment: 'Memory 2', key: ['m2'], content: 'two' },
+        ];
+        var settings = {
+            folder: 'folderA', position: '0', order: 100, depth: 4, probability: 100,
+            'use-probability': true, constant: false, vectorized: false, selective: true,
+            disable: false, exclude: false, prevent: false, group: '',
+            sticky: 0, cooldown: 0, delay: 0,
+        };
+        var descriptor = { id: 'memory-organizer', title: 'Memory Organizer' };
+
+        // ── FAILURE: guard refuses the save ────────────────────────────────
+        seed(false);
+        var data = currentLorebookData;
+        var dataBefore = JSON.stringify(data);
+        var settingsBefore = JSON.stringify(extensionSettings);
+        resetCounters();
+        guardResult = false;
+        var refused = await EL_pluginsCreateEntries(items, settings, 'src', descriptor);
+
+        eq('guard-refusal returns false', refused, false);
+        eq('guard-refusal: data object byte-identical after rollback', JSON.stringify(data), dataBefore);
+        eq('guard-refusal: extension settings byte-identical', JSON.stringify(extensionSettings), settingsBefore);
+        eq('guard-refusal: same data object still current', currentLorebookData === data, true);
+        eq('guard-refusal: source entry still present', !!currentLorebookData.entries.src, true);
+        eq('guard-refusal: source disable restored to false', currentLorebookData.entries.src.disable, false);
+        eq('guard-refusal: no new entries (only source)', Object.keys(currentLorebookData.entries).length, 1);
+        eq('guard-refusal: folder entries unchanged', JSON.stringify(extensionSettings.folders.TestBook[0].entries), '["keep"]');
+        eq('guard-refusal: exactly one guarded save', guardCalls.length, 1);
+        eq('guard-refusal: guard got the source book', guardCalls[0] && guardCalls[0].book, 'TestBook');
+        eq('guard-refusal: explicitDelete false', guardCalls[0] && guardCalls[0].opts && guardCalls[0].opts.explicitDelete, false);
+        eq('guard-refusal: source flag is user', guardCalls[0] && guardCalls[0].opts && guardCalls[0].opts.source, 'user');
+        ok('guard-refusal: note names the plugin', !!guardCalls[0] && !!guardCalls[0].opts && /Plugin/.test(guardCalls[0].opts.note || ''));
+        ok('guard-refusal: batch defaults applied before guard', batchCalls === items.length);
+        eq('guard-refusal: loadFresh retried once', freshCalls.length, 1);
+        eq('guard-refusal: fresh data adopted with own:true', setCalls.length === 1 && setCalls[0].data === fresh && setCalls[0].opts && setCalls[0].opts.own === true, true);
+        ok('guard-refusal: blocked toast shown', toasts.some(function (t) { return /blocked/i.test(t.msg); }));
+        eq('guard-refusal: saveSettings NOT called', saveCalls, 0);
+
+        // Edge: a source that was already disabled stays disabled after refusal.
+        seed(true);
+        var data2 = currentLorebookData;
+        var before2 = JSON.stringify(data2);
+        resetCounters();
+        guardResult = false;
+        await EL_pluginsCreateEntries(items, settings, 'src', descriptor);
+        eq('guard-refusal: pre-disabled source stays disabled', data2.entries.src.disable, true);
+        eq('guard-refusal: pre-disabled source data byte-identical', JSON.stringify(data2), before2);
+
+        // ── SUCCESS: guard accepts ─────────────────────────────────────────
+        seed(false);
+        var data3 = currentLorebookData;
+        resetCounters();
+        guardResult = true;
+        var created = await EL_pluginsCreateEntries(items, settings, 'src', descriptor);
+
+        eq('guard-ok returns true', created, true);
+        eq('guard-ok: exactly one guarded save', guardCalls.length, 1);
+        eq('guard-ok: total entries is source + 2', Object.keys(data3.entries).length, 3);
+        eq('guard-ok: uid 100 created', !!data3.entries['100'], true);
+        eq('guard-ok: uid 101 created', !!data3.entries['101'], true);
+        eq('guard-ok: first entry content', data3.entries['100'] && data3.entries['100'].content, 'one');
+        eq('guard-ok: second entry comment', data3.entries['101'] && data3.entries['101'].comment, 'Memory 2');
+        eq('guard-ok: batch defaults present on new entry', data3.entries['100'] && data3.entries['100'].baseKey, true);
+        ok('guard-ok: frozen defaults object never mutated', Object.keys(frozenDefaults).length === 1 && frozenDefaults.uid === undefined);
+        eq('guard-ok: displayIndex continues past source', (data3.entries['100'] && data3.entries['101']) ? data3.entries['100'].displayIndex + ':' + data3.entries['101'].displayIndex : 'missing', '4:5');
+        eq('guard-ok: folder gets both new uids', JSON.stringify(extensionSettings.folders.TestBook[0].entries), '["keep","100","101"]');
+        eq('guard-ok: source disabled', data3.entries.src.disable, true);
+        eq('guard-ok: loadFresh NOT called', freshCalls.length, 0);
+        eq('guard-ok: no adopt call', setCalls.length, 0);
+        eq('guard-ok: saveSettings called once', saveCalls, 1);
+        eq('guard-ok: sync book recorded', sync.poll.entriesBook, 'TestBook');
+        ok('guard-ok: sync signature recorded', !!sync.poll.entriesSig);
+    } finally {
+        currentLorebookData = saved.currentLorebookData;
+        currentLorebookName = saved.currentLorebookName;
+        extensionSettings = saved.extensionSettings;
+        getFreeWorldEntryUid = saved.getFreeWorldEntryUid;
+        EL_batchDefaults = saved.EL_batchDefaults;
+        ELG_guardSave = saved.ELG_guardSave;
+        ELG_loadFresh = saved.ELG_loadFresh;
+        EL_setLorebookData = saved.EL_setLorebookData;
+        EL_toast = saved.EL_toast;
+        saveSettings = saved.saveSettings;
+    }
+    return out;
+})()
+`;
+
+console.log('\n===== PLUGIN createEntries TESTS (guarded save) =====');
+Promise.resolve(new vm.Script(PLUGIN_CREATE_TEST).runInContext(sandbox))
+    .then(function (results) {
+        const bad = results.filter(function (r) { return !r[1]; });
+        for (const r of results) console.log('  ' + (r[1] ? 'PASS' : 'FAIL') + '  ' + r[0]);
+        if (bad.length) {
+            failed += bad.length;
+            console.log('  -> ' + bad.length + ' plugin-create test(s) FAILED');
+        } else {
+            console.log('  all ' + results.length + ' plugin-create assertions passed');
+        }
+    })
+    .catch(function (e) {
+        failed++;
+        console.log('  FAIL  plugin-create tests threw: ' + (e && e.stack ? e.stack : e));
+    })
+    .then(function () {
+        console.log('\n===== FINAL: ' + (failed === 0 ? 'PASS' : failed + ' FAILURE(S)') + ' =====');
+        process.exit(failed === 0 ? 0 : 1);
+    });

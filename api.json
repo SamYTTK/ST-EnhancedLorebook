@@ -3,7 +3,7 @@
   "kind": "hub",
   "purpose": "Lorebook management hub whose guarded apply path writes reviewed agent proposals into real lorebooks with backups and staleness checks.",
   "global": "window.EL",
-  "apiVersion": 0,
+  "apiVersion": 1,
   "probe": "async () => { const el = window.EL; return !!el && typeof el.applyProposal === 'function' && !!el.ready && typeof el.ready.then === 'function' && !!(await el.ready); }",
   "absentNotice": "ST-EnhancedLorebook is not available; lorebook access is disabled.",
   "methods": [
@@ -27,12 +27,26 @@
       "inputs": "lorebook name, full lorebook data and guard options",
       "outputs": "true when the verified save landed, false when blocked/skipped",
       "errorCodes": []
+    },
+    {
+      "name": "registerLorebookPlugin",
+      "signature": "await window.EL.plugins.register({ id, name, title?, icon?, run }) => string",
+      "inputs": "descriptor: unique id, display name/title, optional icon; run(ctx) is async and returns { items: [{ comment, key, content, order }] }",
+      "outputs": "the registered id; plugin appears in the expandable Plugins section at the bottom of the entry editor panel",
+      "errorCodes": []
+    },
+    {
+      "name": "listLorebookPlugins",
+      "signature": "window.EL.plugins.list() => Array<{id,name,title,icon,source}>",
+      "inputs": "none",
+      "outputs": "metadata for locally and remotely registered plugins (functions are never returned)",
+      "errorCodes": []
     }
   ],
   "events": [
     { "name": "el:proposals-changed", "payload": "{ chatId, count, reason } where reason is 'created' | 'accepted' | 'denied' | 'deleted' | 'loaded'" }
   ],
-  "example": "await window.EL.ready; await window.EL.applyProposal(proposal, { agentName: 'My extension' });",
+  "example": "await window.EL.plugins.register({ id: 'myext.stats', name: 'Stats', run: () => ({ items: [] }) });",
   "docs": "README.md#for-other-extensions-api",
   "tests": ["node", "tools/load-harness.cjs"]
 }

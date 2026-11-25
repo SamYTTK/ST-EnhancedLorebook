@@ -1032,9 +1032,9 @@
         </div>
     </div>
 
-    <!-- Edit Entry Modal -->
-    <div id="edit-entry-modal" class="modal">
-        <div class="modal-content glass-panel" style="width: 95vw; height: 95vh; max-width: none; max-height: none; display: flex; flex-direction: column; overflow: hidden;">
+    <!-- Entry editor: right-side panel (was a centered modal) -->
+    <div id="edit-entry-modal" class="modal entry-side-panel">
+        <div class="modal-content glass-panel">
             <div class="modal-header">
                 <h3>Edit Entry</h3>
                 <div style="display:flex; gap: 12px; align-items:center;">
@@ -1077,7 +1077,7 @@
                 <div id="edit-pane-raw" style="margin-bottom: 20px;">
                     <div class="form-group" style="margin-bottom: 0;">
                         <label>Content</label>
-                        <textarea id="edit-content" style="min-height: 55vh; background: rgba(0,0,0,0.3); border: 1px solid var(--panel-border); color: var(--text-color); padding: 8px 12px; border-radius: 6px; font-family: inherit; font-size: 0.95rem; outline: none; resize: vertical; width: 100%;"></textarea>
+                        <textarea id="edit-content"></textarea>
                     </div>
                 </div>
 
@@ -1292,6 +1292,11 @@
                             <label for="edit-ignore-budget">Ignore Budget</label>
                         </div>
                     </div>
+                </details>
+
+                <details id="el-plugins-section" class="el-plugins-section">
+                    <summary>Plugins</summary>
+                    <div id="el-plugins-list"></div>
                 </details>
             </div>
         </div>
@@ -2024,5 +2029,8 @@
     <script src="app.js?v=15"></script>
     <script src="agent-ui.js?v=12"></script>
     <script src="el.js?v=2"></script>
+    <script src="../lib/plugin-registry.js?v=1"></script>
+    <script src="memory-organizer-plugin.js?v=1"></script>
+    <script src="plugins-ui.js?v=1"></script>
 </body>
 </html>
